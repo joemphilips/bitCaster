@@ -3,13 +3,22 @@ import { useTranslation } from "react-i18next";
 import { Loader2, X } from "lucide-react";
 import { SeedWordGrid } from "./SeedWordGrid";
 import { NativeDialog } from "./NativeDialog";
+import { CliCommandText } from "./CliCommandText";
+import type { WalletReplacementWarning } from "@/stores/wallet";
 
 import { validate, validateWord } from "@/lib/bip39";
+
+const WARNING_I18N_KEYS: Record<WalletReplacementWarning["code"], string> = {
+  "backup-partial": "wallet.replaceBackupPartial",
+  "counter-gap": "wallet.replaceCounterGap",
+};
 
 interface WalletSetupModalProps {
   mode?: "setup" | "replace";
   isCreating?: boolean;
   error?: string | null;
+  /** A replacement warning that the user can accept. */
+  warning?: WalletReplacementWarning | null;
   /** The dialog shows a restore warning about the current wallet. The next replace accepts it. */
   confirmWarning?: boolean;
   onClose: () => void;
@@ -21,6 +30,7 @@ export function WalletSetupModal({
   mode = "setup",
   isCreating = false,
   error,
+  warning,
   confirmWarning = false,
   onClose,
   onCreateNew,
@@ -84,9 +94,18 @@ export function WalletSetupModal({
             )}
 
             {mode === "replace" && (
-              <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
-                {t("wallet.replaceWalletWarning")}
-              </p>
+              <div className="mb-3 space-y-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800 dark:border-amber-800 dark:bg-amber-950/30 dark:text-amber-300">
+                {/* The alert tells a screen reader why the action became Replace Anyway. */}
+                {warning && (
+                  <p role="alert" className="select-text">
+                    <CliCommandText
+                      i18nKey={WARNING_I18N_KEYS[warning.code]}
+                      command={warning.command}
+                    />
+                  </p>
+                )}
+                <p>{t("wallet.replaceWalletWarning")}</p>
+              </div>
             )}
 
             <div className="space-y-3">

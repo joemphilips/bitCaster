@@ -21,7 +21,10 @@ import {
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
 import i18n from "@/i18n";
-import { recoveryIndexCliGapCommand } from "@bitcaster/client-sdk/recoveryIndexRestore";
+import {
+  RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND,
+  recoveryIndexCliGapCommand,
+} from "@bitcaster/client-sdk/recoveryIndexRestore";
 import { BrowserSeedHandoffRefusal, handoffBrowserSeed } from "@/lib/browserSeedHandoff";
 import { prepareBrowserRecoveryIndexHandoff } from "@/lib/browserRecoveryIndex";
 import {
@@ -57,6 +60,15 @@ export interface StoredMint {
   info?: Record<string, unknown>;
 }
 
+/**
+ * A replacement warning that the user can accept. The dialog translates it
+ * and shows its CLI command as code.
+ */
+export interface WalletReplacementWarning {
+  readonly code: Extract<BrowserSeedHandoffRefusal["code"], "backup-partial" | "counter-gap">;
+  readonly command: string;
+}
+
 interface WalletState {
   mnemonic: string;
   setupComplete: boolean;
@@ -72,9 +84,9 @@ interface WalletState {
   acknowledgeWalletSeedReminder: () => void;
   /**
    * Open the wallet of a seed phrase. A replacement whose current wallet has a
-   * partial backup returns `confirmPartialBackup`, and one whose GUI restore
-   * can miss funds after a long run of unused counters returns
-   * `confirmCounterGap`. The user then accepts the warning, and a later call
+   * partial backup returns a `backup-partial` warning, and one whose GUI
+   * restore can miss funds after a long run of unused counters returns a
+   * `counter-gap` warning. The user then accepts the warning, and a later call
    * with `acceptPartialBackup` or `acceptCounterGap` continues.
    */
   recoverFromMnemonic: (
@@ -83,8 +95,7 @@ interface WalletState {
   ) => Promise<{
     valid: boolean;
     error?: string;
-    confirmPartialBackup?: true;
-    confirmCounterGap?: true;
+    warning?: WalletReplacementWarning;
   }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
@@ -176,29 +187,42 @@ class WalletReplacementRefusal extends Error {
 }
 
 const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
-  WalletReplacementRefusal["code"] | BrowserSeedHandoffRefusal["code"],
+  | WalletReplacementRefusal["code"]
+  | Exclude<BrowserSeedHandoffRefusal["code"], WalletReplacementWarning["code"]>,
   string
 > = {
   "pending-orders": "wallet.replaceBlockedPendingOrders",
   "unscoped-pending-orders": "wallet.replaceBlockedUnscopedOrders",
   "active-wallet-work": "wallet.replaceBlockedActiveWork",
   "backup-not-current": "wallet.replaceBlockedBackup",
-  "backup-partial": "wallet.replaceBackupPartial",
   "browser-lock-unavailable": "wallet.replaceBlockedBrowserLock",
-  "counter-gap": "wallet.replaceCounterGap",
   "seed-backup-unconfirmed": "wallet.replaceBlockedSeedBackup",
 };
 
-function walletReplacementErrorMessage(error: unknown): string {
-  if (error instanceof BrowserSeedHandoffRefusal && error.code === "counter-gap") {
-    return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code], {
-      command: recoveryIndexCliGapCommand(error.cliGapLimit!),
-    });
+/** The refusal result: a warning that the user can accept, or an error. */
+function walletReplacementRefusalResult(
+  error: unknown,
+): { valid: false; error: string } | { valid: false; warning: WalletReplacementWarning } {
+  if (error instanceof BrowserSeedHandoffRefusal) {
+    switch (error.code) {
+      case "backup-partial":
+        return {
+          valid: false,
+          warning: { code: error.code, command: RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND },
+        };
+      case "counter-gap":
+        return {
+          valid: false,
+          warning: { code: error.code, command: recoveryIndexCliGapCommand(error.cliGapLimit!) },
+        };
+      default:
+        return { valid: false, error: i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]) };
+    }
   }
-  if (error instanceof WalletReplacementRefusal || error instanceof BrowserSeedHandoffRefusal) {
-    return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
+  if (error instanceof WalletReplacementRefusal) {
+    return { valid: false, error: i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]) };
   }
-  return i18n.t("wallet.replaceBlockedSafetyChecks");
+  return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
 }
 
 /**
@@ -409,16 +433,7 @@ export const useWalletStore = create<WalletState>()(
               },
             });
           } catch (error) {
-            return {
-              valid: false,
-              error: walletReplacementErrorMessage(error),
-              ...(error instanceof BrowserSeedHandoffRefusal && error.code === "backup-partial"
-                ? { confirmPartialBackup: true as const }
-                : {}),
-              ...(error instanceof BrowserSeedHandoffRefusal && error.code === "counter-gap"
-                ? { confirmCounterGap: true as const }
-                : {}),
-            };
+            return walletReplacementRefusalResult(error);
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };

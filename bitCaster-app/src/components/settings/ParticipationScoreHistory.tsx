@@ -83,8 +83,9 @@ export function ParticipationScoreHistory({
               <span className="ml-auto text-xs text-slate-500">
                 {formatTimeAgo(entry.occurredAt)}
               </span>
+              {/* A fixed column keeps the times and the amounts aligned. */}
               <span
-                className={`shrink-0 font-medium ${
+                className={`min-w-20 shrink-0 text-right font-medium tabular-nums ${
                   entry.amountScore < 0
                     ? "text-red-600 dark:text-red-400"
                     : "text-emerald-700 dark:text-emerald-300"

@@ -38,7 +38,7 @@ import { resolveOutcomeSets } from "@/lib/outcomeSets";
 import { tradeFeasibilityMessageKey } from "./tradeFeasibilityMessage";
 import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
 import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
-import { walletRecoveryDisplay, walletRecoveryHoldingsUnknown } from "@/lib/walletRecoveryDisplay";
+import { walletRecoveryDisplay, walletRecoveryZeroUnknown } from "@/lib/walletRecoveryDisplay";
 
 function formatNullablePrice(
   price: number | null,
@@ -117,7 +117,7 @@ const QUICK_SHARE_PRESETS = [100, 500, 1000, 5000];
 const QUICK_SELL_PERCENTAGES = [25, 50, 75, 100];
 
 type SellOutcomeAvailability =
-  // A seed restore runs, so a zero holding is not known yet. The notice explains it.
+  // A seed restore runs, failed or had limited coverage, so a zero holding is not known.
   | { status: "loading" | "unavailable" | "restoring" }
   | { status: "zero"; reserved: boolean; ownedShares: number | null }
   | { status: "available"; shares: number; ownedShares: number | null };
@@ -148,8 +148,11 @@ function sellOutcomeAvailability(
   if (sharesAvailableToSell > 0) {
     return { status: "available", shares: sharesAvailableToSell, ownedShares };
   }
-  if (positionsRestoring) return { status: "restoring" };
-  return { status: "zero", reserved: holding.reservedSubunits > 0, ownedShares };
+  // Reserved shares are a known fact, so they show even when a zero
+  // selectable amount is not final.
+  const reserved = holding.reservedSubunits > 0;
+  if (positionsRestoring && !reserved) return { status: "restoring" };
+  return { status: "zero", reserved, ownedShares };
 }
 
 function sellAvailabilityMessage(availability: SellOutcomeAvailability): {
@@ -276,7 +279,7 @@ function YesNoOutcomes({
   tradeSelection: TradeSelection | null;
   tradeSide: TradeSide;
   sellHoldings?: SellHoldingsState;
-  /** A seed restore runs or failed, so a zero holding is not known yet. */
+  /** A seed restore runs, failed or had limited coverage, so a zero holding is not known. */
   positionsRestoring: boolean;
   onTradeSelect?: (selection: TradeSelection) => void;
   disabled?: boolean;
@@ -387,7 +390,7 @@ function CategoricalOutcomes({
   tradeSelection: TradeSelection | null;
   tradeSide: TradeSide;
   sellHoldings?: SellHoldingsState;
-  /** A seed restore runs or failed, so a zero holding is not known yet. */
+  /** A seed restore runs, failed or had limited coverage, so a zero holding is not known. */
   positionsRestoring: boolean;
   onTradeSelect?: (selection: TradeSelection) => void;
   disabled?: boolean;
@@ -1034,11 +1037,13 @@ export function TradingPanel({
   );
   const [isTradeAmountFocused, setIsTradeAmountFocused] = useState(false);
   // One status read keeps the status row and the Sell availability consistent.
+  const recoveryStatus = useWalletRecoveryStatus();
   const recoveryDisplay = walletRecoveryDisplay({
-    status: useWalletRecoveryStatus(),
+    status: recoveryStatus,
     profileExpected: useWalletProfileExpected(),
   });
-  const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
+  // After limited coverage, zero held shares are not final either (ADR-039).
+  const positionsRestoring = walletRecoveryZeroUnknown(recoveryStatus, recoveryDisplay);
   const selectedSellAvailability =
     isSell && tradeSelection !== null
       ? sellOutcomeAvailability(market, sellHoldings, tradeSelection, positionsRestoring)
@@ -1143,7 +1148,8 @@ export function TradingPanel({
     if (!tradeAmount || tradeAmount <= 0) return t("trade.enterAmount");
     if (isSell && selectedSellAvailability?.status === "restoring") {
       // An unavailable recovery does not run, so its holdings are unavailable.
-      // The status row states a running recovery. The disabled button keeps its label.
+      // A running recovery, or one with limited coverage, keeps the disabled
+      // button with its action label.
       return recoveryDisplay.state === "unavailable"
         ? t("trade.sellHoldingsUnavailable")
         : t("trade.confirmSell", { side: sideLabel, amount: amountLabel });

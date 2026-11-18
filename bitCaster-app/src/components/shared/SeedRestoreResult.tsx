@@ -11,6 +11,7 @@ import {
   dismissBrowserSeedRestoreResult,
   retryBrowserSeedPositionRestore,
 } from "@/lib/browserSeedPositionRestore";
+import { CliCommandText } from "./CliCommandText";
 
 /** The result of the seed restore of the active wallet (ADR-039, "Restore order"). */
 export interface SeedRestoreResultDisplay {
@@ -61,17 +62,19 @@ export function SeedRestoreResult({ result }: { result: SeedRestoreResultDisplay
       <div className="min-w-0 flex-1 space-y-1 select-text">
         {result.partial && (
           <p>
-            {t("wallet.restoreResult.partial", {
-              command: RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND,
-            })}
+            <CliCommandText
+              i18nKey="wallet.restoreResult.partial"
+              command={RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND}
+            />
           </p>
         )}
         {result.gapLineShown && (
           <p className="flex items-start gap-2">
             <span className="min-w-0 flex-1">
-              {t("wallet.restoreResult.gapLimit", {
-                command: recoveryIndexCliGapCommand(RECOVERY_INDEX_CLI_RESULT_GAP_LIMIT),
-              })}
+              <CliCommandText
+                i18nKey="wallet.restoreResult.gapLimit"
+                command={recoveryIndexCliGapCommand(RECOVERY_INDEX_CLI_RESULT_GAP_LIMIT)}
+              />
             </span>
             <button
               type="button"

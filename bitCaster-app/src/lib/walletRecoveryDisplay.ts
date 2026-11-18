@@ -141,6 +141,29 @@ export function walletRecoveryHoldingsUnknown(display: WalletRecoveryDisplay): b
 }
 
 /**
+ * True when a zero total, a zero balance or a zero count is not final. This
+ * is true while the holdings are not known, and also after a recovery that
+ * completed with limited coverage (ADR-039). A value above zero is known, so
+ * the caller keeps it.
+ */
+export function walletRecoveryZeroUnknown(
+  status: WalletRecoveryStatus,
+  display: WalletRecoveryDisplay,
+): boolean {
+  if (display.state !== "complete" || status.kind !== "completed") {
+    return walletRecoveryHoldingsUnknown(display);
+  }
+  // A complete display has a current read of each holdings list. So the SDK
+  // rule for an empty read of the current pass leaves only the coverage.
+  return !walletRecoveryEmptyIsTerminal(status, {
+    kind: "ok",
+    tag: status.tag,
+    afterPassSeq: status.passSeq,
+    value: [],
+  });
+}
+
+/**
  * True only when an empty list of shown rows is final. The rows are a part
  * of the read (one tab) or the read value itself. A projection is shown with
  * a read that is not `ok`, so it is never final.

@@ -5,7 +5,7 @@ import { Zap } from "lucide-react";
 import { ProfileCard } from "./ProfileCard";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 import { PLChart } from "./PLChart";
-import { StatsRow } from "./StatsRow";
+import { StatsRow, shownTotalValueKnown } from "./StatsRow";
 import { PositionsList } from "./PositionsList";
 import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
@@ -15,7 +15,11 @@ import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWa
 import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
 import { SeedRestoreResult } from "@/components/shared/SeedRestoreResult";
 import { useSeedRestoreResult } from "@/hooks/useSeedRestoreResult";
-import { walletRecoveryDisplay, walletRecoveryHoldingsUnknown } from "@/lib/walletRecoveryDisplay";
+import {
+  walletRecoveryDisplay,
+  walletRecoveryHoldingsUnknown,
+  walletRecoveryZeroUnknown,
+} from "@/lib/walletRecoveryDisplay";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -141,6 +145,8 @@ export function Portfolio(props: PortfolioProps) {
   const restoreResult = useSeedRestoreResult();
   // While the wallet recovery checks, waits or failed, the totals are not known.
   const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
+  // After limited coverage, a zero total or count is not final either (ADR-039).
+  const zeroUnknown = walletRecoveryZeroUnknown(recoveryStatus, recoveryDisplay);
   const positionsRequestKey = props.positionsRequest?.key;
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");
@@ -210,7 +216,7 @@ export function Portfolio(props: PortfolioProps) {
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
-            totalValueKnown={positionsRestoring ? false : props.stats.totalValueKnown}
+            totalValueKnown={shownTotalValueKnown(props.stats, positionsRestoring, zeroUnknown)}
             totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
@@ -218,7 +224,11 @@ export function Portfolio(props: PortfolioProps) {
       </div>
 
       {/* Stats Row */}
-      <StatsRow stats={props.stats} positionsRestoring={positionsRestoring} />
+      <StatsRow
+        stats={props.stats}
+        positionsRestoring={positionsRestoring}
+        zeroUnknown={zeroUnknown}
+      />
 
       {/* Deposit / Withdraw Buttons */}
       <div className="grid grid-cols-2 gap-3">

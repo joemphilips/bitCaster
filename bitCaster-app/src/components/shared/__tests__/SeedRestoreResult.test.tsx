@@ -1,4 +1,4 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, type Matcher } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import i18n from "@/i18n";
@@ -22,9 +22,17 @@ import { SeedRestoreResult } from "../SeedRestoreResult";
 // line (ADR-051). A partial result also keeps one pointer to the CLI broad
 // recovery, and Retry when it can change (ADR-039 "Restore order").
 
-const GAP_LINE = "Missing funds? Use bitcaster wallet recover-seed --gap-limit 3000.";
-const POINTER =
-  "Some positions may be missing. Use bitcaster wallet recover-seed --all-conditions.";
+const GAP_COMMAND = "bitcaster wallet recover-seed --gap-limit 3000";
+const ALL_CONDITIONS_COMMAND = "bitcaster wallet recover-seed --all-conditions";
+const GAP_LINE = line(`Missing funds? Use ${GAP_COMMAND}.`);
+const POINTER = line(`Some positions may be missing. Use ${ALL_CONDITIONS_COMMAND}.`);
+
+/** The element whose whole text is the line. Its command is a child element. */
+function line(text: string): Matcher {
+  return (_, element) =>
+    element?.textContent === text &&
+    Array.from(element.children).every((child) => child.textContent !== text);
+}
 
 describe("SeedRestoreResult", () => {
   beforeEach(async () => {
@@ -102,6 +110,23 @@ describe("SeedRestoreResult", () => {
     expect(screen.queryByRole("button", { name: "Dismiss" })).not.toBeInTheDocument();
   });
 
+  it("shows each command as code that breaks only between its tokens", () => {
+    render(
+      <SeedRestoreResult
+        result={{ scopeId: "scope", partial: true, retryable: false, gapLineShown: true }}
+      />,
+    );
+
+    const codes = Array.from(document.querySelectorAll("code"));
+    expect(codes.map((code) => code.textContent)).toEqual([ALL_CONDITIONS_COMMAND, GAP_COMMAND]);
+    for (const code of codes) {
+      expect(code).toHaveClass("font-mono");
+      expect(Array.from(code.children).map((token) => token.className)).toEqual(
+        code.textContent!.split(" ").map(() => "whitespace-nowrap"),
+      );
+    }
+  });
+
   it("has the same lines in Japanese", async () => {
     await i18n.changeLanguage("ja");
     render(
@@ -111,13 +136,13 @@ describe("SeedRestoreResult", () => {
     );
 
     expect(
-      screen.getByText(
-        "資金が見つからない場合は bitcaster wallet recover-seed --gap-limit 3000 を使ってください。",
-      ),
+      screen.getByText(line(`資金が見つからない場合は ${GAP_COMMAND} を使ってください。`)),
     ).toBeInTheDocument();
     expect(
       screen.getByText(
-        "一部のポジションが見つからない可能性があります。bitcaster wallet recover-seed --all-conditions を使ってください。",
+        line(
+          `一部のポジションが見つからない可能性があります。${ALL_CONDITIONS_COMMAND} を使ってください。`,
+        ),
       ),
     ).toBeInTheDocument();
   });

@@ -599,13 +599,14 @@ describe("useWalletRecoveryStatus", () => {
 
     const result = await screen.findByTestId("seed-restore-result");
     expect(result).toHaveAttribute("data-partial", "true");
-    expect(
-      within(result).getByText(
-        "Some positions may be missing. Use bitcaster wallet recover-seed --all-conditions.",
-      ),
-    ).toBeInTheDocument();
+    // The command is inline code inside the line.
+    expect(result.querySelector("p")).toHaveTextContent(
+      /^Some positions may be missing\. Use bitcaster wallet recover-seed --all-conditions\.$/,
+    );
     expect(within(result).getByRole("button", { name: "Retry" })).toBeInTheDocument();
     expect(screen.getByTestId("wallet-recovery-status")).toHaveAttribute("data-state", "complete");
+    // Limited coverage never makes a zero count final (ADR-039).
+    expect(screen.getByText("Predictions").parentElement).toHaveTextContent(/^—Predictions$/);
   });
 
   it("keeps a keyset scan pending, and a refused keyset limits the coverage", async () => {

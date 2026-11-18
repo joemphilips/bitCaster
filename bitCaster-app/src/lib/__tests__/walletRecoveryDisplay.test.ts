@@ -8,6 +8,7 @@ import {
   walletRecoveryDisplay,
   walletRecoveryHoldingsUnknown,
   walletRecoveryRowsEmptyIsTerminal,
+  walletRecoveryZeroUnknown,
 } from "../walletRecoveryDisplay";
 
 const TAG = { activation: { scopeId: "scope", epoch: 2 }, mintSetTag: '["https://mint"]' };
@@ -137,6 +138,36 @@ describe("walletRecoveryHoldingsUnknown", () => {
     [{ state: "unavailable", reason: "profile-unavailable", action: "none", scopeId: null }, false],
   ] as const)("is %j -> %s", (display, unknown) => {
     expect(walletRecoveryHoldingsUnknown(display)).toBe(unknown);
+  });
+});
+
+describe("walletRecoveryZeroUnknown", () => {
+  const LIMITED: WalletRecoveryStatus = { ...COMPLETED, coverage: "limited" };
+
+  it.each([
+    ["a full completion", COMPLETED, false],
+    ["a limited completion", LIMITED, true],
+    ["a check", CHECKING, true],
+    ["a wait", pending("scan-continues", null), true],
+    ["a failed recovery", unavailable("recovery-failed"), true],
+  ] as const)("is %s -> %s", (_name, status, unknown) => {
+    const display = walletRecoveryDisplay({ status, profileExpected: true });
+    expect(walletRecoveryZeroUnknown(status, display)).toBe(unknown);
+  });
+
+  it("keeps a zero final for a visitor without a wallet", () => {
+    const status = unavailable("profile-unavailable");
+    const display = walletRecoveryDisplay({ status, profileExpected: false });
+    expect(walletRecoveryZeroUnknown(status, display)).toBe(false);
+  });
+
+  it("is unknown after a full completion until each read is current", () => {
+    const display = walletRecoveryDisplay({
+      status: COMPLETED,
+      profileExpected: true,
+      reads: [UNHYDRATED],
+    });
+    expect(walletRecoveryZeroUnknown(COMPLETED, display)).toBe(true);
   });
 });
 

@@ -1,4 +1,4 @@
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -11,6 +11,7 @@ import { PositionsList } from "@/components/portfolio/PositionsList";
 import { StatsRow } from "@/components/portfolio/StatsRow";
 import { Portfolio } from "@/components/portfolio/Portfolio";
 import { TradingPanel } from "@/components/market-detail/TradingPanel";
+import { useWalletHeaderBalance } from "@/hooks/useWalletHeaderBalance";
 import type { SellHoldingsState, YesNoMarketDetail } from "@/types/market-detail";
 import type {
   Fund,
@@ -173,7 +174,7 @@ function portfolioProps(overrides: Partial<PortfolioProps> = {}): PortfolioProps
   };
 }
 
-function renderSell() {
+function renderSell(sellHoldings: SellHoldingsState = emptyHoldings) {
   return render(
     <TradingPanel
       market={market}
@@ -181,7 +182,7 @@ function renderSell() {
       tradeSelection={{ side: "yes" }}
       tradeAmount={2}
       tradePreview={null}
-      sellHoldings={emptyHoldings}
+      sellHoldings={sellHoldings}
     />,
   );
 }
@@ -430,6 +431,99 @@ describe("empty states during the wallet recovery", () => {
     expect(screen.getByText("No funds")).toBeInTheDocument();
   });
 
+  describe("totals after a completed recovery", () => {
+    // Limited coverage completes the checks, but it never makes zero holdings
+    // final (ADR-039). A restored value above zero is known, so it stays.
+    const LIMITED: WalletRecoveryStatus = { ...COMPLETED, coverage: "limited" };
+    const card = (label: string) => screen.getByText(label, { exact: true }).parentElement!;
+    const zero = "0 sats";
+
+    it("shows zero totals and a zero count after a restore with full coverage", () => {
+      render(<Portfolio {...portfolioProps()} />);
+
+      expect(within(card("Total Value")).getByRole("group", { name: zero })).toBeInTheDocument();
+      expect(
+        within(card("Positions Value")).getByRole("group", { name: zero }),
+      ).toBeInTheDocument();
+      expect(card("Predictions")).toHaveTextContent(/^0Predictions$/);
+      expect(screen.queryByText("—")).not.toBeInTheDocument();
+    });
+
+    it("shows zero totals and a zero count as unknown after a restore with limited coverage", () => {
+      restore.status = LIMITED;
+
+      render(<Portfolio {...portfolioProps()} />);
+
+      expect(card("Total Value")).toHaveTextContent(/^—Total Value$/);
+      expect(card("Positions Value")).toHaveTextContent(/^—Positions Value$/);
+      expect(card("Predictions")).toHaveTextContent(/^—Predictions$/);
+      // The chart header does not show a zero total either.
+      expect(screen.queryAllByRole("group", { name: zero })).toHaveLength(0);
+      expect(screen.queryByText("No active positions")).not.toBeInTheDocument();
+    });
+
+    it("keeps restored values above zero after a restore with limited coverage", () => {
+      restore.status = LIMITED;
+
+      render(
+        <Portfolio
+          {...portfolioProps({
+            stats: {
+              totalValueSats: 14_345,
+              totalValueKnown: true,
+              positionsValueSats: 2_000,
+              positionsValueKnown: true,
+              predictionsCount: 1,
+            },
+            positions: [activePosition],
+            funds: [fund],
+            holdings: { funds: okRead([fund]), positions: okRead([activePosition]) },
+          })}
+        />,
+      );
+
+      expect(
+        within(card("Total Value")).getByRole("group", { name: "14.345 sats" }),
+      ).toBeInTheDocument();
+      expect(
+        within(card("Positions Value")).getByRole("group", { name: "2 sats" }),
+      ).toBeInTheDocument();
+      expect(card("Predictions")).toHaveTextContent(/^1Predictions$/);
+    });
+
+    it("shows a restored balance, and an empty position side as unknown, after limited coverage", () => {
+      restore.status = LIMITED;
+
+      render(
+        <Portfolio
+          {...portfolioProps({
+            stats: { ...stats, totalValueSats: 12_345 },
+            funds: [fund],
+            holdings: { funds: okRead([fund]), positions: okRead([]) },
+          })}
+        />,
+      );
+
+      expect(
+        within(card("Total Value")).getByRole("group", { name: "12.345 sats" }),
+      ).toBeInTheDocument();
+      expect(card("Positions Value")).toHaveTextContent(/^—Positions Value$/);
+      expect(card("Predictions")).toHaveTextContent(/^—Predictions$/);
+    });
+
+    it.each([
+      ["full coverage and a zero balance", COMPLETED, 0, 0],
+      ["limited coverage and a zero balance", LIMITED, 0, null],
+      ["limited coverage and a balance above zero", LIMITED, 5_000, 5_000],
+    ] as const)("gives the header balance after %s", (_name, status, balance, shown) => {
+      restore.status = status;
+
+      const { result } = renderHook(() => useWalletHeaderBalance(balance));
+
+      expect(result.current).toBe(shown);
+    });
+  });
+
   it("does not report zero held shares in the Sell panel while the recovery runs", () => {
     restore.status = PENDING;
 
@@ -474,6 +568,65 @@ describe("empty states during the wallet recovery", () => {
 
     expect(screen.getByTestId("sell-holding-status")).toHaveTextContent("No selectable shares");
     expect(statusRow()).toHaveAttribute("data-state", "complete");
+  });
+
+  describe("the Sell panel after a completed recovery", () => {
+    // Limited coverage never makes zero held shares final (ADR-039). Held
+    // shares above zero are known, so they stay selectable.
+    const LIMITED: WalletRecoveryStatus = { ...COMPLETED, coverage: "limited" };
+    const heldYes: SellHoldingsState = {
+      status: "ready",
+      byOutcomeSetId: new Map([["Yes", { selectableSubunits: 5_000, reservedSubunits: 0 }]]),
+    };
+
+    it("reports zero held shares as final after full coverage", () => {
+      renderSell();
+
+      expect(screen.getByTestId("sell-holding-status")).toHaveTextContent("No selectable shares");
+    });
+
+    it("shows zero held shares as unknown after limited coverage", () => {
+      restore.status = LIMITED;
+
+      renderSell();
+
+      // The same state as while the recovery runs: no zero text, and the
+      // disabled button keeps its action label.
+      expect(screen.queryByText("No selectable shares")).not.toBeInTheDocument();
+      expect(screen.queryByText(/Held: 0 shares/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId("sell-holding-status")).not.toBeInTheDocument();
+      expect(screen.getByTestId("trade-outcome-yes")).toBeDisabled();
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+      expect(screen.getByTestId("trade-confirm")).toHaveTextContent("Sell YES for 2 shares");
+      expect(statusRow()).toHaveAttribute("data-state", "complete");
+    });
+
+    it("keeps held shares above zero selectable after limited coverage", () => {
+      restore.status = LIMITED;
+
+      renderSell(heldYes);
+
+      expect(screen.getByTestId("trade-outcome-yes")).toBeEnabled();
+      expect(screen.getByTestId("trade-outcome-yes")).toHaveTextContent(
+        "You have 5 shares that can be sold.",
+      );
+      expect(screen.queryByTestId("sell-holding-status")).not.toBeInTheDocument();
+    });
+
+    it("keeps the reserved shares message after limited coverage", () => {
+      restore.status = LIMITED;
+
+      // Reserved shares are a known fact, for example while a Sell settles.
+      renderSell({
+        status: "ready",
+        byOutcomeSetId: new Map([["Yes", { selectableSubunits: 0, reservedSubunits: 5_000 }]]),
+      });
+
+      expect(screen.getByTestId("sell-holding-status")).toHaveTextContent(
+        "Available shares are reserved",
+      );
+      expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+    });
   });
 
   it("shows nothing in the Sell panel for a visitor without a wallet", () => {

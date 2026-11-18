@@ -618,14 +618,14 @@ describe("useWalletStore", () => {
       // The warning comes before the commit point, so the user can still cancel.
       const warned = await useWalletStore.getState().recoverFromMnemonic(newMnemonic.split(" "));
 
+      // The dialog shows the warning and its CLI command as code.
       expect(warned).toEqual({
         valid: false,
-        error: i18n.t("wallet.replaceBackupPartial"),
-        confirmPartialBackup: true,
+        warning: {
+          code: "backup-partial",
+          command: "bitcaster wallet recover-seed --all-conditions",
+        },
       });
-      expect(i18n.t("wallet.replaceBackupPartial")).toContain(
-        "bitcaster wallet recover-seed --all-conditions",
-      );
       expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
       expect(activeBrowserWalletScopeId()).toBe(oldScopeId);
 
@@ -658,12 +658,11 @@ describe("useWalletStore", () => {
       // The warning names a CLI gap above the longest run.
       expect(warned).toEqual({
         valid: false,
-        error: i18n.t("wallet.replaceCounterGap", {
+        warning: {
+          code: "counter-gap",
           command: "bitcaster wallet recover-seed --gap-limit 400",
-        }),
-        confirmCounterGap: true,
+        },
       });
-      expect(warned.error).toContain("bitcaster wallet recover-seed --gap-limit 400");
       expect(useWalletStore.getState().mnemonic === oldMnemonic).toBe(true);
 
       await useWalletStore.getState().recoverFromMnemonic(newWords, { acceptCounterGap: true });

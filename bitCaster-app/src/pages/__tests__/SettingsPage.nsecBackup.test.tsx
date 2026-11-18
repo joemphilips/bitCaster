@@ -4,7 +4,6 @@ import { nip19 } from "nostr-tools";
 import { generateSecretKey } from "nostr-tools/pure";
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import "fake-indexeddb/auto";
-import i18n from "@/i18n";
 import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import * as bip39 from "@/lib/bip39";
 import {
@@ -81,6 +80,7 @@ function makeNsec(): string {
 
 const LOGOUT_DIALOG = "Your Nostr key is not backed up";
 const ORDERS_IN_PROGRESS = /orders are in progress/i;
+const ALL_CONDITIONS_COMMAND = "bitcaster wallet recover-seed --all-conditions";
 
 function setUnbackedLocalKey(): string {
   const secret = makeNsec();
@@ -717,8 +717,7 @@ describe("SettingsPage wallet replacement", () => {
       .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
       .mockResolvedValueOnce({
         valid: false,
-        error: i18n.t("wallet.replaceBackupPartial"),
-        confirmPartialBackup: true,
+        warning: { code: "backup-partial", command: ALL_CONDITIONS_COMMAND },
       })
       .mockResolvedValueOnce({ valid: true });
     useWalletStore.setState({ recoverFromMnemonic: recover });
@@ -733,11 +732,9 @@ describe("SettingsPage wallet replacement", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
 
     // The warning comes before the commit point. Close still cancels.
-    expect(
-      await within(dialog).findByText(
-        "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
-      ),
-    ).toBeInTheDocument();
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
+    );
     expect(recover).toHaveBeenLastCalledWith(replacement, {
       acceptPartialBackup: false,
       acceptCounterGap: false,
@@ -759,17 +756,16 @@ describe("SettingsPage wallet replacement", () => {
     const mnemonic = bip39.generate().join(" ");
     useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
     setActiveBrowserWalletProfile(mnemonic);
-    const gap = i18n.t("wallet.replaceCounterGap", {
-      command: "bitcaster wallet recover-seed --gap-limit 400",
-    });
     const recover = vi
       .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
       .mockResolvedValueOnce({
         valid: false,
-        error: i18n.t("wallet.replaceBackupPartial"),
-        confirmPartialBackup: true,
+        warning: { code: "backup-partial", command: ALL_CONDITIONS_COMMAND },
       })
-      .mockResolvedValueOnce({ valid: false, error: gap, confirmCounterGap: true })
+      .mockResolvedValueOnce({
+        valid: false,
+        warning: { code: "counter-gap", command: "bitcaster wallet recover-seed --gap-limit 400" },
+      })
       .mockResolvedValueOnce({ valid: true });
     useWalletStore.setState({ recoverFromMnemonic: recover });
     const replacement = bip39.generate();
@@ -783,11 +779,13 @@ describe("SettingsPage wallet replacement", () => {
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
     fireEvent.click(await within(dialog).findByRole("button", { name: "Replace Anyway" }));
 
-    expect(
-      await within(dialog).findByText(
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
         "A restore in another browser can miss some funds of this wallet. To find them, use bitcaster wallet recover-seed --gap-limit 400.",
       ),
-    ).toBeInTheDocument();
+    );
+    // One warning at a time: the accepted partial backup warning is gone.
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
     fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
 
     await waitFor(() =>
