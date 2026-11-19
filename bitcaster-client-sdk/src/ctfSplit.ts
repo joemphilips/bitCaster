@@ -1,8 +1,8 @@
 import { prepareDeterministicOutgoingCashuSend } from './deterministicOutgoingCashuPreparation.ts'
 import { collectCtfListing, CTF_LISTING_PAGE_SIZE } from './ctfListing.ts'
+import { classifyExactInputStates } from './exactInputStates.ts'
 import {
   Amount,
-  CheckStateEnum,
   Mint as CashuMint,
   OutputData as RegularOutputData,
   Wallet as CashuWallet,
@@ -1247,14 +1247,15 @@ async function resumeCtfMergeToRegular(
   const states = await proofStateWallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
+  const classification = classifyExactInputStates(entry.inputs, states).kind
   let completed: Proof[]
-  if (allStates(states, CheckStateEnum.SPENT)) {
+  if (classification === 'spent') {
     const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
       mintUrl,
       entry.outputs,
     )
     completed = (restored['*'] ?? restored.regular ?? []).map(normalizeProof)
-  } else if (allStates(states, CheckStateEnum.UNSPENT)) {
+  } else if (classification === 'unspent') {
     const metadata = entry.metadata as {
       conditionId?: string
       inputsByCollection?: Record<string, Proof[]>
@@ -1575,7 +1576,8 @@ async function resumeCtfSplit(
   const states = await proofStateWallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  if (allStates(states, CheckStateEnum.SPENT)) {
+  const classification = classifyExactInputStates(entry.inputs, states).kind
+  if (classification === 'spent') {
     const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
       mintUrl,
       entry.outputs,
@@ -1586,7 +1588,7 @@ async function resumeCtfSplit(
     )
     return restored
   }
-  if (allStates(states, CheckStateEnum.UNSPENT)) {
+  if (classification === 'unspent') {
     const metadata = entry.metadata as {
       conditionId?: string
       amountSubunits?: number
@@ -1656,8 +1658,9 @@ async function resumeRegularSplit(
   const states = await wallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
+  const classification = classifyExactInputStates(entry.inputs, states).kind
   let completed: { send: Proof[]; keep: Proof[] }
-  if (allStates(states, CheckStateEnum.SPENT)) {
+  if (classification === 'spent') {
     const restored = await (restoreOutputGroupsOverride ?? restoreOutputGroups)(
       mintUrl,
       entry.outputs,
@@ -1666,7 +1669,7 @@ async function resumeRegularSplit(
       send: (restored.send ?? []).map(normalizeProof),
       keep: [...(restored.keep ?? []), ...readUnselectedProofs(entry)].map(normalizeProof),
     }
-  } else if (allStates(states, CheckStateEnum.UNSPENT)) {
+  } else if (classification === 'unspent') {
     if (!wallet.completeSwap) {
       throw new Error('Cashu wallet adapter does not support prepared split completion')
     }
@@ -2622,10 +2625,6 @@ function outcomeSetsEqual(left: Set<string>, right: Set<string>): boolean {
 
 export function blindedMessageKey(output: SerializedBlindedMessage): string {
   return `${output.id}:${output.B_}`
-}
-
-export function allStates(states: ProofState[], expected: string): boolean {
-  return states.length > 0 && states.every((state) => state.state === expected)
 }
 
 function bytesToHex(bytes: Uint8Array): string {

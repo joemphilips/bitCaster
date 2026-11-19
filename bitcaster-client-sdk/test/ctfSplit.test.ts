@@ -37,6 +37,7 @@ import {
   Amount,
   CheckStateEnum,
   OutputData,
+  hashToCurve,
   type ProofState,
   type SwapPreview,
 } from '@cashu/cashu-ts'
@@ -1013,7 +1014,7 @@ test('split dispatch guard runs after preparation on fresh execution and exact U
       resumeExactPersistedCtfSplit({
         ...request,
         proofStateChecker: {
-          checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.UNSPENT }],
+          checkProofsStates: async () => [exactState('input-secret', CheckStateEnum.UNSPENT)],
         },
         beforeMintMutation: rejectDispatch,
       }),
@@ -1278,9 +1279,7 @@ test('exact prepared split resume uses persisted keysets without root rediscover
         transport,
         proofOperationStore: store,
         proofStateChecker: {
-          checkProofsStates: async () => [
-            { Y: 'Y-input', state: CheckStateEnum.PENDING, witness: null },
-          ],
+          checkProofsStates: async () => [exactState('input-secret', CheckStateEnum.PENDING)],
         },
       }),
     ProofOperationPendingError,
@@ -1315,7 +1314,7 @@ test('prepared split replay fetches each keyset once through UNSPENT execution',
         transport,
         proofOperationStore: store,
         proofStateChecker: {
-          checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.UNSPENT }],
+          checkProofsStates: async () => [exactState('input-secret', CheckStateEnum.UNSPENT)],
         },
       }),
     /hex string expected/,
@@ -1565,7 +1564,7 @@ test('merge dispatch guard runs after preparation on fresh execution and UNSPENT
       mergeCompleteSetToRegularWithOperation({
         ...request,
         proofStateChecker: {
-          checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.UNSPENT }],
+          checkProofsStates: async () => [exactState('alpha', CheckStateEnum.UNSPENT)],
         },
         beforeMintMutation: rejectDispatch,
       }),
@@ -1613,7 +1612,7 @@ test('merge dispatch guard skips terminal, spent restore, and pending replay pat
   await mergeCompleteSetToRegularWithOperation({
     ...request('merge-guard-spent', spentStore),
     proofStateChecker: {
-      checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.SPENT }],
+      checkProofsStates: async () => [exactState('alpha', CheckStateEnum.SPENT)],
     },
     restoreOutputGroups: async () => ({
       regular: [completedProof(REGULAR_KEYSET_ID, 9, 'restored')],
@@ -1631,7 +1630,7 @@ test('merge dispatch guard skips terminal, spent restore, and pending replay pat
       mergeCompleteSetToRegularWithOperation({
         ...request('merge-guard-pending', pendingStore),
         proofStateChecker: {
-          checkProofsStates: async () => [{ Y: 'Y-alpha', state: CheckStateEnum.PENDING }],
+          checkProofsStates: async () => [exactState('alpha', CheckStateEnum.PENDING)],
         },
       }),
     ProofOperationPendingError,
@@ -1639,6 +1638,122 @@ test('merge dispatch guard skips terminal, spent restore, and pending replay pat
 
   assert.equal(guardCalls, 0)
   assert.equal(transport.converted.length, 0)
+})
+
+test('merge recovery restores or replays only on a reading of each exact input Y', async () => {
+  const alpha = proof('keyset-alpha', 10, 'alpha')
+  const beta = proof('keyset-bravo', 10, 'beta')
+  await assertRecoveryActsOnlyOnExactInputYs('alpha', 'beta', async (states) => {
+    const store = new MemoryProofOperationStore()
+    const record = completedMergeRecord('merge-exact-y')
+    record.state = 'prepared'
+    delete record.resultProofs
+    delete record.resultProofsDigest
+    record.inputs = [alpha, beta]
+    record.metadata = { ...record.metadata, inputsByCollection: { Alpha: [alpha], Beta: [beta] } }
+    store.records.set('merge-exact-y', record)
+    const effects = { restores: 0, dispatches: 0 }
+    const outcome = await recoveryOutcome(
+      mergeCompleteSetToRegularWithOperation({
+        ...mergeReplayRequest('merge-exact-y', store, new FakeSplitTransport()),
+        conditionalProofsByCollection: { Alpha: [alpha], Beta: [beta] },
+        proofStateChecker: { checkProofsStates: async () => states },
+        restoreOutputGroups: async () => {
+          effects.restores += 1
+          return { regular: [completedProof(REGULAR_KEYSET_ID, 9, 'restored')] }
+        },
+        beforeMintMutation: async () => {
+          effects.dispatches += 1
+          throw new Error('dispatch reached')
+        },
+      }),
+    )
+    return { outcome, ...effects }
+  })
+})
+
+test('split recovery restores or replays only on a reading of each exact input Y', async () => {
+  const inputs = [proof('input-keyset', 60, 'input-a'), proof('input-keyset', 40, 'input-b')]
+  await assertRecoveryActsOnlyOnExactInputYs('input-a', 'input-b', async (states) => {
+    const store = new MemoryProofOperationStore()
+    const record = structuredClone(completedSplitRecord('split-exact-y'))
+    record.state = 'prepared'
+    delete record.resultProofs
+    delete record.resultProofsDigest
+    record.inputs = structuredClone(inputs)
+    store.records.set('split-exact-y', record)
+    const effects = { restores: 0, dispatches: 0 }
+    const outcome = await recoveryOutcome(
+      resumeExactPersistedCtfSplit({
+        mintUrl: 'https://mint.example',
+        operationId: 'split-exact-y',
+        conditionId: CONDITION_ID,
+        collateralProofs: structuredClone(inputs),
+        amountSubunits: 100,
+        baseAsset: 'sat',
+        transport: new FakeSplitTransport(),
+        proofOperationStore: store,
+        proofStateChecker: { checkProofsStates: async () => states },
+        restoreOutputGroups: async () => {
+          effects.restores += 1
+          return structuredClone(completedSplitRecord('split-exact-y').resultProofs!)
+        },
+        beforeMintMutation: async () => {
+          effects.dispatches += 1
+          throw new Error('dispatch reached')
+        },
+      }),
+    )
+    return { outcome, ...effects }
+  })
+})
+
+test('regular split recovery restores or resubmits only on a reading of each exact input Y', async () => {
+  const inputs = [
+    proof(REGULAR_KEYSET_ID, 150, 'regular-a'),
+    proof(REGULAR_KEYSET_ID, 60, 'regular-b'),
+  ]
+  await assertRecoveryActsOnlyOnExactInputYs('regular-a', 'regular-b', async (states) => {
+    const store = new MemoryProofOperationStore()
+    store.records.set('regular-exact-y', {
+      operationId: 'regular-exact-y',
+      kind: 'regular-split',
+      state: 'prepared',
+      mintUrl: 'https://mint.example',
+      inputs: structuredClone(inputs),
+      outputs: {},
+      metadata: { baseAsset: 'sat', unit: 'msat', amount: 100 },
+      createdAt: 1,
+      updatedAt: 2,
+    })
+    const wallet = new FakeRegularSplitWallet()
+    wallet.proofStates = states
+    const effects = { restores: 0, dispatches: 0 }
+    const outcome = await recoveryOutcome(
+      splitRegularProofsWithOperation({
+        mintUrl: 'https://mint.example',
+        baseAsset: 'sat',
+        operationId: 'regular-exact-y',
+        wallet,
+        proofs: [],
+        amountSubunits: 100,
+        proofOperationStore: store,
+        restoreOutputGroups: async () => {
+          effects.restores += 1
+          return {
+            send: [proof(REGULAR_KEYSET_ID, 100, 'send-100')],
+            keep: [proof(REGULAR_KEYSET_ID, 110, 'keep-110')],
+          }
+        },
+        beforeMintMutation: async () => {
+          effects.dispatches += 1
+          throw new Error('dispatch reached')
+        },
+      }),
+    )
+    assert.equal(wallet.completeCalls, 0)
+    return { outcome, ...effects }
+  })
 })
 
 test('mergeCompleteSetToRegularWithOperation rejects malformed policy before store or mint effects', async () => {
@@ -2510,7 +2625,71 @@ function deterministicMergeRequest(
 }
 
 function pendingInputState(): ProofState[] {
-  return [{ Y: 'Y-input', state: CheckStateEnum.PENDING, witness: null }]
+  return [exactState('input-secret', CheckStateEnum.PENDING)]
+}
+
+function exactState(secret: string, state: CheckStateEnum): ProofState {
+  return { Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true), state, witness: null }
+}
+
+async function recoveryOutcome(run: Promise<unknown>): Promise<string> {
+  try {
+    await run
+    return 'completed'
+  } catch (error) {
+    return error instanceof ProofOperationPendingError ? 'pending' : (error as Error).message
+  }
+}
+
+/**
+ * Probe one prepared two-input recovery path. Only a reading of each exact input
+ * Y may restore (all SPENT) or reach mint dispatch (all UNSPENT).
+ */
+async function assertRecoveryActsOnlyOnExactInputYs(
+  a: string,
+  b: string,
+  probe: (
+    states: ProofState[],
+  ) => Promise<{ outcome: string; restores: number; dispatches: number }>,
+): Promise<void> {
+  const retained = { outcome: 'pending', restores: 0, dispatches: 0 }
+  const scenarios: Array<[string, ProofState[], typeof retained]> = []
+  for (const state of [CheckStateEnum.SPENT, CheckStateEnum.UNSPENT]) {
+    scenarios.push(
+      [`missing ${state}`, [exactState(a, state)], retained],
+      [
+        `extra ${state}`,
+        [exactState(a, state), exactState(b, state), exactState('foreign', state)],
+        retained,
+      ],
+      [`duplicate ${state}`, [exactState(a, state), exactState(a, state)], retained],
+      [`foreign ${state}`, [exactState(a, state), exactState('foreign', state)], retained],
+    )
+  }
+  scenarios.push(
+    [
+      'reordered SPENT',
+      [exactState(b, CheckStateEnum.SPENT), exactState(a, CheckStateEnum.SPENT)],
+      { outcome: 'completed', restores: 1, dispatches: 0 },
+    ],
+    [
+      'reordered UNSPENT',
+      [exactState(b, CheckStateEnum.UNSPENT), exactState(a, CheckStateEnum.UNSPENT)],
+      { outcome: 'dispatch reached', restores: 0, dispatches: 1 },
+    ],
+    [
+      'mixed',
+      [exactState(a, CheckStateEnum.SPENT), exactState(b, CheckStateEnum.UNSPENT)],
+      retained,
+    ],
+  )
+  const actual: Record<string, unknown> = {}
+  const expected: Record<string, unknown> = {}
+  for (const [name, states, outcome] of scenarios) {
+    actual[name] = await probe(states)
+    expected[name] = outcome
+  }
+  assert.deepEqual(actual, expected)
 }
 
 class FakeSplitTransport implements CtfSplitTransport {
@@ -2656,7 +2835,7 @@ class FakeRegularSplitWallet {
     this.checkProofCalls.push(proofs)
     return this.proofStates.length > 0
       ? this.proofStates
-      : [{ Y: 'Y-input', state: CheckStateEnum.UNSPENT }]
+      : proofs.map(({ secret }) => exactState(secret, CheckStateEnum.UNSPENT))
   }
 }
 
@@ -2922,7 +3101,9 @@ for (const duplicate of [false, true])
         },
         prepareSwapToSend: wallet.prepareSwapToSend,
         completeSwap: wallet.completeSwap,
-        checkProofsStates: async () => [{ Y: 'Y-input', state: CheckStateEnum.PENDING }],
+        checkProofsStates: async () => [
+          exactState('regular-deterministic-input', CheckStateEnum.PENDING),
+        ],
       }
       await assert.rejects(
         splitRegularProofsWithOperation({

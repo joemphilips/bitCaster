@@ -3,7 +3,13 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { CheckStateEnum, type MintKeys, type Proof, type ProofState } from '@cashu/cashu-ts'
+import {
+  CheckStateEnum,
+  hashToCurve,
+  type MintKeys,
+  type Proof,
+  type ProofState,
+} from '@cashu/cashu-ts'
 import {
   completedProofAuthorityDigest,
   createCtfProofOperationCompletion,
@@ -267,7 +273,7 @@ test('recovers a CTF-prepared complete-set split with its exact deterministic ou
         getCustodyFence: () => fence,
         createCtfSplitTransport: () => recoveryTransport,
         createCtfResumeDependencies: () => ({
-          proofStateChecker: { checkProofsStates: async () => unspentStates() },
+          proofStateChecker: { checkProofsStates: async (proofs) => unspentStates(proofs) },
         }),
       },
     })
@@ -685,8 +691,13 @@ function storedOutput(secret: string, amount: number, keysetId: string): StoredO
   }
 }
 
-function unspentStates(): ProofState[] {
-  return [{ Y: 'Y-handoff', state: CheckStateEnum.UNSPENT, witness: null }]
+/** A NUT-07 reading that reports each checked proof as UNSPENT under its exact Y. */
+function unspentStates(proofs: ReadonlyArray<Pick<Proof, 'secret'>>): ProofState[] {
+  return proofs.map(({ secret }) => ({
+    Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+    state: CheckStateEnum.UNSPENT,
+    witness: null,
+  }))
 }
 
 class RecoveryWallet implements CashuWalletLike {
@@ -727,8 +738,8 @@ class RecoveryWallet implements CashuWalletLike {
     return this.split
   }
 
-  async checkProofsStates(): Promise<ProofState[]> {
-    return unspentStates()
+  async checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]> {
+    return unspentStates(proofs)
   }
 }
 

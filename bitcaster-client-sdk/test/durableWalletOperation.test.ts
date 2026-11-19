@@ -1002,6 +1002,7 @@ test('wallet receive validates exact NUT-07 Y authority and rejects V3 keysets',
   ]
   const cases = [
     { name: 'missing', states: exact.slice(0, 1), error: /incomplete/ },
+    { name: 'extra', states: [...exact, { ...exact[1]!, Y: 'foreign' }], error: /incomplete/ },
     { name: 'duplicate', states: [exact[0]!, exact[0]!], error: /foreign/ },
     { name: 'foreign', states: [exact[0]!, { ...exact[1]!, Y: 'foreign' }], error: /foreign/ },
   ]
@@ -1190,6 +1191,133 @@ test('wallet receive recovery submits the exact persisted preview when every inp
 
   assert.deepEqual(harness.calls, { loads: 1, persists: 1, checks: 1, swaps: 1, restores: 0 })
   assert.deepEqual(reserializePreview(operation, harness.completedPreview!), operation.preview)
+})
+
+test('wallet receive recovery classifies a reordered exact NUT-07 reading by Y', async () => {
+  const spentOperation = receiveOperation('reordered-spent', 2)
+  const restored = receiveHarness({
+    operation: spentOperation,
+    states: [
+      inputState(spentOperation, 1, CheckStateEnum.SPENT),
+      inputState(spentOperation, 0, CheckStateEnum.SPENT),
+    ],
+    restore: receiveResult(spentOperation),
+  })
+  assert.equal((await runReceive(spentOperation, restored, 'recover')).state, 'completed')
+  assert.deepEqual(restored.calls, { loads: 1, persists: 1, checks: 1, swaps: 0, restores: 1 })
+
+  const unspentOperation = receiveOperation('reordered-unspent', 2)
+  const submitted = receiveHarness({
+    operation: unspentOperation,
+    states: [
+      inputState(unspentOperation, 1, CheckStateEnum.UNSPENT),
+      inputState(unspentOperation, 0, CheckStateEnum.UNSPENT),
+    ],
+    swap: receiveResult(unspentOperation),
+  })
+  assert.equal((await runReceive(unspentOperation, submitted, 'recover')).state, 'completed')
+  assert.deepEqual(submitted.calls, { loads: 1, persists: 1, checks: 1, swaps: 1, restores: 0 })
+})
+
+test('wallet send recovery restores or resubmits only on a reading of each exact input Y', async () => {
+  const [a, b] = ['send-exact-a', 'send-exact-b']
+  const operation = serializeDurableWalletSendOperation({
+    operationId: 'wallet-send-exact-y',
+    mintUrl: 'https://mint.example',
+    unit: 'sat',
+    preview: {
+      amount: Amount.from('2'),
+      fees: Amount.from('0'),
+      keysetId: KEYSET_ID,
+      inputs: [a, b].map((secret) => ({
+        id: KEYSET_ID,
+        amount: Amount.from('1'),
+        secret,
+        C: `C-${secret}`,
+      })),
+      sendOutputs: [OutputData.createSingleData('2', KEYSET_ID, 'send-exact-output', 2n)],
+      keepOutputs: [],
+      unselectedProofs: [],
+    },
+  })
+  const sent: Proof = {
+    id: KEYSET_ID,
+    amount: Amount.from('2'),
+    secret: 'send-exact-output',
+    C: 'send-C',
+  }
+  const read = (...entries: Array<[string, string]>) =>
+    entries.map(
+      ([secret, state]) =>
+        ({
+          Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+          state,
+          witness: null,
+        }) as ProofState,
+    )
+  const run = async (states: ProofState[]) => {
+    const calls = { persists: 0, swaps: 0, restores: 0 }
+    const outcome = await runDurableWalletSendOperation({
+      mode: 'recover',
+      operationId: operation.operationId,
+      store: {
+        loadOperation: async () => ({ operation, state: 'prepared', result: null }),
+        persistCompletedResult: async () => {
+          calls.persists += 1
+          return 'completed'
+        },
+      },
+      wallet: {
+        checkProofsStates: async () => states,
+        completeSwap: async () => {
+          calls.swaps += 1
+          return { keep: [], send: [sent] }
+        },
+      },
+      restoreExactOutputs: async () => {
+        calls.restores += 1
+        return { keep: [], send: [sent] }
+      },
+    }).then(
+      ({ state }) => state,
+      (error: Error) => error.message,
+    )
+    return { outcome, ...calls }
+  }
+
+  for (const [name, states] of [
+    ['missing', read([a, 'SPENT'])],
+    ['extra', read([a, 'SPENT'], [b, 'SPENT'], ['foreign', 'SPENT'])],
+    ['duplicate', read([a, 'UNSPENT'], [a, 'UNSPENT'])],
+    ['foreign', read([a, 'UNSPENT'], ['foreign', 'UNSPENT'])],
+  ] as const) {
+    const { outcome, ...effects } = await run(states)
+    assert.match(outcome, /durable wallet send proof-state .*(foreign|incomplete)/, name)
+    assert.deepEqual(effects, { persists: 0, swaps: 0, restores: 0 }, name)
+  }
+  assert.deepEqual(await run(read([b, 'SPENT'], [a, 'SPENT'])), {
+    outcome: 'completed',
+    persists: 1,
+    swaps: 0,
+    restores: 1,
+  })
+  assert.deepEqual(await run(read([b, 'UNSPENT'], [a, 'UNSPENT'])), {
+    outcome: 'completed',
+    persists: 1,
+    swaps: 1,
+    restores: 0,
+  })
+  for (const [name, states] of [
+    ['mixed', read([a, 'SPENT'], [b, 'UNSPENT'])],
+    ['pending', read([a, 'PENDING'], [b, 'SPENT'])],
+    ['unknown', read([a, 'UNKNOWN'], [b, 'SPENT'])],
+  ] as const) {
+    assert.deepEqual(
+      await run(states),
+      { outcome: 'nonterminal', persists: 0, swaps: 0, restores: 0 },
+      name,
+    )
+  }
 })
 
 test('wallet receive prepared execution skips NUT-07 and submits only the persisted preview', async () => {

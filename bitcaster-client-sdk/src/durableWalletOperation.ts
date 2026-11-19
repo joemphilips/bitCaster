@@ -2,7 +2,6 @@
 // wallet-scope and fail-closed authority corrections from f1cb65b/b683120.
 import {
   Amount,
-  CheckStateEnum,
   hashToCurve,
   type OutputDataLike,
   type OutputData,
@@ -30,6 +29,7 @@ import {
   type DurableCustodyProofOperationInput,
 } from './durableCustodyProofOperation.ts'
 import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
+import { classifyExactInputStates } from './exactInputStates.ts'
 import {
   addDurableWalletProofTransitionMetadata,
   createDurableWalletProofTransition,
@@ -920,36 +920,23 @@ export async function runDurableWalletSendOperation(
   const terminal = terminalSendResult(snapshot)
   if (terminal !== null) return terminal
   if (input.mode === 'execute') return submitPersistedSend(input, snapshot.operation)
+  const inputs = snapshot.operation.preview.inputs
   const states = await input.wallet.checkProofsStates(
-    snapshot.operation.preview.inputs.map(({ id, secret }) => ({ id, secret })),
+    inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  switch (classifyExactSendInputStates(snapshot.operation, states)) {
+  const classification = classifyExactInputStates(inputs, states)
+  switch (classification.kind) {
     case 'spent':
       return restorePersistedSend(input, snapshot.operation)
     case 'unspent':
       return submitPersistedSend(input, snapshot.operation)
-    case 'nonterminal':
+    case 'mismatch':
+      throw new Error('durable wallet send proof-state response is foreign or incomplete')
+    case 'mixed':
+    case 'pending':
+    case 'unknown-state':
       return { state: 'nonterminal', keep: [], send: [] }
   }
-}
-
-function classifyExactSendInputStates(
-  operation: DurableWalletSendOperation,
-  states: readonly ProofState[],
-): 'spent' | 'unspent' | 'nonterminal' {
-  const send = requireSendOperation(decodeDurableWalletOperation(operation))
-  const expectedYs = send.preview.inputs.map(deriveDurableWalletProofY)
-  if (states.length !== expectedYs.length) {
-    throw new Error('durable wallet send proof-state response is incomplete')
-  }
-  const observed = new Map(states.map((state) => [state.Y, state.state]))
-  if (observed.size !== states.length || expectedYs.some((Y) => !observed.has(Y))) {
-    throw new Error('durable wallet send proof-state authority is foreign')
-  }
-  const exactStates = expectedYs.map((Y) => observed.get(Y))
-  if (exactStates.every((state) => state === CheckStateEnum.SPENT)) return 'spent'
-  if (exactStates.every((state) => state === CheckStateEnum.UNSPENT)) return 'unspent'
-  return 'nonterminal'
 }
 
 async function loadExactSendSnapshot(
@@ -1100,15 +1087,21 @@ export async function runDurableWalletReceiveOperation(
   const terminal = terminalReceiveResult(snapshot)
   if (terminal !== null) return terminal
   if (input.mode === 'execute') return submitPersistedReceive(input, snapshot.operation)
+  const inputs = snapshot.operation.preview.inputs
   const states = await input.wallet.checkProofsStates(
-    snapshot.operation.preview.inputs.map(({ id, secret }) => ({ id, secret })),
+    inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  switch (classifyExactReceiveInputStates(snapshot.operation, states)) {
+  const classification = classifyExactInputStates(inputs, states)
+  switch (classification.kind) {
     case 'spent':
       return recoverSpentReceive(input, snapshot.operation)
     case 'unspent':
       return submitPersistedReceive(input, snapshot.operation)
-    case 'nonterminal':
+    case 'mismatch':
+      throw new Error('durable wallet receive proof-state response is foreign or incomplete')
+    case 'mixed':
+    case 'pending':
+    case 'unknown-state':
       return { state: 'nonterminal', proofs: [] }
   }
 }
@@ -1140,25 +1133,6 @@ function isExactEmptyReceiveResult(
   return (
     Object.keys(result).length === 1 && Array.isArray(result.receive) && result.receive.length === 0
   )
-}
-
-function classifyExactReceiveInputStates(
-  operation: DurableWalletReceiveOperation,
-  states: readonly ProofState[],
-): 'spent' | 'unspent' | 'nonterminal' {
-  const receive = requireReceiveOperation(decodeDurableWalletOperation(operation))
-  const expectedYs = receive.preview.inputs.map(deriveDurableWalletProofY)
-  if (states.length !== expectedYs.length) {
-    throw new Error('durable wallet receive proof-state response is incomplete')
-  }
-  const observed = new Map(states.map((state) => [state.Y, state.state]))
-  if (observed.size !== states.length || expectedYs.some((Y) => !observed.has(Y))) {
-    throw new Error('durable wallet receive proof-state authority is foreign')
-  }
-  const exactStates = expectedYs.map((Y) => observed.get(Y))
-  if (exactStates.every((state) => state === CheckStateEnum.SPENT)) return 'spent'
-  if (exactStates.every((state) => state === CheckStateEnum.UNSPENT)) return 'unspent'
-  return 'nonterminal'
 }
 
 async function loadExactReceiveSnapshot(
