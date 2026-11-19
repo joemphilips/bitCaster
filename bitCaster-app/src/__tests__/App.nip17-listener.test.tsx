@@ -83,9 +83,6 @@ vi.mock("@/hooks/useAssetMonitoringReporter", () => ({ useAssetMonitoringReporte
 vi.mock("@/hooks/useBrowserCtfRangeOrderRecovery", () => ({
   useBrowserCtfRangeOrderRecovery: vi.fn(),
 }));
-vi.mock("@/lib/BrowserPreReleaseResetGate", () => ({
-  BrowserPreReleaseResetGate: ({ children }: { children: ReactNode }) => children,
-}));
 vi.mock("@/lib/identityOps", () => ({
   rehydratePersistedNostrIdentity: mocks.rehydrateIdentity,
 }));

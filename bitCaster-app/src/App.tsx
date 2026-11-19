@@ -41,7 +41,6 @@ import { startNip17Listener, stopNip17Listener } from "@/lib/nip17-listener";
 import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
-import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
@@ -424,10 +423,8 @@ function AppRoutes() {
 export default function App() {
   return (
     <BrowserRouter>
-      <BrowserPreReleaseResetGate>
-        <AppRoutes />
-        <ToastContainer />
-      </BrowserPreReleaseResetGate>
+      <AppRoutes />
+      <ToastContainer />
     </BrowserRouter>
   );
 }
