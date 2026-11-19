@@ -55,6 +55,10 @@ import {
 } from '@bitcaster-market/client-sdk/proofSelection'
 import { classifyCtfRangeSourceRecovery } from '@bitcaster-market/client-sdk/ctfRangeSourceRecovery'
 import {
+  CtfRangeRecoveryTransportError,
+  checkCtfRangeInputProofStates,
+} from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
+import {
   createDurableCustodyProofOperation,
   bindDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
@@ -1602,23 +1606,29 @@ function assertCtfCanonicalInputMaterials(
   })
 }
 
+/**
+ * One NUT-07 reading of the exact consolidation inputs, or null when the mint
+ * transport fails. The SDK reads the raw mint response by Y. A response with
+ * a missing, duplicate, or foreign Y throws, so the operation stays pending.
+ * cashu-ts `CashuMint.check` itself refuses a response with more states than
+ * Ys; the SDK reports that as a transport failure, so the exact request
+ * replays byte-identically.
+ */
 async function readCtfConsolidationInputStates(
   mintUrl: string,
-  secrets: WalletOpsSecrets,
   inputs: readonly Proof[],
   deps: WalletOpsDependencies,
-): Promise<readonly ProofState[]> {
-  const wallet = createWallet(mintUrl, secrets, deps, 'sat', 'msat')
-  if (!wallet.checkProofsStates) {
-    throw new Error('cashu wallet does not support CTF consolidation proof-state checks')
+): Promise<readonly ProofState[] | null> {
+  const mint = deps.createCashuMint?.(mintUrl) ?? new CashuMint(mintUrl)
+  try {
+    return await checkCtfRangeInputProofStates(
+      { check: (payload) => mint.check(payload) },
+      inputs.map(({ id, secret }) => ({ id, secret })),
+    )
+  } catch (error) {
+    if (error instanceof CtfRangeRecoveryTransportError) return null
+    throw error
   }
-  const states = await wallet.checkProofsStates(
-    inputs.map((proof) => ({ id: proof.id, secret: proof.secret })),
-  )
-  if (states.length !== inputs.length) {
-    throw new Error('CTF consolidation proof-state response is incomplete')
-  }
-  return states
 }
 
 class SavedMarketConsolidation extends Error {
@@ -1686,7 +1696,7 @@ export async function executeCtfConsolidationPlan(
     )
       throw new Error('market consolidation saved amounts are invalid')
     const binding = await loadPersistedCtfCustodyBinding(entry, deps)
-    const resultProofs = await resumeCtfConsolidationOperation(entry, input.secrets, deps)
+    const resultProofs = await resumeCtfConsolidationOperation(entry, deps)
     return {
       marketId: input.marketId,
       conditionId: input.conditionId,
@@ -2412,7 +2422,6 @@ async function listMintAndConditionalKeysets(mintUrl: string): Promise<
 }
 
 export async function recoverPreparedWalletSends(
-  secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies = {},
 ): Promise<WalletSendRecoveryResult> {
   const state = await ensureState()
@@ -2425,7 +2434,7 @@ export async function recoverPreparedWalletSends(
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
   for (const entry of recoverable) {
     try {
-      await resumeCtfConsolidationOperation(entry, secrets, deps)
+      await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
       result.pending.push({
@@ -2662,7 +2671,6 @@ function requireTextMetadata(entry: ProofOperationRecord, key: string): string {
 
 async function resumeCtfConsolidationOperation(
   entry: ProofOperationRecord,
-  secrets: WalletOpsSecrets,
   deps: WalletOpsDependencies,
 ): Promise<Record<string, Proof[]>> {
   assertCtfConsolidationOperation(entry)
@@ -2700,17 +2708,13 @@ async function resumeCtfConsolidationOperation(
   }
   const fence = deps.getCustodyFence?.()
   if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
-  const preflightStates = await readCtfConsolidationInputStates(
-    entry.mintUrl,
-    secrets,
-    binding.inputs,
-    deps,
-  ).catch(() => null)
+  const preflightStates = await readCtfConsolidationInputStates(entry.mintUrl, binding.inputs, deps)
   if (preflightStates !== null) {
     const decision = classifyCtfRangeSourceRecovery({
       journalKind: 'consolidation',
       journalState: 'prepared',
-      inputStates: preflightStates.map(({ state }) => state),
+      inputs: binding.inputs,
+      inputStates: preflightStates,
       now: Math.floor(Date.now() / 1_000),
     })
     if (decision.kind === 'restore-exact-persisted-outputs') {
@@ -2788,7 +2792,6 @@ async function resumeCtfConsolidationOperation(
     if (error instanceof MintOperationError) {
       const inputStates = await readCtfConsolidationInputStates(
         entry.mintUrl,
-        secrets,
         binding.inputs,
         deps,
       ).catch(() => null)
@@ -2796,7 +2799,8 @@ async function resumeCtfConsolidationOperation(
         const postRejectionDecision = classifyCtfRangeSourceRecovery({
           journalKind: 'consolidation',
           journalState: 'prepared',
-          inputStates: inputStates.map(({ state }) => state),
+          inputs: binding.inputs,
+          inputStates,
           now: Math.floor(Date.now() / 1_000),
         })
         if (postRejectionDecision.kind === 'restore-exact-persisted-outputs') {

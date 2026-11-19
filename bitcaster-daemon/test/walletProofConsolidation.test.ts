@@ -577,15 +577,12 @@ test('generic send recovery ignores both exact proof-consolidation purposes', as
     }
     await writeState(state)
     let walletCreated = false
-    const result = await recoverPreparedWalletSends(
-      { walletSeedHex: SEED },
-      {
-        createCashuWallet: () => {
-          walletCreated = true
-          throw new Error('generic recovery touched an exact consolidation')
-        },
+    const result = await recoverPreparedWalletSends({
+      createCashuWallet: () => {
+        walletCreated = true
+        throw new Error('generic recovery touched an exact consolidation')
       },
-    )
+    })
     assert.deepEqual(result, { recovered: [], pending: [] })
     assert.equal(walletCreated, false)
   })

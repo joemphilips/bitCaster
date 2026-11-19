@@ -47,7 +47,6 @@ import {
 } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
 import { createUncachedWalletForSeedUnit } from "../stores/wallet";
 import {
-  deriveDurableWalletProofY,
   requireDurableWalletOperationFromCustody,
   runDurableWalletReceiveOperation,
   serializeDurableWalletProof,
@@ -56,6 +55,7 @@ import {
   type DurableWalletReceiveOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
 import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import { classifyExactInputStates } from "@bitcaster/client-sdk/exactInputStates";
 import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
@@ -478,7 +478,9 @@ async function prepareBrowserConditionalWalletReceiveOperation(
     proofs.map(({ id, secret }) => ({ id, secret })),
   );
   input.context.requireCapturedProfile();
-  requireExactUnspentConditionalInputs(proofs, proofStates);
+  if (classifyExactInputStates(proofs, proofStates).kind !== "unspent") {
+    throw new Error("browser conditional wallet receive inputs are not exactly unspent");
+  }
 
   const amount = Amount.sum(proofs.map(({ amount }) => amount));
   const fees = Amount.from((BigInt(proofs.length) * BigInt(keyset.fee) + 999n) / 1000n);
@@ -558,22 +560,6 @@ async function prepareBrowserConditionalWalletReceiveOperation(
   );
   receiveDrafts.set(operation, draft);
   return draft;
-}
-
-function requireExactUnspentConditionalInputs(
-  proofs: readonly Proof[],
-  states: readonly ProofState[],
-): void {
-  const expectedYs = proofs.map((proof) =>
-    deriveDurableWalletProofY(serializeDurableWalletProof(proof)),
-  );
-  if (states.length !== expectedYs.length) {
-    throw new Error("browser conditional wallet receive proof-state response is incomplete");
-  }
-  const observed = new Map(states.map((state) => [state.Y, state.state]));
-  if (observed.size !== states.length || expectedYs.some((Y) => observed.get(Y) !== "UNSPENT")) {
-    throw new Error("browser conditional wallet receive inputs are not exactly unspent");
-  }
 }
 
 function requireExactConditionalPreview(

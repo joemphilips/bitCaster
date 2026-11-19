@@ -1138,7 +1138,7 @@ export async function dispatch(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const wallet = await recoverPreparedWalletSends(secrets, deps)
+      const wallet = await recoverPreparedWalletSends(deps)
       if (!deps.getCustodyFence) return { ok: true, result: wallet }
       const getCustodyFence = deps.getCustodyFence
       const receives = await recoverDurableWalletReceives(secrets, deps)
