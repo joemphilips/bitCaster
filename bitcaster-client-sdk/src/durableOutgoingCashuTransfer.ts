@@ -12,7 +12,6 @@ import {
   decodeDurableWalletOperation,
   decodeDurableWalletProof,
   deriveDurableWalletOperationAuthority,
-  deriveDurableWalletProofY,
   hydrateDurableWalletProof,
   serializeDurableWalletProof,
   type DurableWalletOperationAuthority,
@@ -31,6 +30,7 @@ import {
   decodeDurableWalletProofDerivationLocator,
   type DurableWalletProofDerivationLocator,
 } from './durableWalletProofDerivationLocator.ts'
+import { classifyExactInputStates } from './exactInputStates.ts'
 
 export const DURABLE_OUTGOING_CASHU_TRANSFER_SCHEMA_VERSION = 2 as const
 export const DURABLE_OUTGOING_CASHU_RECOVERY_PAGE_LIMIT_MAX = 128
@@ -1170,29 +1170,24 @@ function classifyBearerStates(
   proofs: readonly DurableWalletProof[],
   states: readonly DurableOutgoingCashuProofState[],
 ): DurableOutgoingCashuBearerClassification {
-  const expected = proofs.map(deriveDurableWalletProofY)
-  if (states.length !== expected.length) return { kind: 'uncertain', reclaimable: false }
-  const observed = new Map<string, DurableOutgoingCashuProofState>()
-  for (const state of states) {
-    if (
-      !isRecord(state) ||
-      typeof state.Y !== 'string' ||
-      !['UNSPENT', 'PENDING', 'SPENT'].includes(state.state) ||
-      observed.has(state.Y)
-    ) {
+  const classification = classifyExactInputStates(proofs, states)
+  switch (classification.kind) {
+    case 'spent':
+      return { kind: 'spent' }
+    case 'unspent':
+      return { kind: 'unspent', reclaimable: true }
+    case 'mixed':
+      return {
+        kind: 'partial',
+        unspentProofs: structuredClone(
+          proofs.filter((_, index) => classification.states[index] === 'UNSPENT'),
+        ),
+      }
+    case 'pending':
+    case 'unknown-state':
+    case 'mismatch':
       return { kind: 'uncertain', reclaimable: false }
-    }
-    observed.set(state.Y, state)
   }
-  if (expected.some((Y) => !observed.has(Y))) return { kind: 'uncertain', reclaimable: false }
-  const exact = expected.map((Y) => observed.get(Y)!.state)
-  if (exact.every((state) => state === 'SPENT')) return { kind: 'spent' }
-  if (exact.every((state) => state === 'UNSPENT')) return { kind: 'unspent', reclaimable: true }
-  if (exact.some((state) => state === 'PENDING')) return { kind: 'uncertain', reclaimable: false }
-  const unspentProofs = proofs.filter((_, index) => exact[index] === 'UNSPENT')
-  return unspentProofs.length === 0
-    ? { kind: 'uncertain', reclaimable: false }
-    : { kind: 'partial', unspentProofs: structuredClone(unspentProofs) }
 }
 
 function requireWalletSendOperation(value: unknown): DurableWalletSendOperation {

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { mapOutgoingCashuWithdrawalActivity } from '../src/outgoingCashuActivity.ts'
-import { Amount, getEncodedTokenV4, OutputData } from '@cashu/cashu-ts'
+import { Amount, getEncodedTokenV4, hashToCurve, OutputData } from '@cashu/cashu-ts'
 import { deriveDurableCustodyArtifactFingerprint } from '../src/durableCustody.ts'
 import {
   acknowledgeDurableOutgoingCashuRecipient,
@@ -19,6 +19,7 @@ import {
   runDurableOutgoingCashuTransfer,
   runDurableOutgoingCashuReclaim,
   scheduleDurableOutgoingCashuRecoveryRetry,
+  type DurableOutgoingCashuProofState,
   type DurableOutgoingCashuRecipientSequence,
 } from '../src/durableOutgoingCashuTransfer.ts'
 import {
@@ -482,6 +483,92 @@ test('mixed bearer classification retains only the exact unspent subset for recl
   }).transfer
   assert.equal(contradictory.deliveryState, 'bearer-spent')
   assert.equal(contradictory.token?.unspentProofs, null)
+})
+
+test('bearer classification reads each exact token proof Y once and never reclaims otherwise', () => {
+  const transfer = createDurableOutgoingCashuTransfer({
+    transferId: 'exact-y-1',
+    walletScopeId: 'wallet-1',
+    requestedAmount: '2',
+    walletSendOperation: twoOutputWalletSendOperation(),
+    deliveryIntent: {
+      policy: 'bearer-spend-classification',
+      tokenBytesLimit: 1024,
+      tokenProofLimit: 2,
+    },
+  })
+  const proofs = [partialFirstSendProof(), secondSendProof()]
+  const admitted = admitDurableOutgoingCashuToken({
+    transfer,
+    keepProofs: [],
+    sendProofs: proofs,
+    encodedToken: encodedToken(proofs),
+    custodyRevisions: custodyRevisions(transfer.walletSendOperation, [], proofs),
+    dueAtMs: 10,
+  })
+  const [first, second] = proofs.map(deriveDurableWalletProofY) as [string, string]
+  const foreign = hashToCurve(new TextEncoder().encode('foreign')).toHex(true)
+  const classify = (states: DurableOutgoingCashuProofState[]) =>
+    classifyDurableOutgoingBearerProofStates({ transfer: admitted, states, dueAtMs: 11 })
+
+  for (const [name, states] of [
+    ['missing', [{ Y: first, state: 'UNSPENT' }]],
+    [
+      'extra',
+      [
+        { Y: first, state: 'UNSPENT' },
+        { Y: second, state: 'UNSPENT' },
+        { Y: foreign, state: 'UNSPENT' },
+      ],
+    ],
+    [
+      'duplicate',
+      [
+        { Y: first, state: 'UNSPENT' },
+        { Y: first, state: 'UNSPENT' },
+      ],
+    ],
+    [
+      'foreign',
+      [
+        { Y: first, state: 'SPENT' },
+        { Y: foreign, state: 'SPENT' },
+      ],
+    ],
+  ] as const satisfies ReadonlyArray<
+    readonly [string, readonly DurableOutgoingCashuProofState[]]
+  >) {
+    const result = classify([...states])
+    assert.equal(result.classification.kind, 'uncertain', name)
+    assert.equal(result.transfer.deliveryState, 'delivery-pending', name)
+    assert.equal(result.transfer.token?.unspentProofs, null, name)
+    assert.throws(
+      () =>
+        prepareDurableOutgoingCashuReclaim({
+          transfer: admitted,
+          reclaimId: `reclaim-${name}`,
+          states: [...states],
+          dueAtMs: 12,
+          walletReceiveOperation: reclaimOperation(`reclaim-${name}`, proofs),
+        }),
+      /not authorized/,
+      name,
+    )
+  }
+
+  const reorderedSpent = classify([
+    { Y: second, state: 'SPENT' },
+    { Y: first, state: 'SPENT' },
+  ])
+  assert.equal(reorderedSpent.transfer.deliveryState, 'bearer-spent')
+
+  // The unspent proof is the first token proof, although its state comes second.
+  const reorderedMixed = classify([
+    { Y: second, state: 'SPENT' },
+    { Y: first, state: 'UNSPENT' },
+  ])
+  assert.equal(reorderedMixed.transfer.deliveryState, 'bearer-partial')
+  assert.deepEqual(reorderedMixed.transfer.token?.unspentProofs, [partialFirstSendProof()])
 })
 
 test('recovery pages require a stable starvation-safe due order', () => {

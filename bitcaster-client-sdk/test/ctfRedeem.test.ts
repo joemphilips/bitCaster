@@ -509,6 +509,22 @@ test('redeemOutcomeLegWithOperation refuses unbound or mixed NUT-07 state vector
       states: [state(CheckStateEnum.UNSPENT, 'state-a'), state(CheckStateEnum.UNSPENT, 'state-a')],
     },
     {
+      name: 'extra spent Y',
+      states: [
+        state(CheckStateEnum.SPENT, 'state-a'),
+        state(CheckStateEnum.SPENT, 'state-b'),
+        state(CheckStateEnum.SPENT, 'foreign'),
+      ],
+    },
+    {
+      name: 'extra unspent Y',
+      states: [
+        state(CheckStateEnum.UNSPENT, 'state-a'),
+        state(CheckStateEnum.UNSPENT, 'state-b'),
+        state(CheckStateEnum.UNSPENT, 'foreign'),
+      ],
+    },
+    {
       name: 'mixed exact states',
       states: [state(CheckStateEnum.SPENT, 'state-a'), state(CheckStateEnum.UNSPENT, 'state-b')],
     },
@@ -542,6 +558,41 @@ test('redeemOutcomeLegWithOperation refuses unbound or mixed NUT-07 state vector
   }
   assert.equal(restoreCalls, 0)
   assert.equal((await store.getProofOperation('redeem:wrong-Y'))?.state, 'prepared')
+})
+
+test('redeemOutcomeLegWithOperation classifies a reordered exact NUT-07 reading by Y', async () => {
+  const store = new MemoryProofOperationStore()
+  const request = {
+    mintUrl: 'https://mint.example',
+    operationId: 'redeem:reordered',
+    proofOperationStore: store,
+    conditionId: 'condition',
+    outcome: 'YES',
+    unit: 'sat',
+    oracleWitness: 'witness',
+    proofs: [proof(CTF_KEYSET_ID, 'order-a', 5), proof(CTF_KEYSET_ID, 'order-b', 5)],
+    outcomeKeyset: outcomeKeyset(),
+    regularKeyset: regularKeyset(),
+  }
+  await redeemOutcomeLegWithOperation({
+    ...request,
+    wallet: new FakeRedeemWallet({ error: new Error('transient') }),
+    restoreOutputGroups: async () => ({}),
+  }).catch(() => undefined)
+
+  const restored = [proof(REGULAR_KEYSET_ID, 'reordered-restored', 10)]
+  const wallet = new FakeRedeemWallet({
+    states: [state(CheckStateEnum.SPENT, 'order-b'), state(CheckStateEnum.SPENT, 'order-a')],
+  })
+  const result = await redeemOutcomeLegWithOperation({
+    ...request,
+    wallet,
+    restoreOutputGroups: async () => ({ regular: restored }),
+  })
+
+  assert.deepEqual(result, { proofs: restored, losing: false })
+  assert.equal(wallet.redeemCalls.length, 0)
+  assert.equal((await store.getProofOperation('redeem:reordered'))?.state, 'completed')
 })
 
 test('redeemOutcomeLegWithOperation rejects witness substitution before mint I/O', async () => {

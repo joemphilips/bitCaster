@@ -186,6 +186,20 @@ test('prepared CTF redeem recovery requires complete exact mint-state evidence',
     { states: [{ Y, state: CheckStateEnum.UNSPENT, witness: null }], expected: 'unspent' },
     { states: [], expected: 'pending' },
     { states: [{ Y: 'foreign', state: CheckStateEnum.SPENT, witness: null }], expected: 'pending' },
+    {
+      states: [
+        { Y, state: CheckStateEnum.SPENT, witness: null },
+        { Y: 'foreign', state: CheckStateEnum.SPENT, witness: null },
+      ],
+      expected: 'pending',
+    },
+    {
+      states: [
+        { Y, state: CheckStateEnum.UNSPENT, witness: null },
+        { Y, state: CheckStateEnum.UNSPENT, witness: null },
+      ],
+      expected: 'pending',
+    },
   ] as const
   for (const scenario of cases) {
     const actual = await classifyPreparedDurableCtfRedeemInputs({

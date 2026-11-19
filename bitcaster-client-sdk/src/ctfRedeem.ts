@@ -9,11 +9,9 @@ import {
 } from './conditionOracleEvidence.ts'
 import {
   Amount,
-  CheckStateEnum,
   Keyset,
   MintOperationError,
   OutputData,
-  hashToCurve,
   splitAmount,
   type CounterSource,
   type MintKeys,
@@ -24,7 +22,6 @@ import {
   type ProofState,
 } from '@cashu/cashu-ts'
 import {
-  allStates,
   createCtfProofOperationCompletion,
   deserializeOutputGroups,
   normalizeProofArray,
@@ -49,6 +46,7 @@ import {
   requireSameOperationAuthority,
 } from './ctfProofOperationAuthority.ts'
 import { isCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
+import { classifyExactInputStates } from './exactInputStates.ts'
 import {
   reserveAndConstructDurableSeedDerivedOutputs,
   reconstructDurableSeedDerivedOutputs,
@@ -461,10 +459,17 @@ export async function classifyPreparedDurableCtfRedeemInputs(input: {
   const states = await input.wallet.checkProofsStates(
     inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  if (!exactRedeemInputStates(inputs, states)) return 'pending'
-  if (allStates(states, CheckStateEnum.SPENT)) return 'spent'
-  if (allStates(states, CheckStateEnum.UNSPENT)) return 'unspent'
-  return 'pending'
+  const classification = classifyExactInputStates(inputs, states)
+  switch (classification.kind) {
+    case 'spent':
+    case 'unspent':
+      return classification.kind
+    case 'mixed':
+    case 'pending':
+    case 'unknown-state':
+    case 'mismatch':
+      return 'pending'
+  }
 }
 
 export async function restorePreparedDurableCtfRedeemOutputs(input: {
@@ -937,8 +942,8 @@ async function resumeCtfRedeem(params: {
   const states = await params.wallet.checkProofsStates(
     entry.inputs.map(({ id, secret }) => ({ id, secret })),
   )
-  const hasExactInputStates = exactRedeemInputStates(entry.inputs, states)
-  if (hasExactInputStates && allStates(states, CheckStateEnum.SPENT)) {
+  const classification = classifyExactInputStates(entry.inputs, states).kind
+  if (classification === 'spent') {
     const restored = await params.restoreOutputGroups(params.mintUrl, entry.outputs)
     const final = requireExactCtfRedeemProofs(
       restored.regular,
@@ -951,7 +956,7 @@ async function resumeCtfRedeem(params: {
     )
     return { proofs: final, losing: false }
   }
-  if (hasExactInputStates && allStates(states, CheckStateEnum.UNSPENT)) {
+  if (classification === 'unspent') {
     const outputData = deserializeOutputGroups(entry.outputs).regular ?? []
     if (outputData.length === 0) {
       throw new Error(`proof operation ${entry.operationId} has no redeem outputs`)
@@ -969,20 +974,6 @@ async function resumeCtfRedeem(params: {
   }
 
   throw new Error(`Proof operation ${entry.operationId} is still pending at the mint`)
-}
-
-function exactRedeemInputStates(inputs: readonly Proof[], states: readonly ProofState[]): boolean {
-  if (states.length !== inputs.length) return false
-  const expectedYs = new Set(
-    inputs.map(({ id, secret }) => {
-      const bytes = new TextEncoder().encode(secret)
-      requireSupportedCashuKeysetId(id)
-      return hashToCurve(bytes).toHex(true)
-    }),
-  )
-  if (expectedYs.size !== inputs.length) return false
-  const observedYs = new Set(states.map(({ Y }) => Y))
-  return observedYs.size === states.length && [...observedYs].every((Y) => expectedYs.has(Y))
 }
 
 function requireCompletedCtfRedeemProofs(entry: CtfProofOperationRecord): Proof[] {
