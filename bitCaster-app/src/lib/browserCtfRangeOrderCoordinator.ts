@@ -84,7 +84,9 @@ import {
   assertCtfRangeEngineResultMatchesPersistedArtifact,
   CtfRangeRecoveryTransportError,
   CtfRangeMintRecoveryAdapter,
+  checkCtfRangeInputProofStates,
   decodeCtfRangeEngineResult,
+  type CtfRangeProofStateClient,
   readAppliedCtfRangeEngineResult,
   restoreDurableCtfRangeRefundOutputs,
   verifyDurableCtfRangeRefundSignatures,
@@ -121,6 +123,7 @@ import {
   classifyCtfRangeSourceRecovery,
   type CtfRangeSourceRecoveryDecision,
 } from "@bitcaster/client-sdk/ctfRangeSourceRecovery";
+import { classifyExactInputStates } from "@bitcaster/client-sdk/exactInputStates";
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
   classifyCashuMintFailure,
@@ -261,6 +264,12 @@ type BrowserCtfRangeWallet = Omit<CtfRangeSourceWallet, "prepareSwapToSend"> & {
       | Parameters<CtfRangeConsolidationWallet["prepareSwapToSend"]>[3],
   ): Promise<SwapPreview>;
   checkProofsStates(proofs: Array<Pick<Proof, "id" | "secret">>): Promise<ProofState[]>;
+  /** The mint client of the wallet. Its NUT-07 check returns the raw mint response. */
+  readonly mint: {
+    check(
+      payload: Parameters<CtfRangeProofStateClient["check"]>[0],
+    ): ReturnType<CtfRangeProofStateClient["check"]>;
+  };
 };
 type BrowserCtfRangeMintRecovery = Pick<
   CtfRangeMintRecoveryAdapter,
@@ -2255,7 +2264,7 @@ export class BrowserCtfRangeOrderCoordinator {
     }
     switch (snapshot.record.operation.result.state) {
       case "none": {
-        const { decision, states } = await this.#classifyUncertainSource(preparation, source);
+        const decision = await this.#classifyUncertainSource(preparation, source);
         switch (decision.kind) {
           case "replay-exact-persisted-operation":
             return this.#completeAndBindSource(
@@ -2289,7 +2298,7 @@ export class BrowserCtfRangeOrderCoordinator {
           case "remain-pending":
             // A mixed reading replays, so that the mint answers with a code.
             // Any coded answer settles the request.
-            if (replaysMixedReading(states)) {
+            if (replaysMixedReading(decision)) {
               return this.#completeAndBindSource(
                 preparation,
                 seed,
@@ -2413,14 +2422,11 @@ export class BrowserCtfRangeOrderCoordinator {
       return;
     }
     if (snapshot.record.operation.result.state !== "none") throw rangeError("recovery-pending");
-    const { decision, states } = await this.#classifyUncertainConsolidation(preparation, operation);
+    const decision = await this.#classifyUncertainConsolidation(preparation, operation);
     let proofs: readonly Proof[];
     // A mixed reading replays, so that the mint answers with a code. Any
     // coded answer settles the request.
-    const kind =
-      decision.kind === "remain-pending" && replaysMixedReading(states)
-        ? "replay-exact-persisted-operation"
-        : decision.kind;
+    const kind = replaysMixedReading(decision) ? "replay-exact-persisted-operation" : decision.kind;
     switch (kind) {
       case "replay-exact-persisted-operation":
         await this.#markConsolidationAttemptedForRecovery(scope, owner, operationId);
@@ -2475,22 +2481,20 @@ export class BrowserCtfRangeOrderCoordinator {
   async #classifyUncertainConsolidation(
     preparation: PersistedCtfRangeOrderPreparation,
     operation: DurableCustodyProofOperationInput,
-  ): Promise<{ decision: CtfRangeSourceRecoveryDecision; states: readonly unknown[] }> {
-    let states: readonly unknown[];
+  ): Promise<CtfRangeSourceRecoveryDecision> {
+    let states: readonly ProofState[];
     try {
       states = await this.#observeInputStates(preparation, operation);
     } catch {
       throw rangeError("recovery-pending");
     }
-    return {
-      decision: classifyCtfRangeSourceRecovery({
-        journalKind: "consolidation",
-        journalState: "prepared",
-        inputStates: states,
-        now: Math.floor(this.#now() / 1_000),
-      }),
-      states,
-    };
+    return classifyCtfRangeSourceRecovery({
+      journalKind: "consolidation",
+      journalState: "prepared",
+      inputs: exactInputs(operation),
+      inputStates: states,
+      now: Math.floor(this.#now() / 1_000),
+    });
   }
 
   async #markConsolidationAttemptedForRecovery(
@@ -2539,10 +2543,7 @@ export class BrowserCtfRangeOrderCoordinator {
     scope: DurableCustodyScope;
     owner: DurableCustodyOwnerAuthorization;
   }): Promise<boolean> {
-    const { decision, states } = await this.#classifyUncertainSource(
-      input.preparation,
-      input.source,
-    );
+    const decision = await this.#classifyUncertainSource(input.preparation, input.source);
     switch (decision.kind) {
       case "replay-exact-persisted-operation":
         await this.#completeAndBindSource(
@@ -2578,7 +2579,7 @@ export class BrowserCtfRangeOrderCoordinator {
       case "remain-pending":
         // A mixed reading replays, so that the mint answers with a code.
         // Any coded answer settles the request.
-        if (replaysMixedReading(states)) {
+        if (replaysMixedReading(decision)) {
           await this.#completeAndBindSource(
             input.preparation,
             input.seed,
@@ -2601,39 +2602,37 @@ export class BrowserCtfRangeOrderCoordinator {
   async #classifyUncertainSource(
     preparation: PersistedCtfRangeOrderPreparation,
     source: DurableCustodyProofOperationInput,
-  ): Promise<{ decision: CtfRangeSourceRecoveryDecision; states: readonly unknown[] }> {
-    let states: readonly unknown[];
+  ): Promise<CtfRangeSourceRecoveryDecision> {
+    let states: readonly ProofState[];
     try {
       states = await this.#observeInputStates(preparation, source);
     } catch {
       throw rangeError("recovery-pending");
     }
-    return {
-      decision: classifyCtfRangeSourceRecovery({
-        journalKind: "authorization-source",
-        journalState: "prepared",
-        inputStates: states,
-        now: Math.floor(this.#now() / 1_000),
-        authorizationExpiry: preparation.expiry,
-      }),
-      states,
-    };
+    return classifyCtfRangeSourceRecovery({
+      journalKind: "authorization-source",
+      journalState: "prepared",
+      inputs: exactInputs(source),
+      inputStates: states,
+      now: Math.floor(this.#now() / 1_000),
+      authorizationExpiry: preparation.expiry,
+    });
   }
 
-  /** NUT-07 states in the exact input order of the persisted operation. */
+  /**
+   * One NUT-07 reading of the exact inputs of the persisted operation. The SDK
+   * reads the raw mint response by Y. A missing, extra, duplicate, or foreign
+   * entry throws, and the caller keeps the operation pending.
+   */
   async #observeInputStates(
     preparation: PersistedCtfRangeOrderPreparation,
     operation: DurableCustodyProofOperationInput,
-  ): Promise<readonly unknown[]> {
-    const states: ProofState[] = await (
-      await this.#walletForMint(preparation.mintUrl)
-    ).checkProofsStates(
-      operation.inputs.map(({ id, secret }) => ({ id: requireSourceKeysetId(id), secret })),
+  ): Promise<readonly ProofState[]> {
+    const { mint } = await this.#walletForMint(preparation.mintUrl);
+    return checkCtfRangeInputProofStates(
+      { check: (payload) => mint.check(payload) },
+      exactInputs(operation),
     );
-    if (states.length !== operation.inputs.length) {
-      throw new Error("range source proof-state response is incomplete");
-    }
-    return states.map(({ state }) => state);
   }
 
   /**
@@ -2660,18 +2659,21 @@ export class BrowserCtfRangeOrderCoordinator {
       rangeError(input.uncertainCode, input.refusal, { refusedRequest: input.request });
     const refusal = settlingMintRefusal(classifyCashuMintFailure(input.refusal));
     if (refusal === null) throw pending();
-    let states: readonly unknown[];
+    let states: readonly ProofState[];
     try {
       states = await this.#observeInputStates(input.preparation, input.operation);
     } catch {
       throw pending();
     }
-    const settlement = decideCtfRangeRequestSettlement({ refusal, inputStates: states });
+    const settlement = decideCtfRangeRequestSettlement({
+      refusal,
+      inputs: exactInputs(input.operation),
+      inputStates: states,
+    });
     switch (settlement.kind) {
       case "restore":
         return;
       case "wait":
-      case "replay":
         throw pending();
       case "release":
         break;
@@ -2691,7 +2693,7 @@ export class BrowserCtfRangeOrderCoordinator {
         throw pending();
       }
     }
-    await this.#releaseReservation({ ...input, states });
+    await this.#releaseReservation({ ...input, spentInputIndexes: settlement.spentInputIndexes });
     throw rangeError("order-attempt-ended", input.refusal, {
       released: true,
       message: REFUSED_SOURCE_RELEASED_MESSAGE,
@@ -2708,13 +2710,13 @@ export class BrowserCtfRangeOrderCoordinator {
     readonly owner: DurableCustodyOwnerAuthorization;
     readonly custodyOperationId: string;
     readonly operation: DurableCustodyProofOperationInput;
-    readonly states: readonly unknown[];
+    /** Positions in the exact operation inputs, matched by Y. */
+    readonly spentInputIndexes: readonly number[];
   }): Promise<void> {
     const { scope, preparation, custodyOperationId } = input;
+    const spent = new Set(input.spentInputIndexes);
     const spentSecrets = new Set(
-      input.operation.inputs
-        .filter((_, index) => input.states[index] === "SPENT")
-        .map(({ secret }) => secret),
+      input.operation.inputs.filter((_, index) => spent.has(index)).map(({ secret }) => secret),
     );
     const spentProofIds = input.operation.inputs
       .filter(({ secret }) => spentSecrets.has(secret))
@@ -3548,9 +3550,7 @@ export class BrowserCtfRangeOrderCoordinator {
     } catch {
       return null;
     }
-    if (states.length !== refund.inputs.length || states.some(({ state }) => state !== "UNSPENT")) {
-      return null;
-    }
+    if (classifyExactInputStates(refund.inputs, states).kind !== "unspent") return null;
     try {
       await this.#recoverOutputCounters?.({
         mintUrl: operation.mintUrl,
@@ -3592,7 +3592,8 @@ export class BrowserCtfRangeOrderCoordinator {
       } catch (error) {
         throw rangeError("recovery-pending", error);
       }
-      if (states.every(({ state }) => state === "UNSPENT")) {
+      const reading = classifyExactInputStates(refund.inputs, states).kind;
+      if (reading === "unspent") {
         const outputs = refund.outputs.refund?.map(deserializeDurableCustodyOutput) ?? [];
         await this.#requireRefundOwner(scope, owner, record);
         let response: { signatures: SerializedBlindedSignature[] };
@@ -3638,7 +3639,7 @@ export class BrowserCtfRangeOrderCoordinator {
           outputs: refund.outputs.refund ?? [],
           signatures: response.signatures,
         });
-      } else if (states.every(({ state }) => state === "SPENT")) {
+      } else if (reading === "spent") {
         const preparation = decodeCtfRangeOrderPreparationFromRecord(journalRecord);
         await this.#requireRefundOwner(scope, owner, record);
         const restored = await this.#pendingOnRecoveryTransport(() =>
@@ -4452,8 +4453,14 @@ function withRetryAfter(error: unknown, retryAfterMs: number | undefined): unkno
 }
 
 /** A mixed spent-and-unspent reading replays to obtain the mint's answer. */
-function replaysMixedReading(states: readonly unknown[]): boolean {
-  return decideCtfRangeRequestSettlement({ refusal: null, inputStates: states }).kind === "replay";
+function replaysMixedReading(decision: CtfRangeSourceRecoveryDecision): boolean {
+  return decision.kind === "remain-pending" && decision.reason === "mixed-input-states";
+}
+
+function exactInputs(
+  operation: DurableCustodyProofOperationInput,
+): Array<Pick<Proof, "id" | "secret">> {
+  return operation.inputs.map(({ id, secret }) => ({ id: requireSourceKeysetId(id), secret }));
 }
 
 function refundAuthorityFingerprint(row: ProofOperationRecord): string {

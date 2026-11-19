@@ -508,6 +508,11 @@ it("native source consolidation commits counters and exact custody only together
     async checkProofsStates() {
       throw new Error("unexpected state call");
     },
+    mint: {
+      async check() {
+        throw new Error("unexpected state call");
+      },
+    },
   };
   const unexpected = async (): Promise<never> => {
     throw new Error("unexpected engine call");

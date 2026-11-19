@@ -220,6 +220,98 @@ describe("browser durable ordinary receive", () => {
     ).toMatchObject({ next: 2 });
   });
 
+  it.each([
+    ["missing", () => []],
+    [
+      "extra",
+      (input: Proof, foreign: Proof) => [
+        ...statesForProofs([input], CheckStateEnum.UNSPENT),
+        ...statesForProofs([foreign], CheckStateEnum.UNSPENT),
+      ],
+    ],
+    ["duplicate", (input: Proof) => statesForProofs([input, input], CheckStateEnum.UNSPENT)],
+    [
+      "conflicting duplicate",
+      (input: Proof) => [
+        ...statesForProofs([input], CheckStateEnum.UNSPENT),
+        ...statesForProofs([input], CheckStateEnum.SPENT),
+      ],
+    ],
+    [
+      "foreign",
+      (_input: Proof, foreign: Proof) => statesForProofs([foreign], CheckStateEnum.UNSPENT),
+    ],
+  ] as const)(
+    "rejects a conditional receive before the swap when the input reading is %s",
+    async (_name, read) => {
+      const database = createConditionalDatabase();
+      const inputProof = conditionalInputProof();
+      const foreign = proofForOutput(
+        OutputData.createSingleData(10, CONDITIONAL_KEYSET_ID, "conditional-foreign-input", 29n),
+      );
+      const receiveWallet = conditionalWallet(inputProof);
+      vi.mocked(receiveWallet.checkProofsStates).mockResolvedValue(
+        read(inputProof, foreign) as never,
+      );
+      await markConditionalCounterReady(database);
+      const readiness = vi.fn(async () => undefined);
+
+      await expect(
+        receiveBrowserDurableWalletToken({
+          token: "cashuB-conditional-token",
+          mintUrl: MINT,
+          unit: "msat",
+          asset: "conditional",
+          conditionalInputProofs: [inputProof],
+          ensureConditionalCounterReady: readiness,
+          wallet: receiveWallet,
+          context: receiveContext(database),
+        }),
+      ).rejects.toThrow(/inputs are not exactly unspent/);
+
+      expect(receiveWallet.checkProofsStates).toHaveBeenCalledOnce();
+      expect(readiness).not.toHaveBeenCalled();
+      expect(receiveWallet.prepareConditionalSwap).not.toHaveBeenCalled();
+      expect(receiveWallet.completeConditionalSwap).not.toHaveBeenCalled();
+      expect(await database.custodyOperations.count()).toBe(0);
+      expect(await database.custodyProofs.count()).toBe(0);
+      expect(await database.walletCounterCursors.count()).toBe(0);
+    },
+  );
+
+  it("receives conditional proofs whose unspent reading lists the inputs in another order", async () => {
+    const database = createConditionalDatabase();
+    const inputs = [
+      conditionalInputProof(),
+      proofForOutput(
+        OutputData.createSingleData(10, CONDITIONAL_KEYSET_ID, "conditional-import-input-2", 28n),
+      ),
+    ];
+    const receiveWallet = conditionalWallet(inputs[0]!);
+    vi.mocked(receiveWallet.checkProofsStates).mockResolvedValue(
+      statesForProofs([...inputs].reverse(), CheckStateEnum.UNSPENT) as never,
+    );
+    await markConditionalCounterReady(database);
+
+    await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: inputs,
+      ensureConditionalCounterReady: async () => undefined,
+      wallet: receiveWallet,
+      context: receiveContext(database),
+    });
+
+    expect(receiveWallet.completeConditionalSwap).toHaveBeenCalledOnce();
+    expect(
+      (await database.custodyOperations.toArray()).map(
+        ({ record }) => record.operation.semanticKind,
+      ),
+    ).toEqual(["generic-receive"]);
+  });
+
   it("lists a new conditional keyset in its conditional form before the swap admits a proof", async () => {
     const database = createConditionalDatabase();
     const inputProof = conditionalInputProof();

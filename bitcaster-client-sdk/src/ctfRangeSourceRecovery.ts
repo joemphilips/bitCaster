@@ -1,15 +1,22 @@
+import { classifyExactInputStates, type ExactInputStates } from './exactInputStates.ts'
+
 export const CTF_RANGE_SOURCE_RECOVERY_INPUT_LIMIT_MAX = 256
 
 const FAILURE_MESSAGE_LENGTH_MAX = 1_024
 
 export type CtfRangeSourceJournalKind = 'authorization-source' | 'consolidation'
 export type CtfRangeSourceJournalState = 'prepared' | 'completed' | 'failed'
-export type CtfRangeSourceInputState = 'UNSPENT' | 'PENDING' | 'SPENT'
 
 export type CtfRangeSourceRecoveryPendingReason =
+  /**
+   * Every input is SPENT or UNSPENT, and both occur. A range order coordinator
+   * replays the exact request once, so that the mint answers with a code.
+   */
   | 'mixed-input-states'
   | 'pending-input-state'
   | 'unknown-input-state'
+  /** The reading does not hold each exact input Y once. It is not evidence. */
+  | 'input-state-mismatch'
 
 export type CtfRangeSourceRecoveryDecision =
   | { readonly kind: 'reuse-completed' }
@@ -27,7 +34,10 @@ export type CtfRangeSourceRecoveryDecision =
 export interface CtfRangeSourceRecoveryInput {
   readonly journalKind: CtfRangeSourceJournalKind
   readonly journalState: CtfRangeSourceJournalState
-  readonly inputStates: readonly unknown[]
+  /** The exact inputs of the persisted operation. */
+  readonly inputs: readonly { readonly id: string; readonly secret: string }[]
+  /** One NUT-07 reading of those inputs. It is classified by Y, not by position. */
+  readonly inputStates: unknown
   readonly now: number
   readonly authorizationExpiry?: number | null
   readonly failureReason?: string | null
@@ -45,7 +55,7 @@ export function classifyCtfRangeSourceRecovery(
   const journalState = requireJournalState(input.journalState)
   requireTimestamp(input.now, 'recovery observation time')
   requireExpiry(journalKind, input.authorizationExpiry)
-  requireObservationBound(input.inputStates)
+  requireInputBound(input.inputs)
 
   switch (journalState) {
     case 'completed': {
@@ -59,29 +69,31 @@ export function classifyCtfRangeSourceRecovery(
       }
     case 'prepared': {
       requireAbsentFailureReason(input.failureReason)
-      return classifyPrepared(input.inputStates)
+      if (input.inputs.length < 1) {
+        throw new Error('CTF range source recovery input count is invalid')
+      }
+      return classifyPrepared(classifyExactInputStates(input.inputs, input.inputStates))
     }
   }
 }
 
-function classifyPrepared(values: readonly unknown[]): CtfRangeSourceRecoveryDecision {
-  if (values.length < 1) {
-    throw new Error('CTF range source recovery input count is invalid')
+function classifyPrepared(states: ExactInputStates): CtfRangeSourceRecoveryDecision {
+  switch (states.kind) {
+    case 'spent':
+      return { kind: 'restore-exact-persisted-outputs' }
+    case 'unspent':
+      return { kind: 'replay-exact-persisted-operation' }
+    case 'mixed':
+      return { kind: 'remain-pending', reason: 'mixed-input-states' }
+    case 'pending':
+      return { kind: 'remain-pending', reason: 'pending-input-state' }
+    case 'unknown-state':
+      return { kind: 'remain-pending', reason: 'unknown-input-state' }
+    case 'mismatch':
+      return { kind: 'remain-pending', reason: 'input-state-mismatch' }
+    default:
+      return assertNever(states)
   }
-  const states = values.map(normalizeObservedInputState)
-  if (states.some((state) => state === null)) {
-    return { kind: 'remain-pending', reason: 'unknown-input-state' }
-  }
-  if (states.every((state) => state === 'SPENT')) {
-    return { kind: 'restore-exact-persisted-outputs' }
-  }
-  if (states.every((state) => state === 'UNSPENT')) {
-    return { kind: 'replay-exact-persisted-operation' }
-  }
-  if (states.some((state) => state === 'PENDING')) {
-    return { kind: 'remain-pending', reason: 'pending-input-state' }
-  }
-  return { kind: 'remain-pending', reason: 'mixed-input-states' }
 }
 
 function requireJournalKind(value: unknown): CtfRangeSourceJournalKind {
@@ -105,18 +117,7 @@ function requireJournalState(value: unknown): CtfRangeSourceJournalState {
   }
 }
 
-function normalizeObservedInputState(value: unknown): CtfRangeSourceInputState | null {
-  switch (value) {
-    case 'UNSPENT':
-    case 'PENDING':
-    case 'SPENT':
-      return value
-    default:
-      return null
-  }
-}
-
-function requireObservationBound(values: readonly unknown[]): void {
+function requireInputBound(values: readonly unknown[]): void {
   if (!Array.isArray(values) || values.length > CTF_RANGE_SOURCE_RECOVERY_INPUT_LIMIT_MAX) {
     throw new Error('CTF range source recovery input count is invalid')
   }
@@ -160,4 +161,8 @@ function requireAbsentFailureReason(value: string | null | undefined): void {
   if (value !== undefined && value !== null) {
     throw new Error('non-failed CTF range source journal carries a failure reason')
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled exact input state class: ${JSON.stringify(value)}`)
 }

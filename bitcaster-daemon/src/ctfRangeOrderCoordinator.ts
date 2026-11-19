@@ -312,7 +312,6 @@ interface CtfRangeWalletLike {
     >
   }): Promise<ConditionalSwapPreview>
   completeConditionalSwap(preview: ConditionalSwapPreview): Promise<Record<string, Proof[]>>
-  checkProofsStates(proofs: Array<Pick<Proof, 'id' | 'secret'>>): Promise<ProofState[]>
 }
 
 /**
@@ -3317,7 +3316,7 @@ async function completeNewSource(
     // exact outputs from a new reading.
     await settleRangeRequestRefusal(
       error,
-      sourceRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
+      sourceRefusalRequest(entry, authority, walletSeedHex, dependencies),
       (mintError) => freshRequestPendingError('source', entry.operationId, mintError, error),
     )
     throw error
@@ -3574,7 +3573,7 @@ async function consolidateSourceProofs(
       // exact outputs from a new reading.
       await settleRangeRequestRefusal(
         error,
-        consolidationRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
+        consolidationRefusalRequest(entry, authority, walletSeedHex, dependencies),
         (mintError) =>
           freshRequestPendingError('consolidation', entry.operationId, mintError, error),
       )
@@ -3732,15 +3731,11 @@ async function resumeConsolidationOperation(
   const operation = persistedRangeConsolidationOperation(entry)
   let result = completedConsolidationResult(entry)
   if (entry.state === 'prepared') {
-    const states = await wallet.checkProofsStates(
-      entry.inputs.map(({ id, secret }) => ({
-        id: requireText(id, 'consolidation keyset'),
-        secret,
-      })),
-    )
+    const inputs = requestInputs(entry, 'consolidation')
     const decision = classifyPreparedSourceRecovery({
       journalKind: 'consolidation',
-      states,
+      inputs,
+      states: await checkCtfRangeInputProofStates(authority.mint, inputs),
       nowUnixSeconds: Math.floor(authority.mutation().observedAtMs / 1_000),
     })
     const restore = async () => {
@@ -3750,7 +3745,7 @@ async function resumeConsolidationOperation(
       )
       return [...validateCtfRangeConsolidationProofs(operation, restored.consolidated)]
     }
-    switch (replayKind(decision, states)) {
+    switch (replayKind(decision)) {
       case 'restore-exact-persisted-outputs':
         result = await restore()
         break
@@ -3760,7 +3755,7 @@ async function resumeConsolidationOperation(
         } catch (error) {
           await settleRangeRequestRefusal(
             error,
-            consolidationRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
+            consolidationRefusalRequest(entry, authority, walletSeedHex, dependencies),
             (mintError) => replayPendingError(entry, 'consolidation', mintError),
           )
           // Every input is spent: an earlier copy can have committed.
@@ -4056,14 +4051,11 @@ async function resumeSourceOperation(
       `Range source operation ${entry.operationId} failed: ${entry.lastError ?? 'unknown error'}`,
     )
   }
-  const inputs = entry.inputs.map(({ id, secret }) => ({
-    id: requireText(id, 'source keyset'),
-    secret,
-  }))
-  const states = await sourceInputStates(mode, authority, wallet, inputs)
+  const inputs = requestInputs(entry, 'source')
   const decision = classifyPreparedSourceRecovery({
     journalKind: 'authorization-source',
-    states,
+    inputs,
+    states: await checkCtfRangeInputProofStates(authority.mint, inputs),
     nowUnixSeconds: Math.floor(authority.mutation().observedAtMs / 1_000),
     authorizationExpiry: authority.preparation.expiry,
   })
@@ -4073,7 +4065,7 @@ async function resumeSourceOperation(
       await (dependencies.restoreOutputs ?? restoreOutputGroups)(entry.mintUrl, entry.outputs),
     )
   let result: SourceResult
-  switch (replayKind(decision, states)) {
+  switch (replayKind(decision)) {
     case 'restore-exact-persisted-outputs':
       result = await restore()
       break
@@ -4083,7 +4075,7 @@ async function resumeSourceOperation(
       } catch (error) {
         await settleRangeRequestRefusal(
           error,
-          sourceRefusalRequest(entry, authority, walletSeedHex, wallet, dependencies),
+          sourceRefusalRequest(entry, authority, walletSeedHex, dependencies),
           (mintError) => replayPendingError(entry, 'source', mintError),
         )
         // Every input is spent: an earlier copy can have committed.
@@ -4103,37 +4095,14 @@ async function resumeSourceOperation(
   return result
 }
 
-async function sourceInputStates(
-  mode: SourceMode,
-  authority: PreparedMintAuthority,
-  wallet: SourceWallet,
-  inputs: Array<Pick<Proof, 'id' | 'secret'>>,
-): Promise<ProofState[]> {
-  switch (mode) {
-    case 'same-keyset-swap':
-      return (await wallet()).checkProofsStates(inputs)
-    case 'mixed-source-ctf-convert':
-      // Both asset groups belong to one request. Check them in one exact NUT-07
-      // observation through the mint client, without loading a swap wallet.
-      return checkCtfRangeInputProofStates(authority.mint, inputs)
-    default:
-      return assertNeverSourceMode(mode)
-  }
-}
-
 /**
  * A mixed spent-and-unspent reading replays once per pass so that the mint
  * answers with a code (ADR-037 mint refusal settlement).
  */
 function replayKind(
   decision: CtfRangeSourceRecoveryDecision,
-  states: readonly ProofState[],
 ): CtfRangeSourceRecoveryDecision['kind'] {
-  if (decision.kind !== 'remain-pending') return decision.kind
-  return decideCtfRangeRequestSettlement({
-    refusal: null,
-    inputStates: states.map(({ state }) => state),
-  }).kind === 'replay'
+  return decision.kind === 'remain-pending' && decision.reason === 'mixed-input-states'
     ? 'replay-exact-persisted-operation'
     : decision.kind
 }
@@ -4295,7 +4264,8 @@ interface RangeRequestRefusal {
   readonly walletSeedHex: string
   readonly entry: ProofOperationRecord
   readonly inputAssets: readonly StoredProofAsset[]
-  readonly readInputStates: () => Promise<readonly ProofState[]>
+  /** The exact inputs of `entry`, in operation order. */
+  readonly inputs: Array<Pick<Proof, 'id' | 'secret'>>
   readonly dependencies: DaemonCtfRangeOrderCoordinatorDependencies
 }
 
@@ -4303,22 +4273,14 @@ function sourceRefusalRequest(
   entry: ProofOperationRecord,
   authority: PreparedMintAuthority,
   walletSeedHex: string,
-  wallet: SourceWallet,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): RangeRequestRefusal {
-  const mode = persistedSourceMode(entry)
   return {
     authority,
     walletSeedHex,
     entry,
-    inputAssets: sourceInputAssets(entry, mode, authority),
-    readInputStates: () =>
-      sourceInputStates(
-        mode,
-        authority,
-        wallet,
-        entry.inputs.map(({ id, secret }) => ({ id: requireText(id, 'source keyset'), secret })),
-      ),
+    inputAssets: sourceInputAssets(entry, persistedSourceMode(entry), authority),
+    inputs: requestInputs(entry, 'source'),
     dependencies,
   }
 }
@@ -4327,7 +4289,6 @@ function consolidationRefusalRequest(
   entry: ProofOperationRecord,
   authority: PreparedMintAuthority,
   walletSeedHex: string,
-  wallet: CtfRangeWalletLike,
   dependencies: DaemonCtfRangeOrderCoordinatorDependencies,
 ): RangeRequestRefusal {
   return {
@@ -4335,13 +4296,7 @@ function consolidationRefusalRequest(
     walletSeedHex,
     entry,
     inputAssets: entry.inputs.map(() => authority.offerAsset),
-    readInputStates: () =>
-      wallet.checkProofsStates(
-        entry.inputs.map(({ id, secret }) => ({
-          id: requireText(id, 'consolidation keyset'),
-          secret,
-        })),
-      ),
+    inputs: requestInputs(entry, 'consolidation'),
     dependencies,
   }
 }
@@ -4391,20 +4346,21 @@ async function settleRangeRequestRefusal(
   const mintError = { code: failure.code, detail: failure.detail }
   let states: readonly ProofState[]
   try {
-    states = await request.readInputStates()
+    // The SDK reads each NUT-07 batch by Y and refuses a missing, extra,
+    // duplicate, or foreign entry in the raw mint response.
+    states = await checkCtfRangeInputProofStates(request.authority.mint, request.inputs)
   } catch {
     throw uncertain(mintError)
   }
-  if (states.length !== request.entry.inputs.length) throw uncertain(mintError)
   const settlement = decideCtfRangeRequestSettlement({
     refusal,
-    inputStates: states.map(({ state }) => state),
+    inputs: request.inputs,
+    inputStates: states,
   })
   switch (settlement.kind) {
     case 'restore':
       return
     case 'wait':
-    case 'replay':
       throw uncertain(mintError)
     case 'release':
       break
@@ -5122,6 +5078,7 @@ function walletSeed(value: string): Uint8Array {
 
 function classifyPreparedSourceRecovery(input: {
   readonly journalKind: 'authorization-source' | 'consolidation'
+  readonly inputs: ReadonlyArray<Pick<Proof, 'id' | 'secret'>>
   readonly states: readonly ProofState[]
   readonly nowUnixSeconds: number
   readonly authorizationExpiry?: number
@@ -5129,12 +5086,24 @@ function classifyPreparedSourceRecovery(input: {
   return classifyCtfRangeSourceRecovery({
     journalKind: input.journalKind,
     journalState: 'prepared',
-    inputStates: input.states.map(({ state }) => state),
+    inputs: input.inputs,
+    inputStates: input.states,
     now: input.nowUnixSeconds,
     ...(input.authorizationExpiry === undefined
       ? {}
       : { authorizationExpiry: input.authorizationExpiry }),
   })
+}
+
+/** The exact inputs of one persisted range request, in operation order. */
+function requestInputs(
+  entry: ProofOperationRecord,
+  request: 'source' | 'consolidation',
+): Array<Pick<Proof, 'id' | 'secret'>> {
+  return entry.inputs.map(({ id, secret }) => ({
+    id: requireText(id, `${request} keyset`),
+    secret,
+  }))
 }
 
 function readSourceText(entry: ProofOperationRecord, key: string): string {

@@ -369,7 +369,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         secrets,
         mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
       })
-      const walletRecovery = await recoverPreparedWalletSends(secrets, {
+      const walletRecovery = await recoverPreparedWalletSends({
         getCustodyFence: currentFence,
       })
       const receiveRecovery = await recoverDurableWalletReceives(secrets, {

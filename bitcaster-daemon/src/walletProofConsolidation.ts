@@ -722,7 +722,8 @@ async function executeRecoveryDecision(
   const decision = classifyCtfRangeSourceRecovery({
     journalKind: 'consolidation',
     journalState: 'prepared',
-    inputStates: states.map(({ state }) => state),
+    inputs: exactInputs(entry),
+    inputStates: states,
     now: Math.floor(input.mutation().observedAtMs / 1_000),
   })
   switch (decision.kind) {
@@ -757,7 +758,8 @@ async function replayExactPreparedConsolidation(
     const postRejectionDecision = classifyCtfRangeSourceRecovery({
       journalKind: 'consolidation',
       journalState: 'prepared',
-      inputStates: postRejectionStates.map(({ state }) => state),
+      inputs: exactInputs(entry),
+      inputStates: postRejectionStates,
       now: Math.floor(input.mutation().observedAtMs / 1_000),
     })
     if (postRejectionDecision.kind === 'restore-exact-persisted-outputs') {
@@ -767,11 +769,15 @@ async function replayExactPreparedConsolidation(
   }
 }
 
+function exactInputs(entry: ProofOperationRecord): Array<Pick<Proof, 'id' | 'secret'>> {
+  return entry.inputs.map(({ id, secret }) => ({ id: metadataProofId(id), secret }))
+}
+
 function checkExactInputStates(
   wallet: RecoveryWallet,
   entry: ProofOperationRecord,
 ): Promise<ProofState[]> {
-  const inputs = entry.inputs.map(({ id, secret }) => ({ id: metadataProofId(id), secret }))
+  const inputs = exactInputs(entry)
   return checkCtfRangeInputProofStates(
     {
       check: async ({ Ys }) => {

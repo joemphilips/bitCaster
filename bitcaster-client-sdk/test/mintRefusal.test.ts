@@ -5,6 +5,7 @@ import {
   MintOperationError,
   NetworkError,
   RateLimitError,
+  hashToCurve,
 } from '@cashu/cashu-ts'
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
@@ -37,22 +38,42 @@ test('names every coded refusal, and only coded refusals, as settling', () => {
   assert.deepEqual([...MINT_OUTPUT_REUSE_REFUSAL_CODES].sort(), [11003, 11008])
 })
 
+const KEYSET_ID = `01${'aa'.repeat(32)}`
+const A = { id: KEYSET_ID, secret: 'input-a' }
+const B = { id: KEYSET_ID, secret: 'input-b' }
+const FOREIGN = { id: KEYSET_ID, secret: 'foreign' }
+
+/** A NUT-07 reading with one entry for each listed input, in the listed order. */
+function reading(...entries: Array<readonly [{ readonly secret: string }, unknown]>) {
+  return entries.map(([input, state]) => ({
+    Y: hashToCurve(new TextEncoder().encode(input.secret)).toHex(true),
+    state,
+    witness: null,
+  }))
+}
+
 test('releases unspent inputs after outputs-signed refusals', () => {
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'outputs-signed',
-      inputStates: ['UNSPENT', 'UNSPENT'],
+      inputs: [A, B],
+      inputStates: reading([A, 'UNSPENT'], [B, 'UNSPENT']),
     }),
     { kind: 'release', spentInputIndexes: [] },
   )
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'outputs-signed', inputStates: ['SPENT', 'SPENT'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'outputs-signed',
+      inputs: [A, B],
+      inputStates: reading([A, 'SPENT'], [B, 'SPENT']),
+    }),
     { kind: 'restore' },
   )
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'outputs-signed',
-      inputStates: ['UNSPENT', 'PENDING'],
+      inputs: [A, B],
+      inputStates: reading([A, 'UNSPENT'], [B, 'PENDING']),
     }),
     { kind: 'wait' },
   )
@@ -63,25 +84,32 @@ test('settles a condition-attested refusal like outputs-signed', () => {
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'condition-attested',
-      inputStates: ['UNSPENT', 'UNSPENT'],
+      inputs: [A, B],
+      inputStates: reading([A, 'UNSPENT'], [B, 'UNSPENT']),
     }),
     { kind: 'release', spentInputIndexes: [] },
   )
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'condition-attested',
-      inputStates: ['UNSPENT', 'SPENT'],
+      inputs: [A, B],
+      inputStates: reading([A, 'UNSPENT'], [B, 'SPENT']),
     }),
     { kind: 'release', spentInputIndexes: [1] },
   )
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'condition-attested', inputStates: ['SPENT'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'condition-attested',
+      inputs: [A],
+      inputStates: reading([A, 'SPENT']),
+    }),
     { kind: 'restore' },
   )
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'condition-attested',
-      inputStates: ['PENDING', 'UNSPENT'],
+      inputs: [A, B],
+      inputStates: reading([A, 'PENDING'], [B, 'UNSPENT']),
     }),
     { kind: 'wait' },
   )
@@ -92,52 +120,106 @@ test('settles a mixed reading on any coded refusal and keeps an unspent one wait
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'coded-refusal',
-      inputStates: ['UNSPENT', 'SPENT'],
+      inputs: [A, B],
+      inputStates: reading([A, 'UNSPENT'], [B, 'SPENT']),
     }),
     { kind: 'release', spentInputIndexes: [1] },
   )
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'coded-refusal', inputStates: ['SPENT', 'SPENT'] }),
+    decideCtfRangeRequestSettlement({
+      refusal: 'coded-refusal',
+      inputs: [A, B],
+      inputStates: reading([A, 'SPENT'], [B, 'SPENT']),
+    }),
     { kind: 'restore' },
   )
   // With every input unspent, a coded refusal does not prove the request is final.
   assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: 'coded-refusal', inputStates: ['UNSPENT'] }),
-    { kind: 'wait' },
-  )
-  assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'coded-refusal',
-      inputStates: ['SPENT', 'unknown'],
+      inputs: [A],
+      inputStates: reading([A, 'UNSPENT']),
     }),
     { kind: 'wait' },
   )
   assert.deepEqual(
     decideCtfRangeRequestSettlement({
       refusal: 'coded-refusal',
-      inputStates: ['SPENT', 'PENDING'],
+      inputs: [A, B],
+      inputStates: reading([A, 'SPENT'], [B, 'unknown']),
+    }),
+    { kind: 'wait' },
+  )
+  assert.deepEqual(
+    decideCtfRangeRequestSettlement({
+      refusal: 'coded-refusal',
+      inputs: [A, B],
+      inputStates: reading([A, 'SPENT'], [B, 'PENDING']),
     }),
     { kind: 'wait' },
   )
 })
 
-test('replays without a refusal unless every input is spent or one is pending', () => {
-  assert.deepEqual(decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['UNSPENT'] }), {
-    kind: 'replay',
-  })
-  // A mixed reading replays to obtain the mint's spent-input answer.
-  assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['SPENT', 'UNSPENT'] }),
-    { kind: 'replay' },
+test('releases the spent input of a reordered reading by its Y', () => {
+  for (const refusal of ['outputs-signed', 'condition-attested', 'coded-refusal'] as const) {
+    assert.deepEqual(
+      decideCtfRangeRequestSettlement({
+        refusal,
+        inputs: [A, B],
+        inputStates: reading([B, 'SPENT'], [A, 'UNSPENT']),
+      }),
+      { kind: 'release', spentInputIndexes: [1] },
+      refusal,
+    )
+    assert.deepEqual(
+      decideCtfRangeRequestSettlement({
+        refusal,
+        inputs: [A, B],
+        inputStates: reading([B, 'UNSPENT'], [A, 'SPENT']),
+      }),
+      { kind: 'release', spentInputIndexes: [0] },
+      refusal,
+    )
+  }
+})
+
+test('waits on a reading that does not hold each exact input Y once', () => {
+  // A positional reading of each case would release or restore the request.
+  const cases: Array<[string, unknown]> = [
+    ['missing', reading([A, 'SPENT'])],
+    ['extra', reading([A, 'UNSPENT'], [B, 'UNSPENT'], [FOREIGN, 'SPENT'])],
+    ['duplicate', reading([A, 'UNSPENT'], [A, 'UNSPENT'])],
+    ['conflicting duplicate', reading([A, 'UNSPENT'], [A, 'SPENT'])],
+    ['foreign', reading([A, 'UNSPENT'], [FOREIGN, 'SPENT'])],
+    ['states without Y', ['UNSPENT', 'SPENT']],
+    ['not an array', { states: reading([A, 'UNSPENT'], [B, 'SPENT']) }],
+  ]
+  for (const refusal of ['outputs-signed', 'condition-attested', 'coded-refusal'] as const) {
+    for (const [name, inputStates] of cases) {
+      assert.deepEqual(
+        decideCtfRangeRequestSettlement({ refusal, inputs: [A, B], inputStates }),
+        { kind: 'wait' },
+        `${refusal}: ${name}`,
+      )
+    }
+  }
+})
+
+test('rejects a request without inputs or with an unsupported input keyset', () => {
+  assert.throws(
+    () =>
+      decideCtfRangeRequestSettlement({ refusal: 'coded-refusal', inputs: [], inputStates: [] }),
+    /inputs are missing/,
   )
-  assert.deepEqual(decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['SPENT'] }), {
-    kind: 'restore',
-  })
-  assert.deepEqual(
-    decideCtfRangeRequestSettlement({ refusal: null, inputStates: ['PENDING', 'SPENT'] }),
-    { kind: 'wait' },
+  assert.throws(
+    () =>
+      decideCtfRangeRequestSettlement({
+        refusal: 'coded-refusal',
+        inputs: [{ id: `02${'aa'.repeat(32)}`, secret: 'input-a' }],
+        inputStates: reading([A, 'SPENT']),
+      }),
+    /keyset ID/,
   )
-  assert.throws(() => decideCtfRangeRequestSettlement({ refusal: null, inputStates: [] }))
 })
 
 test('treats network failures, timeouts, 5xx, and rate limits as transient', () => {

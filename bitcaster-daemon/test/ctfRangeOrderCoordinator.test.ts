@@ -753,8 +753,6 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
         let countersBeforeSourceTransaction: Awaited<ReturnType<typeof readCounters>> | undefined
         let countersAtLostCommitReply: Awaited<ReturnType<typeof readCounters>> | undefined
         const wallet = new FakeWallet([proof])
-        wallet.checkProofsStates = async (proofs) =>
-          proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
         wallet.beforePrepareSwap = async () => {
           countersBeforeSourceTransaction = await readCounters()
         }
@@ -1644,6 +1642,143 @@ test('daemon retains source-consolidation reservations after exact retry rejecti
   )
 })
 
+// Raw mint responses for a request's inputs that do not hold each exact input
+// Y once. A positional reading of most cases would release, restore, or
+// replay the request.
+const FOREIGN_INPUT_Y = proofY({ secret: 'foreign-input' })
+const MISMATCHED_INPUT_READINGS: ReadonlyArray<
+  readonly [string, (Ys: readonly string[]) => unknown[]]
+> = [
+  ['missing', (Ys) => Ys.slice(1).map((Y) => unspentEntry(Y))],
+  ['extra', (Ys) => [...Ys, FOREIGN_INPUT_Y].map((Y) => unspentEntry(Y))],
+  ['duplicate', (Ys) => Ys.map(() => unspentEntry(Ys[0]!))],
+  [
+    'conflicting duplicate',
+    (Ys) => [
+      { ...unspentEntry(Ys[0]!), state: 'SPENT' },
+      ...Ys.slice(0, -1).map((Y) => unspentEntry(Y)),
+    ],
+  ],
+  ['foreign', (Ys) => [...Ys.slice(1), FOREIGN_INPUT_Y].map((Y) => unspentEntry(Y))],
+]
+
+/**
+ * Lose the acknowledgement of one same-keyset source or consolidation request,
+ * then recover it once while the mint answers its NUT-07 check with `read`.
+ */
+async function recoverLostRequestWithReading(
+  name: string,
+  request: 'source' | 'consolidation',
+  read: (Ys: readonly string[]) => unknown[],
+): Promise<{
+  readonly recovery: Awaited<ReturnType<DaemonCtfRangeOrderCoordinator['recover']>>
+  readonly replays: number
+  readonly restores: number
+  readonly operationState: string | undefined
+}> {
+  const proofs = (request === 'source' ? [256, 256, 256] : [2, 2, 2, 2]).map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+  )
+  let result:
+    | {
+        recovery: Awaited<ReturnType<DaemonCtfRangeOrderCoordinator['recover']>>
+        replays: number
+        restores: number
+        operationState: string | undefined
+      }
+    | undefined
+  await withDaemonProfile(
+    {
+      prefix: `bitcaster-lost-${request}-${name}-`,
+      incarnationId: `lost-${request}-${name}-test`,
+      proofs,
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(proofs, 'unspent')
+      let lost = false
+      let restores = 0
+      const mint = readingMint(request === 'source' ? fakeMint(64, 1_000) : fakeMint(3), (Ys) =>
+        lost ? read(Ys) : Ys.map((Y) => unspentEntry(Y)),
+      )
+      const client = fakeEngineClient(() => {
+        throw new Error('an unresolved request must not request a capability')
+      })
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        createWallet: () => wallet,
+        restoreOutputs: async () => {
+          restores += 1
+          throw new Error('exact output restore reached')
+        },
+        now: () => 10_000,
+        randomId: randomIds(`lost-${request}-${name}`),
+      })
+      await assert.rejects(
+        coordinator.prepare(
+          request === 'source'
+            ? orderRequest()
+            : {
+                ...orderRequest(),
+                price: 5,
+                amountSubunits: 1_000,
+                minimumFillAmountSubunits: 1_000,
+                consolidateProofs: true,
+              },
+          client,
+        ),
+        /mint swap acknowledgement lost/,
+      )
+      const completeCalls = wallet.completeCalls
+      lost = true
+      const recovery = await coordinator.recover(WALLET_SEED_HEX, client)
+      const suffix = request === 'source' ? ':source' : ':source:consolidation:0'
+      result = {
+        recovery,
+        replays: wallet.completeCalls - completeCalls,
+        restores,
+        operationState: (await readState())?.proofOperations[
+          (await counterRangeId(directory, 'client-order-1')) + suffix
+        ]?.state,
+      }
+    },
+  )
+  return result!
+}
+
+for (const request of ['source', 'consolidation'] as const) {
+  for (const [name, read] of MISMATCHED_INPUT_READINGS) {
+    test(`daemon keeps a lost same-keyset ${request} pending when its recovery reading is ${name}`, async () => {
+      const outcome = await recoverLostRequestWithReading(
+        `mismatch-${name.replace(' ', '-')}`,
+        request,
+        read,
+      )
+
+      assert.deepEqual(outcome.recovery.recovered, [])
+      assert.equal(outcome.recovery.pending.length, 1)
+      assert.match(outcome.recovery.pending[0]!.error, /proof-state response is invalid/)
+      assert.equal(outcome.replays, 0)
+      assert.equal(outcome.restores, 0)
+      assert.equal(outcome.operationState, 'prepared')
+    })
+  }
+
+  test(`daemon classifies a reordered recovery reading of a lost same-keyset ${request} by Y`, async () => {
+    // The mint lists every input as spent, in reverse input order.
+    const outcome = await recoverLostRequestWithReading('reordered', request, (Ys) =>
+      Ys.map((Y) => ({ ...unspentEntry(Y), state: 'SPENT' })).reverse(),
+    )
+
+    assert.deepEqual(outcome.recovery.recovered, [])
+    assert.equal(outcome.recovery.pending.length, 1)
+    assert.match(outcome.recovery.pending[0]!.error, /exact output restore reached/)
+    assert.equal(outcome.replays, 0)
+    assert.equal(outcome.restores, 1)
+    assert.equal(outcome.operationState, 'prepared')
+  })
+}
+
 test('daemon consolidation replay does not restore successors consumed after commit', async () => {
   const proofs = [2, 2, 2, 2].map((amount) =>
     signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
@@ -1755,7 +1890,7 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
       const client = fakeEngineClient(boundCapability)
       const ids = ['range-operation-consolidated', 'range-authorization-consolidated']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => fakeMint(3),
+        createMint: () => lostAcknowledgementMint(wallet, fakeMint(3)),
         createWallet: () => wallet,
         restoreOutputs: async () => ({}),
         now: () => 10_000,
@@ -1810,7 +1945,7 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
       )
 
       const recoveredCoordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
-        createMint: () => fakeMint(3),
+        createMint: () => lostAcknowledgementMint(wallet, fakeMint(3)),
         createWallet: () => wallet,
         restoreOutputs: async (_mintUrl, groups) =>
           Object.fromEntries(
@@ -2020,8 +2155,6 @@ test('daemon keeps source reservations after a definite exact replay rejection a
         if (sourcePreviewDigests.length === 1) throw new Error('mint swap acknowledgement lost')
         throw new MintOperationError(11001, 'definite replay rejection')
       }
-      wallet.checkProofsStates = async (proofs) =>
-        proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(64, 1_000),
         createWallet: () => wallet,
@@ -2100,8 +2233,6 @@ test('daemon applies a late exact source result and refunds locally without capa
       let sourceCalls = 0
       let originalPreview: SwapPreview | null = null
       const sourcePreviewDigests: string[] = []
-      wallet.checkProofsStates = async (proofs) =>
-        proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       wallet.completeSwap = async (preview) => {
         sourceCalls += 1
         sourcePreviewDigests.push(swapPreviewDigest(preview))
@@ -4580,8 +4711,6 @@ test('daemon releases a refused buy source with 11008 at submit', async () => {
         signAsOtherClient(signedOutputs, [OFFER_KEYSET_ID])
         throw new MintOperationError(11008, 'Duplicate outputs')
       }
-      wallet.checkProofsStates = async (proofs) =>
-        proofs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(64, 1_000, () => signedOutputs),
         createWallet: () => wallet,
@@ -4673,8 +4802,6 @@ test('daemon releases a refused consolidation round and ends the order attempt',
         swaps += 1
         throw new MintOperationError(11003, 'Blinded message already signed or pending')
       }
-      wallet.checkProofsStates = async (inputs) =>
-        inputs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         createWallet: () => wallet,
@@ -4742,6 +4869,139 @@ test('daemon releases a refused consolidation round and ends the order attempt',
     },
   )
 })
+
+/** A consolidation round of four 2-msat proofs whose exact replay meets one refusal. */
+async function refusedConsolidationRound(
+  name: string,
+  refusal: MintOperationError,
+  read: (Ys: readonly string[], spentY: string) => unknown[],
+  assertOutcome: (
+    error: unknown,
+    context: { readonly directory: string; readonly spentSecret: string },
+  ) => Promise<void>,
+): Promise<void> {
+  const proofs = [2, 2, 2, 2].map((amount) =>
+    signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+  )
+  await withDaemonProfile(
+    {
+      prefix: `bitcaster-consolidation-${name}-`,
+      incarnationId: `consolidation-${name}-test`,
+      proofs,
+      asset: regularAsset(),
+    },
+    async ({ directory, fence }) => {
+      const wallet = new FakeWallet(proofs)
+      let spentSecret: string | null = null
+      wallet.completeSwap = async (preview) => {
+        // Another client of the seed spent the first input of this request.
+        spentSecret = preview.inputs[0]!.secret
+        throw refusal
+      }
+      const mint = readingMint(fakeMint(3), (Ys) =>
+        spentSecret === null
+          ? Ys.map((Y) => unspentEntry(Y))
+          : read(Ys, proofY({ secret: spentSecret })),
+      )
+      const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+        createMint: () => mint,
+        createWallet: () => wallet,
+        now: () => 10_000,
+        randomId: randomIds(`consolidation-${name}`),
+      })
+
+      const error = await coordinator
+        .prepare(
+          {
+            ...orderRequest(),
+            price: 5,
+            amountSubunits: 1_000,
+            minimumFillAmountSubunits: 1_000,
+            consolidateProofs: true,
+          },
+          fakeEngineClient(() => {
+            throw new Error('a refused consolidation must not request a capability')
+          }),
+        )
+        .then(
+          () => null,
+          (value: unknown) => value,
+        )
+
+      assert.ok(spentSecret !== null)
+      await assertOutcome(error, { directory, spentSecret })
+    },
+  )
+}
+
+test('daemon retires the spent input of a refused consolidation round by its Y', async () => {
+  await refusedConsolidationRound(
+    'refused-reordered',
+    new MintOperationError(11001, 'Token already spent'),
+    // The mint lists the states in reverse input order.
+    (Ys, spentY) =>
+      Ys.map((Y) =>
+        Y === spentY ? { ...unspentEntry(Y), state: 'SPENT' } : unspentEntry(Y),
+      ).reverse(),
+    async (error, { spentSecret }) => {
+      assert.ok(error instanceof CtfRangeOrderReleasedError)
+      assert.equal(error.mintError.code, 11001)
+      const proofs = (await readState())?.wallet.proofs ?? []
+      assert.equal(proofs.length, 3)
+      assert.ok(
+        proofs.every(({ proof, state }) => proof.secret !== spentSecret && state === 'available'),
+      )
+    },
+  )
+})
+
+for (const [name, read] of MISMATCHED_INPUT_READINGS) {
+  test(`daemon keeps a refused consolidation round reserved when the reading is ${name}`, async () => {
+    await refusedConsolidationRound(
+      `refused-mismatch-${name.replace(' ', '-')}`,
+      new MintOperationError(11003, 'Blinded message already signed or pending'),
+      (Ys) => read(Ys),
+      async (error, { directory }) => {
+        assert.ok(error instanceof Error)
+        assert.match(error.message, /^range consolidation rejection remains pending \(/)
+        assert.deepEqual((error as { mintError?: unknown }).mintError, {
+          code: 11003,
+          detail: 'Blinded message already signed or pending',
+        })
+        const state = await readState()
+        const consolidation = Object.values(state?.proofOperations ?? {}).filter(
+          ({ metadata }) => metadata.purpose === 'ctf-range-authorization-consolidation',
+        )
+        assert.equal(consolidation.length, 1)
+        assert.equal(consolidation[0]!.state, 'prepared')
+        const inputs = new Set(consolidation[0]!.inputs.map(({ secret }) => secret))
+        assert.equal(state?.wallet.proofs.length, 4)
+        for (const { proof, state: proofState } of state?.wallet.proofs ?? []) {
+          assert.equal(proofState, inputs.has(proof.secret) ? 'reserved' : 'available')
+        }
+        const database = await openDaemonStateSqlite(directory)
+        try {
+          assert.equal(
+            database
+              .prepare('SELECT lifecycle_state AS state FROM daemon_ctf_range_preparations')
+              .get()?.state,
+            'prepared',
+          )
+          assert.notEqual(
+            database
+              .prepare(
+                "SELECT operation_state AS state FROM custody_operations WHERE semantic_kind = 'proof-consolidation'",
+              )
+              .get()?.state,
+            'aborted',
+          )
+        } finally {
+          database.close()
+        }
+      },
+    )
+  })
+}
 
 test('daemon releases a partial sell after 11001 with a spent fee input and retires that input', async () => {
   const cash = cashProof(64)
@@ -6133,8 +6393,6 @@ test('daemon refuses a racing second sell in the reservation transaction', async
         swaps += 1
         throw new MintOperationError(12002, 'Keyset is inactive')
       }
-      wallet.checkProofsStates = async (inputs) =>
-        inputs.map(({ secret }) => ({ Y: secret, state: 'UNSPENT' as const }))
       // Hold each sell after its early check and before its reservation.
       const planned: Array<() => void> = []
       const plannedSignals = [0, 1].map(
@@ -7256,6 +7514,7 @@ class FakeWallet {
   beforePrepareSwap?: () => Promise<void>
   beforeCompleteConditionalSwap?: () => Promise<void>
   #observedStateAfterLostAcknowledgement: 'SPENT' | 'UNSPENT' | null = null
+  #lostInputYs: ReadonlySet<string> = new Set()
 
   constructor(
     _sourceProofs: Proof[],
@@ -7323,6 +7582,7 @@ class FakeWallet {
     this.completeCalls += 1
     if (this.#lostAcknowledgementState !== null && this.completeCalls === 1) {
       this.#observedStateAfterLostAcknowledgement = this.#lostAcknowledgementState
+      this.#lostInputYs = new Set(preview.inputs.map((proof) => proofY(proof)))
       throw new Error('mint swap acknowledgement lost')
     }
     return {
@@ -7370,16 +7630,33 @@ class FakeWallet {
     )
   }
 
-  async checkProofsStates(
-    proofs: Array<Pick<Proof, 'id' | 'secret'>>,
-  ): Promise<Array<{ Y: string; state: 'SPENT' | 'UNSPENT' }>> {
-    if (this.#observedStateAfterLostAcknowledgement === null) {
-      throw new Error('fresh preparation must not resume a source')
-    }
-    return proofs.map(({ secret }) => ({
-      Y: secret,
-      state: this.#observedStateAfterLostAcknowledgement!,
-    }))
+  /** The state of one input of the request whose acknowledgement was lost, or null. */
+  stateAfterLostAcknowledgement(Y: string): 'SPENT' | 'UNSPENT' | null {
+    return this.#lostInputYs.has(Y) ? this.#observedStateAfterLostAcknowledgement : null
+  }
+}
+
+/**
+ * A fake mint whose NUT-07 check reports the inputs of a wallet's lost request
+ * in the lost state, and every other proof as unspent.
+ */
+function lostAcknowledgementMint(wallet: FakeWallet, base: ReturnType<typeof fakeMint>) {
+  return readingMint(base, (Ys) =>
+    Ys.map((Y) => ({
+      ...unspentEntry(Y),
+      state: wallet.stateAfterLostAcknowledgement(Y) ?? 'UNSPENT',
+    })),
+  )
+}
+
+/** A fake mint whose NUT-07 check answers each request with a raw response. */
+function readingMint(base: ReturnType<typeof fakeMint>, respond: (Ys: string[]) => unknown[]) {
+  return {
+    ...base,
+    check: async ({ Ys }: { Ys: string[] }) => {
+      base.calls.check += 1
+      return { states: respond(Ys) }
+    },
   }
 }
 
@@ -8075,6 +8352,10 @@ function exactRequestJson(request: CtfConvertRequest): string {
   return JSON.stringify(request, (_key, value) =>
     typeof value === 'bigint' ? value.toString() : value,
   )
+}
+
+function unspentEntry(Y: string) {
+  return { Y, state: 'UNSPENT' as const, witness: null }
 }
 
 function proofY(proof: Pick<Proof, 'secret'>): string {

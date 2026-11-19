@@ -1,3 +1,5 @@
+import { classifyExactInputStates } from './exactInputStates.ts'
+
 /**
  * Cashu mint failures that a range-order client may act on.
  *
@@ -69,40 +71,56 @@ export function settlingMintRefusal(failure: CashuMintFailure): CtfRangeSettling
 }
 
 export type CtfRangeRequestSettlement =
-  | { readonly kind: 'replay' }
   | { readonly kind: 'restore' }
   | { readonly kind: 'wait' }
   | { readonly kind: 'release'; readonly spentInputIndexes: readonly number[] }
 
 /**
- * Decide how a client settles one persisted mint request from a fresh NUT-07
- * reading of every input, taken under the wallet profile lock.
+ * Decide how a client settles one refused persisted mint request from a fresh
+ * NUT-07 reading of its exact inputs, taken under the wallet profile lock.
  *
+ * - A reading that does not hold each exact input Y once waits. It is not
+ *   evidence, so nothing is released.
  * - A pending or unknown input waits.
  * - All spent inputs need the exact NUT-09 restore: an earlier copy can have
  *   committed.
- * - Without a refusal, the client replays the exact request. A mixed reading
- *   replays too, so that the mint answers with a code.
  * - After an outputs-signed or condition-attested refusal, unspent inputs are
  *   released and spent inputs retired.
  * - After any other coded refusal, a mixed reading retires the spent inputs
  *   and releases the rest. All unspent inputs do not prove that the request
  *   is final, so they wait.
+ *
+ * `spentInputIndexes` are positions in `inputs`, matched by Y.
  */
 export function decideCtfRangeRequestSettlement(input: {
-  readonly refusal: CtfRangeSettlingRefusal | null
-  readonly inputStates: readonly unknown[]
+  readonly refusal: CtfRangeSettlingRefusal
+  readonly inputs: readonly { readonly id: string; readonly secret: string }[]
+  readonly inputStates: unknown
 }): CtfRangeRequestSettlement {
-  if (!Array.isArray(input.inputStates) || input.inputStates.length === 0) {
-    throw new Error('CTF range request input states are missing')
+  if (!Array.isArray(input.inputs) || input.inputs.length === 0) {
+    throw new Error('CTF range request inputs are missing')
   }
-  const states = input.inputStates
-  if (states.some((state) => state !== 'SPENT' && state !== 'UNSPENT')) return { kind: 'wait' }
-  const spentInputIndexes = states.flatMap((state, index) => (state === 'SPENT' ? [index] : []))
-  if (spentInputIndexes.length === states.length) return { kind: 'restore' }
+  const states = classifyExactInputStates(input.inputs, input.inputStates)
+  let spentInputIndexes: readonly number[]
+  switch (states.kind) {
+    case 'spent':
+      return { kind: 'restore' }
+    case 'unspent':
+      spentInputIndexes = []
+      break
+    case 'mixed':
+      spentInputIndexes = states.states.flatMap((state, index) =>
+        state === 'SPENT' ? [index] : [],
+      )
+      break
+    case 'pending':
+    case 'unknown-state':
+    case 'mismatch':
+      return { kind: 'wait' }
+    default:
+      return assertNever(states)
+  }
   switch (input.refusal) {
-    case null:
-      return { kind: 'replay' }
     case 'outputs-signed':
     case 'condition-attested':
       return { kind: 'release', spentInputIndexes }
@@ -132,5 +150,5 @@ function boundedDetail(value: string): string {
 }
 
 function assertNever(value: never): never {
-  throw new Error(`unhandled mint refusal variant: ${String(value)}`)
+  throw new Error(`unhandled mint refusal variant: ${JSON.stringify(value)}`)
 }
