@@ -340,3 +340,10 @@ repair. These reads do not resubmit an order.
 A successful response with zero depth remains valid, including for a closed
 market. A previous snapshot is display data only. Obtain a current order
 preview and submit through normal order admission before trading.
+
+The outcome name in `{marketId}` is case-sensitive. When the condition is
+registered but has no outcome with that exact name, the read returns HTTP 404
+with code `order-market-not-found` and type `/errors/order-market-not-found`.
+The resting-order list and the market metadata reads of the same `{marketId}`
+return the same response. A retry with the same `{marketId}` gets the same
+response.

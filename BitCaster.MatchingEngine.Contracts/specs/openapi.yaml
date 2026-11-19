@@ -503,6 +503,14 @@ paths:
                 $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '404':
+          description: >
+            order-market-not-found. The condition is registered, but it has
+            no outcome with this exact name. Outcome names are case-sensitive.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
     post:
       operationId: submitOrder
@@ -953,6 +961,14 @@ paths:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
+        '404':
+          description: >
+            order-market-not-found. The condition is registered, but it has
+            no outcome with this exact name. Outcome names are case-sensitive.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
         '503':
           description: >
@@ -985,6 +1001,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/MarketMetadataSnapshot'
+        '404':
+          description: >
+            order-market-not-found. The condition is registered, but it has
+            no outcome with this exact name. Outcome names are case-sensitive.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
 
   /api/v1/{conditionId}/thumbnail:
     get:
