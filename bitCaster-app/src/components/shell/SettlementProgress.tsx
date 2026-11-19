@@ -8,6 +8,7 @@ import { readBrowserCtfRangeOrderRefusalOperations } from "@/stores/ctf-range-or
 import {
   dismissOrderFailureNotice,
   isFinalFunds,
+  offersRetry,
   orderFailureFundsReader,
   orderFailureNoticeKey,
   readOrderFailureFundsObservations,
@@ -15,7 +16,10 @@ import {
   useOrderFailureNotices,
   type OrderFailureNotice,
 } from "@/stores/orderFailureNotices";
-import { orderFailureText, withFundsSentence } from "@/lib/orderFailureText";
+import { requestTradeRetry } from "@/stores/tradeRetryRequest";
+import { fundsSentence, orderFailureReasonText, withFundsSentence } from "@/lib/orderFailureText";
+import { ctfRangeOrderLock, type CtfRangeOrderLock } from "@/lib/ctfRangeOrderFunds";
+import { useCtfRangeOrderLocks } from "@/hooks/useCtfRangeOrderLocks";
 import { useWalletStore } from "@/stores/wallet";
 import {
   browserWalletIdFromMnemonic,
@@ -35,8 +39,16 @@ import {
 
 const NO_ENTRIES: readonly SettlementProgressEntry[] = [];
 const NO_OPERATIONS: readonly string[] = [];
+const NO_LOCKS: Readonly<Record<string, CtfRangeOrderLock>> = {};
 
-export function SettlementProgress({ canReadStatus }: { canReadStatus: boolean }) {
+export function SettlementProgress({
+  canReadStatus,
+  onNavigate,
+}: {
+  canReadStatus: boolean;
+  /** Opens a page of the app, as the bell does. */
+  onNavigate?: (href: string) => void;
+}) {
   const mnemonic = useWalletStore((state) => state.mnemonic);
   const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
   const walletId = useMemo(() => browserWalletIdFromMnemonic(mnemonic), [mnemonic]);
@@ -47,7 +59,7 @@ export function SettlementProgress({ canReadStatus }: { canReadStatus: boolean }
   );
   return scopeId === null || walletId === null ? null : (
     <>
-      <TradeFailures scopeId={scopeId} />
+      <TradeFailures scopeId={scopeId} onNavigate={onNavigate} />
       <ProgressPages
         key={`${scopeId}:${signerRevision}:${canReadStatus}`}
         scope={{ scopeId, walletId, signerRevision }}
@@ -59,14 +71,27 @@ export function SettlementProgress({ canReadStatus }: { canReadStatus: boolean }
 
 /**
  * A final order failure stays after wallet recovery ends the journal
- * operation, until the user dismisses it.
+ * operation, until the user dismisses it. While the refund is pending, the
+ * journal names the locked funds, and Retry starts the same order again.
  */
-function TradeFailures({ scopeId }: { scopeId: string }) {
-  const { t } = useTranslation();
+function TradeFailures({
+  scopeId,
+  onNavigate,
+}: {
+  scopeId: string;
+  onNavigate?: (href: string) => void;
+}) {
+  const { t, i18n } = useTranslation();
   const stored = useOrderFailureNotices((state) => state.notices);
   const notices = useMemo(() => visibleFailures(stored, scopeId), [stored, scopeId]);
   const titles = useMarketTitles();
   useRefundObservation(stored, scopeId);
+  const pendingOperations = useMemo(
+    () =>
+      notices.filter((notice) => !isFinalFunds(notice.funds)).map((notice) => notice.operationId),
+    [notices],
+  );
+  const locks = useCtfRangeOrderLocks(scopeId, pendingOperations);
   if (notices.length === 0) return null;
   return (
     <section
@@ -80,17 +105,40 @@ function TradeFailures({ scopeId }: { scopeId: string }) {
       <ul className="mt-2 space-y-2">
         {notices.map((notice) => {
           const market = marketLabel(notice.marketId, titles, notice.marketTitle);
+          const reason = orderFailureReasonText(t, notice.reason);
+          const pending = !isFinalFunds(notice.funds);
+          const lock = locks?.[notice.operationId] ?? null;
+          // Before the first journal read, a pending refund shows no funds
+          // line, so the generic line does not change into the locked amount.
+          const funds =
+            pending && locks === undefined
+              ? null
+              : fundsSentence(t, notice.funds, { lock, locale: i18n.language });
           return (
-            <li key={notice.operationId} className="flex items-start gap-3 text-sm">
+            <li key={notice.operationId} className="flex items-start gap-1 text-sm">
               <div className="min-w-0 flex-1">
                 <p className="break-words font-medium">
                   {t("settlementProgress.orderOnMarket", { market })}
                 </p>
-                <p>{orderFailureText(t, notice)}</p>
+                {reason !== null && <p>{reason}</p>}
+                {funds !== null && <p>{funds}</p>}
+                {pending && lock !== null && offersRetry(notice.reason) && (
+                  <button
+                    type="button"
+                    className="-ml-2 inline-flex min-h-11 items-center rounded px-2 font-medium underline hover:bg-rose-100 dark:hover:bg-rose-900/50"
+                    aria-label={t("settlementProgress.retryTrade", { market })}
+                    onClick={() => {
+                      requestTradeRetry(lock.retry);
+                      onNavigate?.(`/markets/${lock.retry.conditionId}`);
+                    }}
+                  >
+                    {t("settlementProgress.retry")}
+                  </button>
+                )}
               </div>
               <button
                 type="button"
-                className="rounded p-1 hover:bg-rose-100 dark:hover:bg-rose-900/50"
+                className="-mr-2 -mt-2.5 flex h-11 w-11 shrink-0 items-center justify-center rounded hover:bg-rose-100 dark:hover:bg-rose-900/50"
                 aria-label={t("settlementProgress.dismissFailure", { market })}
                 onClick={() => void dismissOrderFailureNotice(notice.scopeId, notice.operationId)}
               >
@@ -180,6 +228,15 @@ function ProgressPages({
             .filter((record) => isLocalCtfRangeOrderRefusal(record.lifecycleState))
             .map((record) => record.rangeOperationId),
         ),
+        // Only a stopped order shows its funds in this list.
+        locks: Object.fromEntries(
+          result.preparations.flatMap((record) => {
+            const lock = isLocalCtfRangeOrderRefusal(record.lifecycleState)
+              ? ctfRangeOrderLock(record)
+              : null;
+            return lock === null ? [] : [[record.rangeOperationId, lock] as const];
+          }),
+        ),
       };
     } catch {
       return {
@@ -188,6 +245,7 @@ function ProgressPages({
         nextCursor: null,
         entries: [],
         refused: NO_OPERATIONS,
+        locks: NO_LOCKS,
       };
     }
   }, [scopeId, after]);
@@ -237,19 +295,30 @@ function ProgressPages({
       {current.unavailable && (
         <p className="text-sm">{t("settlementProgress.journalUnavailable")}</p>
       )}
-      <ProgressItems items={inProgress} canReadStatus={canReadStatus} {...progress} />
-      <div className="mt-2 flex gap-3 text-sm">
-        {after && (
-          <button type="button" className="underline" onClick={() => setAfter(undefined)}>
-            {t("settlementProgress.first")}
-          </button>
-        )}
-        {current.nextCursor && (
-          <button type="button" className="underline" onClick={() => setAfter(current.nextCursor!)}>
-            {t("common.next")}
-          </button>
-        )}
-      </div>
+      <ProgressItems
+        items={inProgress}
+        canReadStatus={canReadStatus}
+        locks={current.locks}
+        {...progress}
+      />
+      {(after !== undefined || current.nextCursor !== null) && (
+        <div className="mt-2 flex gap-3 text-sm">
+          {after && (
+            <button type="button" className="underline" onClick={() => setAfter(undefined)}>
+              {t("settlementProgress.first")}
+            </button>
+          )}
+          {current.nextCursor && (
+            <button
+              type="button"
+              className="underline"
+              onClick={() => setAfter(current.nextCursor!)}
+            >
+              {t("common.next")}
+            </button>
+          )}
+        </div>
+      )}
     </section>
   );
 }
@@ -290,6 +359,7 @@ async function refusedOperations(
 function ProgressItems({
   items,
   canReadStatus,
+  locks,
   observations,
   completed,
   loading,
@@ -297,8 +367,9 @@ function ProgressItems({
 }: {
   items: readonly { entry: SettlementProgressEntry; message: string; final: boolean }[];
   canReadStatus: boolean;
+  locks: Readonly<Record<string, CtfRangeOrderLock>>;
 } & ReturnType<typeof useSettlementProgress>) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const titles = useMarketTitles();
   // A final entry ended without a trade; only its refund is active.
   const active = items.some((item) => !item.final);
@@ -315,7 +386,14 @@ function ProgressItems({
                   market: marketLabel(entry.marketId, titles),
                 })}
               </p>
-              <p>{final ? withFundsSentence(t, text, "pending") : text}</p>
+              <p>
+                {final
+                  ? withFundsSentence(t, text, "pending", {
+                      lock: locks[entry.operationId] ?? null,
+                      locale: i18n.language,
+                    })
+                  : text}
+              </p>
               {observation?.group && observation.unavailable && (
                 <p>{t("settlementProgress.stale")}</p>
               )}

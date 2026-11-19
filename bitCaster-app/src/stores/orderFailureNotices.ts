@@ -18,11 +18,13 @@ export const ORDER_FAILURE_NOTICES_STORAGE_KEY = "bitcaster-order-failures";
 export const ORDER_FAILURE_NOTICES_MAX = 100;
 
 /**
- * Why an order failed. `Unspecified` is a final failure with no specific
- * reason, for example a settlement that the engine rejected without a
- * recorded reason.
+ * Why an order failed. `FokCancelled` is a FOK that the engine cancelled: the
+ * engine cancels a public FOK only when it cannot fill the order within the
+ * consented total, and the wire carries no other reason. `Unspecified` is a
+ * final failure with no specific reason, for example a settlement that the
+ * engine rejected without a recorded reason.
  */
-export type OrderFailureReason = OrderSettlementFailureReason | "Unspecified";
+export type OrderFailureReason = OrderSettlementFailureReason | "FokCancelled" | "Unspecified";
 
 /**
  * The final failure of one order attempt of this wallet. It is display state
@@ -183,15 +185,39 @@ export const useOrderFailureNotices = create<OrderFailureNoticeState>()(
   ),
 );
 
-/** The locale key of the reason text. The panel and the bell show the same text. */
-export function orderFailureReasonTextKey(reason: OrderFailureReason): string {
+/**
+ * The locale key of the reason line. The panel and the bell show the same
+ * text. A failure with no known cause has no reason line: the heading already
+ * says that the trade failed.
+ */
+export function orderFailureReasonTextKey(reason: OrderFailureReason): string | null {
   switch (reason) {
     case "OwnOutputReused":
       return "settlementProgress.OwnOutputReused";
     case "GroupOutputReused":
       return "settlementProgress.GroupOutputReused";
+    case "FokCancelled":
+      return "settlementProgress.FokCancelled";
     case "Unspecified":
-      return "settlementProgress.failed";
+      return null;
+    default:
+      return assertNever(reason);
+  }
+}
+
+/**
+ * Whether Retry can start the same order again. A wallet that another browser
+ * or device uses at the same time can fail the retry the same way and repeat
+ * the Participation Score penalty.
+ */
+export function offersRetry(reason: OrderFailureReason): boolean {
+  switch (reason) {
+    case "OwnOutputReused":
+      return false;
+    case "GroupOutputReused":
+    case "FokCancelled":
+    case "Unspecified":
+      return true;
     default:
       return assertNever(reason);
   }
@@ -202,6 +228,7 @@ export function isSpecificReason(reason: OrderFailureReason): boolean {
   switch (reason) {
     case "OwnOutputReused":
     case "GroupOutputReused":
+    case "FokCancelled":
       return true;
     case "Unspecified":
       return false;
@@ -467,6 +494,7 @@ function decodeStoredReason(value: unknown): OrderFailureReason | null {
   switch (value) {
     case "OwnOutputReused":
     case "GroupOutputReused":
+    case "FokCancelled":
     case "Unspecified":
       return value;
     default:

@@ -55,8 +55,6 @@ export interface BrowserCtfRangeRecoveryFailure {
   /** Automatic replay cannot settle the operation. It halts at once, without a mint error. */
   readonly halt?: boolean;
   readonly retryAfterMs: number | null;
-  /** A protocol time when the next pass can make progress, such as authorization expiry. */
-  readonly notAfterMs?: number | null;
 }
 
 export type BrowserCtfRangeRecoveryScheduleStorage = Pick<
@@ -120,11 +118,7 @@ export class BrowserCtfRangeRecoverySchedule {
     if (failure.retryAfterMs !== null) {
       wait = Math.max(wait, Math.min(RETRY_AFTER_MAX_MS, Math.ceil(failure.retryAfterMs)));
     }
-    let nextAttemptAtMs = nowMs + wait;
-    const notAfterMs = failure.notAfterMs ?? null;
-    if (notAfterMs !== null && notAfterMs > nowMs) {
-      nextAttemptAtMs = Math.min(nextAttemptAtMs, notAfterMs);
-    }
+    const nextAttemptAtMs = nowMs + wait;
     // A failure without a mint refusal keeps the count of the last refusal.
     let refusal = previous?.refusal ?? null;
     let halted = false;
@@ -144,6 +138,23 @@ export class BrowserCtfRangeRecoverySchedule {
     entries[operationId] = { attempt, nextAttemptAtMs, refusal, halted };
     this.#write(scopeId, entries);
     return { halted };
+  }
+
+  /**
+   * The next mint request can make progress only at a protocol time, such as
+   * authorization expiry. Wait until then. The wait is not a failure, so it
+   * keeps the backoff step and the refusal count.
+   */
+  recordWait(scopeId: string, operationId: string, untilMs: number): void {
+    const entries = this.#read(scopeId);
+    const previous = entries[operationId];
+    entries[operationId] = {
+      attempt: previous?.attempt ?? 0,
+      nextAttemptAtMs: untilMs,
+      refusal: previous?.refusal ?? null,
+      halted: previous?.halted ?? false,
+    };
+    this.#write(scopeId, entries);
   }
 
   /** The operation advanced. Its next failure starts a new backoff. */

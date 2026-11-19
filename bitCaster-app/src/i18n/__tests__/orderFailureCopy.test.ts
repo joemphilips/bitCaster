@@ -14,29 +14,44 @@ function lookup(catalogue: Catalogue, key: string): unknown {
     );
 }
 
-/** The texts that the failure panel and the bell show for a final order failure. */
+/**
+ * The reason lines that the failure panel and the bell show for a final order
+ * failure. A failure with no known cause has no reason line.
+ */
 const REASON_KEYS = [
   "settlementProgress.OwnOutputReused",
   "settlementProgress.GroupOutputReused",
-  "settlementProgress.failed",
+  "settlementProgress.FokCancelled",
+];
+
+/** The funds lines of a pending refund that name the locked amount. */
+const LOCKED_FUNDS_KEYS = [
+  "settlementProgress.fundsLockedSats",
+  "settlementProgress.fundsLockedShares_other",
 ];
 
 /** Order-failure alerts and labels that used protocol jargon before. */
 const REWORDED_ORDER_FAILURE_KEYS = [
   ...REASON_KEYS,
+  ...LOCKED_FUNDS_KEYS,
   "settlementProgress.orderOnMarket",
   "settlementProgress.endedWithoutTrade",
   "settlementProgress.fundsPending",
   "settlementProgress.fundsReturned",
   "settlementProgress.dismissFailure",
+  "settlementProgress.retryTrade",
   "participationScore.kinds.reused-output-penalty",
   "walletRecovery.errors.order-attempt-ended",
   "walletRecovery.errors.settlement-capability-conflict",
   "walletRecovery.errors.order-capability-not-current",
 ];
 
-/** Status texts that the generic failure reason replaces. */
+/**
+ * Status texts that the generic failure reason replaced, and the generic
+ * reason, which repeated the heading.
+ */
 const REPLACED_STATUS_KEYS = [
+  "settlementProgress.failed",
   "settlementProgress.orderRequestRejected",
   "settlementProgress.submissionRejected",
   "settlementProgress.DefinitivelyRejected",
@@ -47,17 +62,31 @@ const REPLACED_STATUS_KEYS = [
 
 describe("final order failure copy", () => {
   it("uses the approved plain English reasons, heading and Score label", () => {
+    // Each reason starts with its cause.
     expect(en.settlementProgress.OwnOutputReused).toBe(
-      "This order was not completed because this wallet was used in another browser or device at the same time. A Participation Score penalty was charged.",
+      "This wallet was used in another browser or device at the same time, so nothing was traded. A Participation Score penalty was charged.",
     );
     expect(en.settlementProgress.GroupOutputReused).toBe(
-      "This order was not completed because another order in the same settlement failed. No penalty was charged.",
+      "Another order in the same settlement failed, so nothing was traded. No penalty was charged.",
     );
-    expect(lookup(en, "settlementProgress.failed")).toBe("This order was not completed.");
+    // The engine cancels a FOK only when it cannot fill within the consented total.
+    expect(en.settlementProgress.FokCancelled).toBe(
+      "The price or the available shares changed after your preview, so nothing was traded.",
+    );
     expect(lookup(en, "settlementProgress.endedWithoutTrade")).toBe(
       "This order ended without a trade.",
     );
     // The fee clause is part of the funds sentence (ADR-040, section 7).
+    expect(lookup(en, "settlementProgress.fundsLockedSats")).toBe(
+      "{{amount}} are locked until {{time}}. Then they return to this wallet, less preparation and refund fees.",
+    );
+    expect(lookup(en, "settlementProgress.fundsLockedShares_one")).toBe(
+      "{{amount}} is locked until {{time}}. Then it returns to this wallet, less preparation and refund fees.",
+    );
+    expect(lookup(en, "settlementProgress.fundsLockedShares_other")).toBe(
+      "{{amount}} are locked until {{time}}. Then they return to this wallet, less preparation and refund fees.",
+    );
+    // Without the journal facts, the funds sentence names no amount or time.
     expect(lookup(en, "settlementProgress.fundsPending")).toBe(
       "Your funds, less preparation and refund fees, return to this wallet after the order expires.",
     );
@@ -92,9 +121,28 @@ describe("final order failure copy", () => {
     },
   );
 
-  it("uses one English term for an order that was not completed", () => {
-    expect(JSON.stringify(en)).not.toMatch(/did not go through/i);
-    expect(en.walletRecovery.orderFailure).toBe("Order was not completed");
+  it("uses one English term for a trade that failed", () => {
+    expect(JSON.stringify(en)).not.toMatch(
+      /did not go through|was not completed|Order failed|Order cancelled/i,
+    );
+    expect(en.walletRecovery.orderFailure).toBe("Trade failed");
+    expect(en.notification.failed).toBe("Trade failed on “{{market}}”");
+    expect(en.notification.cancelled).toBe("Trade failed on “{{market}}”");
+    expect(en.trade.fokCancelled).toBe(`Trade failed. ${en.settlementProgress.FokCancelled}`);
+    expect(en.trade.tradeFailed).toBe("Trade failed.");
+  });
+
+  it("uses one Japanese term for a trade that failed", () => {
+    expect(JSON.stringify(ja)).not.toMatch(
+      /注文は完了しませんでした|注文が失敗しました|注文がキャンセルされました/,
+    );
+    for (const key of ["walletRecovery.orderFailure", "settlementProgress.failedTitle"]) {
+      expect(lookup(ja, key), key).toBe("取引が失敗しました");
+    }
+    expect(ja.notification.failed).toBe("「{{market}}」の取引が失敗しました");
+    expect(ja.notification.cancelled).toBe("「{{market}}」の取引が失敗しました");
+    expect(ja.trade.tradeFailed).toBe("取引が失敗しました。");
+    expect(ja.trade.fokCancelled).toBe(`取引が失敗しました。${ja.settlementProgress.FokCancelled}`);
   });
 
   it.each([
@@ -108,14 +156,23 @@ describe("final order failure copy", () => {
     expect(ja.settlementProgress.OwnOutputReused).toContain("Participation Score");
     expect(ja.settlementProgress.GroupOutputReused).not.toContain("Participation Score");
     for (const key of REASON_KEYS) {
-      expect(lookup(ja, key), key).toContain("この注文は完了しませんでした");
+      expect(lookup(ja, key), key).toContain("取引は行われませんでした");
     }
     // The fee terms of the existing fee notice.
-    for (const key of ["settlementProgress.fundsPending", "settlementProgress.fundsReturned"]) {
+    for (const key of [
+      "settlementProgress.fundsPending",
+      "settlementProgress.fundsReturned",
+      ...LOCKED_FUNDS_KEYS,
+    ]) {
       expect(lookup(ja, key), key).toContain("準備手数料と返金手数料");
       expect(lookup(ja, key), key).toContain("このウォレットに戻");
     }
     expect(lookup(ja, "settlementProgress.fundsPending")).toContain("注文の有効期限が切れた後");
+    for (const key of LOCKED_FUNDS_KEYS) {
+      expect(lookup(ja, key), key).toContain("{{amount}}");
+      expect(lookup(ja, key), key).toContain("{{time}}まで");
+    }
+    expect(ja.settlementProgress.retryTrade).toContain("{{market}}");
     expect(lookup(ja, "settlementProgress.orderOnMarket")).toContain("{{market}}");
     expect(ja.settlementProgress.failedTitle).toMatch(/取引/);
     expect(ja.settlementProgress.dismissFailure).toMatch(/閉じる$/);

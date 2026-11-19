@@ -52,7 +52,8 @@ import {
 import { buildTradeTicket } from "@/lib/tradeTicket";
 import { hasExecutableLiquidity } from "@/components/market-detail/orderBookViewModel";
 import { buildProtectedTradeTicket, type TradeTicket } from "@bitcaster/client-sdk/tradeTicket";
-import { displaySharesToFaceSubunits } from "@/lib/tradeCostPreview";
+import { displaySharesToFaceSubunits, faceSubunitsToDisplayShares } from "@/lib/tradeCostPreview";
+import { tradeSelectionForRetry } from "@/lib/tradeRetrySelection";
 import { assertNever } from "@/lib/enumDiscipline";
 import { addOrderSubmitNotifications } from "@/lib/orderNotifications";
 import {
@@ -96,6 +97,7 @@ import {
   type OrderSettlementObservation,
 } from "@/stores/orderSettlementObservations";
 import { useNotificationsStore } from "@/stores/notifications";
+import { takeTradeRetryRequest, useTradeRetryRequest } from "@/stores/tradeRetryRequest";
 import { createImplicitWalletAndNostrIdentity } from "@/lib/identityOps";
 import {
   cashuAmountToMarketSubunits,
@@ -1435,7 +1437,7 @@ export function MarketDetailPage() {
         observation.marketId !== settlingOrder.marketId
       )
         return;
-      const notice = settledOrderNotice(observation.status);
+      const notice = settledOrderNotice(observation.status, t);
       if (notice === null) return;
       setTradeSubmitStatus((current) =>
         current?.settlingOrder === settlingOrder ? notice : current,
@@ -1445,7 +1447,7 @@ export function MarketDetailPage() {
     return useOrderSettlementObservations.subscribe((state) =>
       settle(state.byOrderId[settlingOrder.orderId]),
     );
-  }, [settlingOrder]);
+  }, [settlingOrder, t]);
   const clearCompletedTradeNotice = useCallback(() => {
     setTradeSubmitStatus((status) => {
       if (status === null) return null;
@@ -2072,6 +2074,39 @@ export function MarketDetailPage() {
     marketDivisibility,
   );
 
+  // A Retry from a failure notice opens this form with the same order. The
+  // preview reads the book again, and the user confirms as usual.
+  const retryRequest = useTradeRetryRequest((state) => state.request);
+  const [tradeTabRequest, setTradeTabRequest] = useState<{ readonly side: TradeSide } | null>(null);
+  // A request applies once. A remount after a route change or a reload must
+  // not show its side again after the user chose another tab.
+  const clearTradeTabRequest = useCallback((applied: { readonly side: TradeSide }) => {
+    setTradeTabRequest((current) => (current === applied ? null : current));
+  }, []);
+  useEffect(() => {
+    if (retryRequest === null || market === null || isTradeSubmitting) return;
+    if (retryRequest.conditionId !== market.id) return;
+    takeTradeRetryRequest(retryRequest);
+    const selection = tradeSelectionForRetry(market, retryRequest);
+    if (selection === null) return;
+    tradeInputGenerationRef.current += 1;
+    setTradeSubmitStatus(null);
+    setTradeSide(retryRequest.side);
+    setTradeTabRequest({ side: retryRequest.side });
+    setTradeSelection(selection);
+    setTradeAmount(
+      faceSubunitsToDisplayShares(retryRequest.amountSubunits, marketBaseAsset, marketDivisibility),
+    );
+    invalidatePreviewForMarket();
+  }, [
+    retryRequest,
+    market,
+    isTradeSubmitting,
+    marketBaseAsset,
+    marketDivisibility,
+    invalidatePreviewForMarket,
+  ]);
+
   const previewClient = useMemo(
     () =>
       nostrSignerMode === "none"
@@ -2674,10 +2709,11 @@ export function MarketDetailPage() {
           setTradeComment("");
         }
         switch (response.status) {
+          // The engine cancels a FOK only when it cannot fill within the consented total.
           case "cancelled":
             setTradeSubmitStatus({
               kind: "info",
-              message: "Order cancelled.",
+              message: t("trade.fokCancelled"),
               reviewedFeeFacts,
               reviewedFeeIdentityKey: capturedPreviewIdentityKey,
             });
@@ -2692,12 +2728,20 @@ export function MarketDetailPage() {
             });
             break;
           case "failed":
-            setTradeSubmitStatus({ kind: "error", message: "Order failed." });
+            setTradeSubmitStatus({ kind: "error", message: t("trade.tradeFailed") });
             break;
-          case "filled":
+          // One term names an order that ended without a trade.
           case "expired":
           case "evicted_capacity":
           case "rejected_capacity":
+            setTradeSubmitStatus({
+              kind: "info",
+              message: t("trade.tradeFailed"),
+              reviewedFeeFacts,
+              reviewedFeeIdentityKey: capturedPreviewIdentityKey,
+            });
+            break;
+          case "filled":
           case "resting":
           case "partially_filled":
             setTradeSubmitStatus({
@@ -3245,6 +3289,8 @@ export function MarketDetailPage() {
   return (
     <>
       <MarketDetail
+        tradeTabRequest={tradeTabRequest}
+        onTradeTabRequestApplied={clearTradeTabRequest}
         market={market}
         chartTimeframe={chartTimeframe}
         tradeSelection={tradeSelection}
@@ -3390,8 +3436,10 @@ export function MarketDetailPage() {
 }
 
 /** The final trade notice for a settled order, or null while it can still settle. */
+/** One term names an order that ended without a trade, here and in the failure notice. */
 function settledOrderNotice(
   status: OrderSettlementObservation["status"],
+  t: (key: string) => string,
 ): { kind: "info" | "success" | "error"; message: string } | null {
   switch (status) {
     case "resting":
@@ -3401,12 +3449,14 @@ function settledOrderNotice(
     case "filled":
       return { kind: "success", message: "Order filled." };
     case "failed":
-      return { kind: "error", message: "Order failed." };
+      return { kind: "error", message: t("trade.tradeFailed") };
+    // The engine cancels a FOK only when it cannot fill within the consented total.
     case "cancelled":
+      return { kind: "info", message: t("trade.fokCancelled") };
     case "expired":
     case "evicted_capacity":
     case "rejected_capacity":
-      return { kind: "info", message: `Order ${status.replace("_", " ")}.` };
+      return { kind: "info", message: t("trade.tradeFailed") };
     default:
       return assertNever(status);
   }

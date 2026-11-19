@@ -40,6 +40,21 @@ function earliest(left: number | null, right: number | null): number | null {
   return Math.min(left, right);
 }
 
+/**
+ * The earliest time at which a pending range operation can make progress, or
+ * null when one of them can make progress at any time.
+ */
+function rangeOrderWakeAtMs(
+  pending: readonly { readonly retryAtMs?: number | null }[],
+): number | null {
+  let wakeAtMs: number | null = null;
+  for (const operation of pending) {
+    if (operation.retryAtMs === undefined || operation.retryAtMs === null) return null;
+    wakeAtMs = earliest(wakeAtMs, operation.retryAtMs);
+  }
+  return wakeAtMs;
+}
+
 const yieldToBrowser = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
 
 const STAGE_COMPLETED: WalletRecoveryStageOutcome = { state: "completed" };
@@ -193,11 +208,23 @@ export function useBrowserCtfRangeOrderRecovery(input: {
               mnemonic: walletMnemonic,
               mintUrls,
             });
-            retryRequired ||= result.pending.length > 0;
-            pass.walletStage(
-              "rangeOrders",
-              result.pending.length > 0 ? stageWaits("operation") : STAGE_COMPLETED,
-            );
+            const wakeAtMs = rangeOrderWakeAtMs(result.pending);
+            if (wakeAtMs === null) {
+              retryRequired ||= result.pending.length > 0;
+              pass.walletStage(
+                "rangeOrders",
+                result.pending.length > 0 ? stageWaits("operation") : STAGE_COMPLETED,
+              );
+            } else {
+              // Each operation waits for a known time, such as authorization
+              // expiry. An earlier pass repeats its reads without progress.
+              retryAtMs = earliest(retryAtMs, wakeAtMs);
+              pass.walletStage("rangeOrders", {
+                state: "pending",
+                reason: "operation",
+                retryAtMs: wakeAtMs,
+              });
+            }
           } catch (error) {
             retryRequired = true;
             pass.walletStage("rangeOrders", stageFailedWith("rangeOrders", error));

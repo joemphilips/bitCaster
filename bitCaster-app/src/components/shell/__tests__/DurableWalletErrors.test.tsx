@@ -2,6 +2,8 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
 import { useNotificationsStore } from "@/stores/notifications";
+import type { CtfRangeOrderLock } from "@/lib/ctfRangeOrderFunds";
+import { formatClockTime } from "@/lib/format";
 import en from "@/i18n/locales/en.json";
 
 const mocks = vi.hoisted(() => ({
@@ -37,6 +39,7 @@ const mocks = vi.hoisted(() => ({
     nextCursor: null,
     orderMarkets: {} as Record<string, string>,
     orderFunds: {} as Record<string, "pending" | "refunded">,
+    orderLocks: {} as Record<string, CtfRangeOrderLock>,
   },
 }));
 
@@ -102,6 +105,46 @@ describe("DurableWalletErrors", () => {
       }
     },
   );
+
+  it("names the locked funds of a refused order request and when the lock ends", () => {
+    const original = mocks.page;
+    const base = original.messages[0]!;
+    const unlockAtMs = Date.UTC(2026, 10, 19, 5, 5);
+    mocks.page = {
+      ...original,
+      messages: [
+        { ...base, operationId: "range-1", code: "order-submission-rejected", kind: "order" },
+      ],
+      orderMarkets: { "range-1": "condition-a-Alpha" },
+      orderFunds: { "range-1": "pending" },
+      orderLocks: {
+        "range-1": {
+          side: "Sell",
+          lockedSubunits: 1_000,
+          divisibility: 1_000,
+          unlockAtMs,
+          retry: {
+            conditionId: "condition-a",
+            orderRouteId: "condition-a-Alpha",
+            tokenSide: "Outcome",
+            side: "Sell",
+            amountSubunits: 1_000,
+          },
+        },
+      },
+    };
+    try {
+      render(<DurableWalletErrors />);
+      const locked = en.settlementProgress.fundsLockedShares_one
+        .replace("{{amount}}", "1 share")
+        .replace("{{time}}", formatClockTime(unlockAtMs, Date.now(), "en"));
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        `${en.walletRecovery.errors["order-submission-rejected"]} ${locked}`,
+      );
+    } finally {
+      mocks.page = original;
+    }
+  });
 
   it("names the order of an order alert by its market, and keeps the operation of a funds alert", () => {
     const original = mocks.page;
@@ -227,7 +270,7 @@ describe("DurableWalletErrors", () => {
       render(<DurableWalletErrors />);
 
       const alert = screen.getByRole("alert");
-      expect(alert).toHaveTextContent("Order was not completed");
+      expect(alert).toHaveTextContent(en.walletRecovery.orderFailure);
       expect(alert).toHaveTextContent(
         "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
       );

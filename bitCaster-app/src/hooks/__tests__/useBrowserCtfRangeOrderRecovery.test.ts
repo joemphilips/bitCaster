@@ -222,6 +222,63 @@ describe("useBrowserCtfRangeOrderRecovery", () => {
     expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(3);
   });
 
+  // A cancelled FOK keeps its inputs until authorization expiry. An earlier
+  // pass repeats its reads without progress.
+  it("schedules the next pass at authorization expiry when only an expiry wait remains", async () => {
+    const startMs = 1_000_000;
+    const expiryMs = startMs + 290_000;
+    vi.useFakeTimers({ now: startMs });
+    mocks.recoverBrowserCtfRangeOrders
+      .mockResolvedValueOnce({
+        recovered: 0,
+        pending: [
+          {
+            operationId: "cancelled-fok",
+            revision: 3,
+            code: "awaiting-authorization-expiry",
+            retryAtMs: expiryMs,
+          },
+        ],
+      })
+      .mockResolvedValue({ recovered: 1, pending: [] });
+    mountRecovery();
+    await flush();
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(expiryMs - Date.now() - 1));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledOnce();
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the short retry while another range operation has no wake time", async () => {
+    vi.useFakeTimers({ now: 1_000_000 });
+    mocks.recoverBrowserCtfRangeOrders
+      .mockResolvedValueOnce({
+        recovered: 0,
+        pending: [
+          {
+            operationId: "cancelled-fok",
+            revision: 3,
+            code: "awaiting-authorization-expiry",
+            retryAtMs: 1_290_000,
+          },
+          {
+            operationId: "confirming",
+            revision: 2,
+            code: "awaiting-order-confirmation",
+            retryAtMs: null,
+          },
+        ],
+      })
+      .mockResolvedValue({ recovered: 1, pending: [] });
+    mountRecovery();
+    await flush();
+    await act(async () => vi.advanceTimersByTimeAsync(15_000));
+    expect(mocks.recoverBrowserCtfRangeOrders).toHaveBeenCalledTimes(2);
+  });
+
   it("waits for the last of two successful attempts before recovering deferred work", async () => {
     vi.useFakeTimers();
     beginBrowserCtfRangeOrderAttempt({

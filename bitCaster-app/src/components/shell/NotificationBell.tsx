@@ -8,16 +8,22 @@ import {
   useNotificationsStore,
 } from "@/stores/notifications";
 import {
+  isFinalFunds,
+  offersRetry,
   showsOrderFailure,
   useOrderFailureNotices,
   type OrderFailureNotice,
 } from "@/stores/orderFailureNotices";
-import { orderFailureText } from "@/lib/orderFailureText";
+import { requestTradeRetry } from "@/stores/tradeRetryRequest";
+import { useWalletStore } from "@/stores/wallet";
+import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
+import { fundsSentence, orderFailureReasonText } from "@/lib/orderFailureText";
+import { useCtfRangeOrderLocks } from "@/hooks/useCtfRangeOrderLocks";
 import { assertNever } from "@/lib/enumDiscipline";
 import { splitMarketId } from "@/lib/orderStatus";
 import { portfolioClosedPositionHref } from "@/lib/portfolioRoute";
 import { formatTimeAgo } from "@/lib/format";
-import { formatNotificationText } from "@/lib/notificationText";
+import { formatNotificationText, notificationMarketName } from "@/lib/notificationText";
 
 interface NotificationBellProps {
   /** Called when the user picks a notification — parent handles routing. */
@@ -36,7 +42,7 @@ const EMPTY_ITEMS: Notification[] = [];
 const NO_FAILURES: Readonly<Record<string, OrderFailureNotice>> = {};
 
 export function NotificationBell({ onNavigate, variant = "desktop" }: NotificationBellProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [isOpen, setIsOpen] = useState(false);
   const unreadCount = useNotificationsStore(selectUnreadCount);
   const items = useNotificationsStore((s) => (isOpen ? s.items : EMPTY_ITEMS));
@@ -50,6 +56,16 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
       ),
     [notices],
   );
+  // Only the journal of the current wallet can name the locked funds.
+  const scopeId = browserWalletScopeIdFromMnemonic(useWalletStore((s) => s.mnemonic));
+  const pendingOperations = useMemo(
+    () =>
+      [...failures.values()]
+        .filter((notice) => notice.scopeId === scopeId && !isFinalFunds(notice.funds))
+        .map((notice) => notice.operationId),
+    [failures, scopeId],
+  );
+  const locks = useCtfRangeOrderLocks(scopeId, pendingOperations);
   const markAllRead = useNotificationsStore((s) => s.markAllRead);
   const clear = useNotificationsStore((s) => s.clear);
 
@@ -64,6 +80,15 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
     setIsOpen(false);
     const href = notificationHref(n);
     if (href !== null && onNavigate) onNavigate(href);
+  };
+
+  /** Retry opens the market page first; that page prefills the trade form. */
+  const handleRetry = (failure: OrderFailureNotice) => {
+    const lock = locks?.[failure.operationId];
+    if (lock === undefined) return;
+    setIsOpen(false);
+    requestTradeRetry(lock.retry);
+    onNavigate?.(`/markets/${lock.retry.conditionId}`);
   };
 
   const badge =
@@ -151,6 +176,17 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                     const failure = carriesFailureReason(n.kind)
                       ? failures.get(n.orderId)
                       : undefined;
+                    const lock =
+                      failure === undefined ? null : (locks?.[failure.operationId] ?? null);
+                    const pending = failure !== undefined && !isFinalFunds(failure.funds);
+                    const reason =
+                      failure === undefined ? null : orderFailureReasonText(t, failure.reason);
+                    // A pending refund of this wallet waits for the journal read.
+                    const funds =
+                      failure === undefined ||
+                      (pending && failure.scopeId === scopeId && locks === undefined)
+                        ? null
+                        : fundsSentence(t, failure.funds, { lock, locale: i18n.language });
                     return (
                       <li key={n.id}>
                         <button
@@ -162,9 +198,14 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                             <div className="text-sm text-slate-900 dark:text-slate-100">
                               {formatNotificationText(n, t)}
                             </div>
-                            {failure && (
+                            {reason !== null && (
                               <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
-                                {orderFailureText(t, failure)}
+                                {reason}
+                              </div>
+                            )}
+                            {funds !== null && (
+                              <div className="text-xs text-slate-600 dark:text-slate-300 mt-0.5">
+                                {funds}
                               </div>
                             )}
                             <div className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
@@ -172,6 +213,23 @@ export function NotificationBell({ onNavigate, variant = "desktop" }: Notificati
                             </div>
                           </div>
                         </button>
+                        {failure !== undefined &&
+                          pending &&
+                          lock !== null &&
+                          offersRetry(failure.reason) && (
+                            <div className="-mt-2 pb-1 pl-11 pr-4">
+                              <button
+                                type="button"
+                                className="-ml-2 inline-flex min-h-11 items-center rounded px-2 text-sm font-medium text-slate-900 underline hover:bg-slate-100 dark:text-slate-100 dark:hover:bg-slate-700"
+                                aria-label={t("settlementProgress.retryTrade", {
+                                  market: notificationMarketName(n),
+                                })}
+                                onClick={() => handleRetry(failure)}
+                              >
+                                {t("settlementProgress.retry")}
+                              </button>
+                            </div>
+                          )}
                       </li>
                     );
                   })}
@@ -207,19 +265,23 @@ function NotificationIcon({ kind }: { kind: Notification["kind"] }) {
   return <AlertCircle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />;
 }
 
-/** Only the Failed entry of an order shows why its settlement failed. */
+/**
+ * Only the entry that ends an order without a trade shows the failure notice,
+ * as the panel does: a failed settlement, a cancelled FOK, an expired order,
+ * or an order that the order book capacity removed or refused.
+ */
 function carriesFailureReason(kind: NotificationKind): boolean {
   switch (kind) {
     case "Failed":
+    case "cancelled":
+    case "expired":
+    case "evicted_capacity":
+    case "rejected_capacity":
       return true;
     case "accepted":
     case "Matched":
     case "Filled":
     case "partially_filled":
-    case "cancelled":
-    case "expired":
-    case "evicted_capacity":
-    case "rejected_capacity":
     case "market_closed":
     case "position_won":
     case "position_lost":

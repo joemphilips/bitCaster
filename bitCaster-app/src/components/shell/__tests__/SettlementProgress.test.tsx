@@ -29,6 +29,13 @@ import {
 } from "@/stores/orderFailureNotices";
 import { publishSettlementProgressHint } from "@/lib/settlementProgressHints";
 import { SETTLEMENT_COMPLETION_NOTICE_MS } from "@/hooks/useSettlementProgress";
+import { useTradeRetryRequest } from "@/stores/tradeRetryRequest";
+import { formatClockTime } from "@/lib/format";
+import {
+  RANGE_FIXTURE_CONDITION_ID,
+  RANGE_FIXTURE_OUTCOME,
+  ctfRangePreparationRecordFixture,
+} from "@/test/ctfRangePreparationRecordFixture";
 import { SettlementProgress } from "../SettlementProgress";
 import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
@@ -111,6 +118,7 @@ beforeEach(() => {
   useOrderFailureNotices.setState({ notices: {} });
   useNotificationsStore.setState({ items: [] });
   usePendingTradesStore.setState({ byOrderId: {} });
+  useTradeRetryRequest.setState({ request: null });
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -236,13 +244,16 @@ describe("active settlement progress", () => {
   });
 
   it.each(failedStatuses)(
-    "shows %s as a failed trade with the generic reason, not under the in-progress heading",
+    "shows %s as a failed trade with no reason line, not under the in-progress heading",
     async (status) => {
       await database.ctfRangePreparations.put(fixture());
       mocks.read.mockResolvedValue(statusRead(group(status)));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+      expect(failureLines(failed)).toEqual([
+        "Order on “Alpha”",
+        en.settlementProgress.fundsPending,
+      ]);
       expect(within(failed).getByRole("button", { name: dismissName("Alpha") })).toBeVisible();
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
@@ -259,7 +270,11 @@ describe("active settlement progress", () => {
       mocks.readFailure.mockResolvedValue(failure(reason));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(pending(en.settlementProgress[reason]))).toBeVisible();
+      expect(failureLines(failed)).toEqual([
+        "Order on “Alpha”",
+        en.settlementProgress[reason],
+        en.settlementProgress.fundsPending,
+      ]);
       // The failure uses the error colour role of the wallet alerts, not neutral text.
       expect(
         within(failed).getByRole("heading", { name: en.settlementProgress.failedTitle }),
@@ -268,7 +283,6 @@ describe("active settlement progress", () => {
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
       ).not.toBeInTheDocument();
-      expect(screen.queryByText(pending(en.settlementProgress.failed))).not.toBeInTheDocument();
       expect(ja.settlementProgress[reason]).toMatch(/\S/);
       expect(ja.settlementProgress[reason]).not.toBe(en.settlementProgress[reason]);
     },
@@ -297,7 +311,7 @@ describe("active settlement progress", () => {
     expect(within(active).getAllByRole("listitem")).toHaveLength(1);
     expect(within(active).getByText(en.settlementProgress.prepared)).toBeVisible();
     expect(
-      within(active).queryByText(pending(en.settlementProgress.OwnOutputReused)),
+      within(active).queryByText(en.settlementProgress.OwnOutputReused),
     ).not.toBeInTheDocument();
   });
 
@@ -321,17 +335,17 @@ describe("active settlement progress", () => {
     expect(useOrderFailureNotices.getState().notices).toEqual({});
   });
 
-  it("shows the generic reason when the engine records none for a rejection", async () => {
+  it("shows no reason line when the engine records none for a rejection", async () => {
     await database.ctfRangePreparations.put(fixture());
     mocks.read.mockResolvedValue(statusRead(group("DefinitivelyRejected")));
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     await waitFor(() => expect(mocks.readFailure).toHaveBeenCalledTimes(1));
-    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+    expect(failureLines(failed)).toEqual(["Order on “Alpha”", en.settlementProgress.fundsPending]);
     expect(stored("range-1")?.reason).toBe("Unspecified");
   });
 
-  it("replaces the generic reason when a later read finds the specific reason, and keeps a dismissal", async () => {
+  it("adds the reason line when a later read finds the specific reason, and keeps a dismissal", async () => {
     await database.ctfRangePreparations.put(fixture());
     mocks.read.mockResolvedValue(statusRead(group("DefinitivelyRejected")));
     mocks.readFailure
@@ -340,7 +354,7 @@ describe("active settlement progress", () => {
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
     await waitFor(() => expect(mocks.readFailure).toHaveBeenCalledTimes(1));
-    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+    expect(failureLines(failed)).toEqual(["Order on “Alpha”", en.settlementProgress.fundsPending]);
 
     // The next settlement hint for this order reads the reason again.
     act(() =>
@@ -349,12 +363,12 @@ describe("active settlement progress", () => {
         marketId: fixture().orderRouteId,
       }),
     );
-    expect(
-      await within(failed).findByText(pending(en.settlementProgress.OwnOutputReused)),
-    ).toBeVisible();
-    expect(
-      within(failed).queryByText(pending(en.settlementProgress.failed)),
-    ).not.toBeInTheDocument();
+    expect(await within(failed).findByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
+    expect(failureLines(failed)).toEqual([
+      "Order on “Alpha”",
+      en.settlementProgress.OwnOutputReused,
+      en.settlementProgress.fundsPending,
+    ]);
 
     // A dismissed generic failure stays dismissed when its reason is found.
     act(() => {
@@ -423,9 +437,12 @@ describe("active settlement progress", () => {
       ).not.toBeInTheDocument(),
     );
     const failed = screen.getByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(
-      await within(failed).findByText(returned(en.settlementProgress.OwnOutputReused)),
-    ).toBeVisible();
+    expect(await within(failed).findByText(en.settlementProgress.fundsReturned)).toBeVisible();
+    expect(failureLines(failed)).toEqual([
+      "Order on “Alpha”",
+      en.settlementProgress.OwnOutputReused,
+      en.settlementProgress.fundsReturned,
+    ]);
     expect(screen.queryByText(en.settlementProgress.terminal)).not.toBeInTheDocument();
 
     // A reload recreates the failure from the persisted notice.
@@ -433,7 +450,11 @@ describe("active settlement progress", () => {
     await reloadNotices();
     const reloaded = render(<SettlementProgress canReadStatus />);
     const again = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(again).getByText(returned(en.settlementProgress.OwnOutputReused))).toBeVisible();
+    expect(failureLines(again)).toEqual([
+      "Order on “Alpha”",
+      en.settlementProgress.OwnOutputReused,
+      en.settlementProgress.fundsReturned,
+    ]);
 
     const dismiss = within(again).getAllByRole("button", {
       name: dismissName("Alpha"),
@@ -463,7 +484,7 @@ describe("active settlement progress", () => {
     });
     expect(within(remaining).getAllByRole("listitem")).toHaveLength(1);
     // Its journal record is gone, so the panel makes no refund claim for it.
-    expect(await within(remaining).findByText(en.settlementProgress.failed)).toBeVisible();
+    await waitFor(() => expect(failureLines(remaining)).toEqual(["Order on “Alpha”"]));
     expect(remaining).not.toHaveTextContent(en.settlementProgress.OwnOutputReused);
     expect(mocks.read).toHaveBeenCalledTimes(1);
   });
@@ -490,7 +511,7 @@ describe("active settlement progress", () => {
     await reloadNotices();
     render(<SettlementProgress canReadStatus />);
     const again = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(again).getByText(pending(en.settlementProgress.GroupOutputReused))).toBeVisible();
+    expect(within(again).getByText(en.settlementProgress.GroupOutputReused)).toBeVisible();
   });
 
   it("keeps the failure of another wallet for its return, and does not show it here", async () => {
@@ -520,7 +541,7 @@ describe("active settlement progress", () => {
     });
     view.rerender(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(failed).getByText(pending(en.settlementProgress.OwnOutputReused))).toBeVisible();
+    expect(within(failed).getByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
   });
 
   it("keeps paging when every operation on the first page failed", async () => {
@@ -609,7 +630,7 @@ describe("active settlement progress", () => {
     mocks.read.mockResolvedValue(statusRead(group("DefinitivelyRejected")));
     render(<SettlementProgress canReadStatus />);
     const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-    expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+    expect(within(failed).getByText(en.settlementProgress.fundsPending)).toBeVisible();
 
     // The refund aborts the custody operation and ends the journal together.
     await act(async () => {
@@ -626,7 +647,7 @@ describe("active settlement progress", () => {
         },
       );
     });
-    expect(await within(failed).findByText(returned(en.settlementProgress.failed))).toBeVisible();
+    expect(await within(failed).findByText(en.settlementProgress.fundsReturned)).toBeVisible();
     expect(stored("range-1")?.funds).toBe("refunded");
   });
 
@@ -663,8 +684,7 @@ describe("active settlement progress", () => {
       await database.ctfRangePreparations.put({ ...fixture(), lifecycleState: "terminal" });
     });
     await waitFor(() => expect(stored("range-1")?.funds).toBe("ended"));
-    expect(within(failed).getByText(en.settlementProgress.failed)).toBeVisible();
-    expect(failed).not.toHaveTextContent(en.settlementProgress.fundsPending);
+    await waitFor(() => expect(failureLines(failed)).toEqual(["Order on “Alpha”"]));
     expect(failed).not.toHaveTextContent(en.settlementProgress.fundsReturned);
   });
 
@@ -939,7 +959,10 @@ describe("active settlement progress", () => {
       mocks.read.mockResolvedValue(statusRead(null, status));
       render(<SettlementProgress canReadStatus />);
       const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
-      expect(within(failed).getByText(pending(en.settlementProgress.failed))).toBeVisible();
+      expect(failureLines(failed)).toEqual([
+        "Order on “Alpha”",
+        en.settlementProgress.fundsPending,
+      ]);
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.title }),
       ).not.toBeInTheDocument();
@@ -947,22 +970,222 @@ describe("active settlement progress", () => {
     },
   );
 
-  it.each(["cancelled", "expired"] as const)(
-    "shows an order that ended %s without a trade under the in-progress heading",
-    async (status) => {
-      await database.ctfRangePreparations.put(fixture());
-      mocks.read.mockResolvedValue(statusRead(null, status));
+  it("shows an expired order as a failed trade with no reason line", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    mocks.read.mockResolvedValue(statusRead(null, "expired"));
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    expect(failureLines(failed)).toEqual(["Order on “Alpha”", en.settlementProgress.fundsPending]);
+    expect(
+      screen.queryByRole("region", { name: en.settlementProgress.title }),
+    ).not.toBeInTheDocument();
+  });
+
+  describe("an engine-cancelled FOK", () => {
+    const capability = () => fixture().capability;
+    // Two shares at 512 msat: the inputs are 1,024 msat and a 1 msat input fee.
+    const cancelledBuy = () =>
+      ctfRangePreparationRecordFixture({
+        scopeId: fixture().scopeId,
+        operationId: "range-1",
+        side: "Buy",
+        tokenSide: "Complement",
+        price: 512,
+        amountSubunits: 2_000,
+        capability: capability(),
+      });
+
+    it("leaves the in-progress list for the failure notice with its reason, locked sats and lock end", async () => {
+      const record = cancelledBuy();
+      await database.ctfRangePreparations.put(record);
+      mocks.read.mockResolvedValue(statusRead(null, "cancelled"));
       render(<SettlementProgress canReadStatus />);
-      const active = await screen.findByRole("region", { name: en.settlementProgress.title });
+      const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      const funds = lockedSats("1.025 sats", record.authorizationExpiresAtUnixSeconds * 1_000);
+      await waitFor(() =>
+        expect(failureLines(failed)).toEqual([
+          `Order on “${RANGE_FIXTURE_OUTCOME}”`,
+          en.settlementProgress.FokCancelled,
+          funds,
+        ]),
+      );
       expect(
-        await within(active).findByText(pending(en.settlementProgress.endedWithoutTrade)),
+        within(failed).getByRole("button", { name: retryName(RANGE_FIXTURE_OUTCOME) }),
       ).toBeVisible();
+      expect(
+        screen.queryByRole("region", { name: en.settlementProgress.title }),
+      ).not.toBeInTheDocument();
+      expect(stored("range-1")).toMatchObject({
+        reason: "FokCancelled",
+        funds: "pending",
+        dismissed: false,
+      });
+    });
+
+    it("names the locked shares of a Sell", async () => {
+      const record = ctfRangePreparationRecordFixture({
+        scopeId: fixture().scopeId,
+        operationId: "range-1",
+        side: "Sell",
+        price: 512,
+        amountSubunits: 3_000,
+        capability: capability(),
+      });
+      await database.ctfRangePreparations.put(record);
+      mocks.read.mockResolvedValue(statusRead(null, "cancelled"));
+      render(<SettlementProgress canReadStatus />);
+      const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      expect(
+        await within(failed).findByText(
+          en.settlementProgress.fundsLockedShares_other
+            .replace("{{amount}}", "3 shares")
+            .replace("{{time}}", endTime(record.authorizationExpiresAtUnixSeconds * 1_000)),
+        ),
+      ).toBeVisible();
+    });
+
+    it("says that the funds were returned after the refund, removes Retry, and stays until dismissed", async () => {
+      const record = cancelledBuy();
+      await database.ctfRangePreparations.put(record);
+      mocks.read.mockResolvedValue(statusRead(null, "cancelled"));
+      const view = render(<SettlementProgress canReadStatus />);
+      const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      await within(failed).findByRole("button", { name: retryName(RANGE_FIXTURE_OUTCOME) });
+
+      await act(async () => {
+        await database.transaction(
+          "rw",
+          database.ctfRangePreparations,
+          database.custodyOperations,
+          async () => {
+            await database.custodyOperations.put(custodyOperation("range-1", "aborted"));
+            await database.ctfRangePreparations.put({ ...record, lifecycleState: "terminal" });
+          },
+        );
+      });
+      await waitFor(() =>
+        expect(failureLines(failed)).toEqual([
+          `Order on “${RANGE_FIXTURE_OUTCOME}”`,
+          en.settlementProgress.FokCancelled,
+          en.settlementProgress.fundsReturned,
+        ]),
+      );
+      expect(
+        within(failed).queryByRole("button", { name: retryName(RANGE_FIXTURE_OUTCOME) }),
+      ).toBeNull();
+
+      // The notice stays after a reload, until the user dismisses it.
+      view.unmount();
+      await reloadNotices();
+      render(<SettlementProgress canReadStatus />);
+      const again = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      expect(within(again).getByText(en.settlementProgress.fundsReturned)).toBeVisible();
+      fireEvent.click(
+        within(again).getByRole("button", { name: dismissName(RANGE_FIXTURE_OUTCOME) }),
+      );
       expect(
         screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
       ).not.toBeInTheDocument();
-      expect(useOrderFailureNotices.getState().notices).toEqual({});
-    },
-  );
+    });
+
+    it("asks the market page for the same order when the user selects Retry", async () => {
+      const record = cancelledBuy();
+      await database.ctfRangePreparations.put(record);
+      mocks.read.mockResolvedValue(statusRead(null, "cancelled"));
+      const navigate = vi.fn();
+      render(<SettlementProgress canReadStatus onNavigate={navigate} />);
+      const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      fireEvent.click(
+        await within(failed).findByRole("button", { name: retryName(RANGE_FIXTURE_OUTCOME) }),
+      );
+      expect(useTradeRetryRequest.getState().request).toEqual({
+        conditionId: RANGE_FIXTURE_CONDITION_ID,
+        orderRouteId: `${RANGE_FIXTURE_CONDITION_ID}-${RANGE_FIXTURE_OUTCOME}`,
+        tokenSide: "Complement",
+        side: "Buy",
+        amountSubunits: 2_000,
+      });
+      expect(navigate).toHaveBeenCalledWith(`/markets/${RANGE_FIXTURE_CONDITION_ID}`);
+      // Retry never submits: the notice and its journal stay as they were.
+      expect(stored("range-1")?.dismissed).toBe(false);
+      expect((await database.ctfRangePreparations.toArray())[0]?.lifecycleState).toBe(
+        "order-submitted",
+      );
+    });
+
+    it("gives the dismiss control a normal touch size", async () => {
+      await database.ctfRangePreparations.put(cancelledBuy());
+      mocks.read.mockResolvedValue(statusRead(null, "cancelled"));
+      render(<SettlementProgress canReadStatus />);
+      const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+      const dismiss = within(failed).getByRole("button", {
+        name: dismissName(RANGE_FIXTURE_OUTCOME),
+      });
+      expect(dismiss.className).toMatch(/\bh-11\b/);
+      expect(dismiss.className).toMatch(/\bw-11\b/);
+    });
+  });
+
+  // A retry from a wallet that another browser uses can repeat the penalty.
+  it("offers no Retry when this wallet was used in two places", async () => {
+    const record = ctfRangePreparationRecordFixture({
+      scopeId: fixture().scopeId,
+      operationId: "range-1",
+      side: "Buy",
+      price: 512,
+      amountSubunits: 2_000,
+      capability: fixture().capability,
+    });
+    await database.ctfRangePreparations.put(record);
+    mocks.read.mockResolvedValue(statusRead(group("DefinitivelyRejected")));
+    mocks.readFailure.mockResolvedValue(failure("OwnOutputReused"));
+    render(<SettlementProgress canReadStatus />);
+    const failed = await screen.findByRole("region", { name: en.settlementProgress.failedTitle });
+    const funds = lockedSats("1.025 sats", record.authorizationExpiresAtUnixSeconds * 1_000);
+    await waitFor(() =>
+      expect(failureLines(failed)).toEqual([
+        `Order on “${RANGE_FIXTURE_OUTCOME}”`,
+        en.settlementProgress.OwnOutputReused,
+        funds,
+      ]),
+    );
+    expect(
+      within(failed).queryByRole("button", { name: retryName(RANGE_FIXTURE_OUTCOME) }),
+    ).toBeNull();
+  });
+
+  it("keeps a stopped wait in progress with its locked funds and lock end, and no Retry", async () => {
+    const record = ctfRangePreparationRecordFixture({
+      scopeId: fixture().scopeId,
+      operationId: "range-1",
+      side: "Buy",
+      price: 512,
+      amountSubunits: 2_000,
+      lifecycleState: "order-request-rejected",
+    });
+    await database.ctfRangePreparations.put(record);
+    render(<SettlementProgress canReadStatus />);
+    const active = await screen.findByRole("region", { name: en.settlementProgress.title });
+    const funds = lockedSats("1.025 sats", record.authorizationExpiresAtUnixSeconds * 1_000);
+    expect(
+      await within(active).findByText(`${en.settlementProgress.endedWithoutTrade} ${funds}`),
+    ).toBeVisible();
+    expect(within(active).queryByRole("button", { name: /Retry/ })).toBeNull();
+    expect(
+      screen.queryByRole("region", { name: en.settlementProgress.failedTitle }),
+    ).not.toBeInTheDocument();
+    expect(useOrderFailureNotices.getState().notices).toEqual({});
+  });
+
+  it("renders no paging row when the in-progress list has no other page", async () => {
+    await database.ctfRangePreparations.put(fixture());
+    render(<SettlementProgress canReadStatus />);
+    const active = await screen.findByRole("region", { name: en.settlementProgress.title });
+    await within(active).findByText(en.settlementProgress.Reconciling);
+    expect(within(active).queryByRole("button", { name: "Next" })).toBeNull();
+    // Every child of the section holds content; no empty paging row remains.
+    expect([...active.children].filter((child) => child.textContent === "")).toEqual([]);
+  });
 
   it("shows the accepted submission state while settlement status is still unknown", async () => {
     // The read stays pending, so the status stays unknown. The read starts in
@@ -1090,17 +1313,40 @@ function stored(operationId: string) {
   ];
 }
 
-/** A reason and the funds sentence of a pending refund, as one paragraph. */
+/**
+ * A progress text and the funds sentence of a pending refund, as one
+ * paragraph. A fixture whose preparation does not decode has no lock facts.
+ */
 function pending(reason: string): string {
   return `${reason} ${en.settlementProgress.fundsPending}`;
 }
 
-function returned(reason: string): string {
-  return `${reason} ${en.settlementProgress.fundsReturned}`;
-}
-
 function dismissName(market: string): string {
   return en.settlementProgress.dismissFailure.replace("{{market}}", market);
+}
+
+function retryName(market: string): string {
+  return en.settlementProgress.retryTrade.replace("{{market}}", market);
+}
+
+/** The text lines of the first failure notice in a region, without its controls. */
+function failureLines(region: HTMLElement): string[] {
+  const [notice] = within(region).getAllByRole("listitem");
+  return [...notice!.querySelectorAll("p")].map((line) => line.textContent ?? "");
+}
+
+/**
+ * The clock time of the lock end, which the line rounds up to its minute. The
+ * rounding and the format have their own tests.
+ */
+function endTime(atMs: number): string {
+  return formatClockTime(Math.ceil(atMs / 60_000) * 60_000, Date.now(), "en");
+}
+
+function lockedSats(amount: string, unlockAtMs: number): string {
+  return en.settlementProgress.fundsLockedSats
+    .replace("{{amount}}", amount)
+    .replace("{{time}}", endTime(unlockAtMs));
 }
 
 /** A custody operation row of a range operation, with only the state that the panel reads. */

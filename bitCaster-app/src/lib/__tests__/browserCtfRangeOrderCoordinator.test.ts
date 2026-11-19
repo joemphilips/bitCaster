@@ -99,6 +99,7 @@ import {
 } from "@bitcaster/client-sdk/engineClient";
 import { sha256 } from "@noble/hashes/sha2.js";
 import {
+  BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS,
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
@@ -3086,6 +3087,7 @@ describe("browser CTF range order coordinator", () => {
           operationId: preparation.operationId,
           revision: expect.any(Number),
           code: "awaiting-authorization-expiry",
+          retryAtMs: preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS,
         },
       ],
       attention: [],
@@ -3106,6 +3108,79 @@ describe("browser CTF range order coordinator", () => {
         ?.lifecycleState,
     ).toBe("terminal");
     expect(engine.submitCalls).toBe(1);
+  });
+
+  // Every input stays UNSPENT until expiry, so an earlier mint check cannot
+  // make progress. The engine result read still runs on every pass. The mint
+  // refuses a refund before expiry by its own clock, so the wallet waits a
+  // margin after expiry for a browser clock that runs a little ahead.
+  it("checks a cancelled FOK at the mint again only after expiry and the clock margin", async () => {
+    const database = createRefundDatabase();
+    const preparation = persistedPreparation("range-cancelled-fok-expiry-wake");
+    const expiryMs = preparation.expiry * 1_000;
+    const refundAtMs = expiryMs + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS;
+    let now = 20_000;
+    let mintChecks = 0;
+    const unspentAtMint = refundableRecovery(preparation);
+    const engine = engineMock({
+      submitResponse: { status: "cancelled", remainingAmountSubunits: 1_000 },
+      orderStatus: { ...discoveredOrderStatus(), status: "cancelled" },
+    });
+    const coordinator = createCoordinator(database, sourceWallet(), engine, {
+      now: () => now,
+      recoverySchedule: new BrowserCtfRangeRecoverySchedule({ random: () => 1 }),
+      createMintRecovery: (operation) => {
+        const mint = unspentAtMint(operation);
+        return {
+          async loadUncertainRecoveryObservation(input) {
+            mintChecks += 1;
+            return mint.loadUncertainRecoveryObservation(input);
+          },
+        };
+      },
+      executeRefundSwap: async (_mintUrl, request) => ({
+        signatures: request.outputs.map(signBlindedMessage),
+      }),
+    });
+    await coordinator.prepareAndSubmit({
+      seed: SEED,
+      preparation,
+      candidates: [sourceProof(preparation.offerKeyset.id)],
+    });
+    // The first backoff step ends long before expiry.
+    expect(expiryMs - now).toBeGreaterThan(2 * 15_000);
+
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      pending: [
+        {
+          operationId: preparation.operationId,
+          code: "awaiting-authorization-expiry",
+          retryAtMs: refundAtMs,
+        },
+      ],
+    });
+    expect(mintChecks).toBe(1);
+
+    for (const beforeRefund of [expiryMs - 1, expiryMs, refundAtMs - 1]) {
+      now = beforeRefund;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        pending: [
+          {
+            operationId: preparation.operationId,
+            code: "awaiting-mint-retry",
+            retryAtMs: refundAtMs,
+          },
+        ],
+      });
+      expect(mintChecks).toBe(1);
+    }
+
+    now = refundAtMs;
+    expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [preparation.operationId],
+      pending: [],
+    });
+    expect(mintChecks).toBe(2);
   });
 
   it("ends a paused capability attempt after another tab refunds it at expiry", async () => {
@@ -4934,8 +5009,14 @@ describe("browser CTF range recovery backoff", () => {
       now += delay - 1;
       elapsed += delay;
       const waiting = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+      // The pending operation names the end of its backoff, so the next pass can wait for it.
       expect(waiting.pending).toEqual([
-        { operationId: preparation.operationId, revision: 0, code: "awaiting-mint-retry" },
+        {
+          operationId: preparation.operationId,
+          revision: 0,
+          code: "awaiting-mint-retry",
+          retryAtMs: now + 1,
+        },
       ]);
       expect(completes).toBe(before + 1);
       now += 1;

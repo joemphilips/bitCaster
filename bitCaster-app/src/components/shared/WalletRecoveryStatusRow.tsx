@@ -3,37 +3,13 @@ import { useTranslation } from "react-i18next";
 import { retryBrowserSeedPositionRestore } from "@/lib/browserSeedPositionRestore";
 import { publishBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import type { WalletRecoveryDisplay } from "@/lib/walletRecoveryDisplay";
+import { formatClockTime } from "@/lib/format";
 
 /** The Settings section that holds "Replace Wallet", which takes a seed phrase. */
 const SEED_RESTORE_SETTINGS_HREF = "/settings?category=cashu";
 
 /** Every visible state has one height, so the card below does not move. */
 const ROW_CLASS = "flex min-h-10 items-center gap-2 rounded-xl px-3 py-2 text-sm";
-
-/**
- * The resume time of a wait: the time alone on the same day, else the date
- * and the time.
- */
-export function formatWalletRecoveryResumeTime(
-  retryAtMs: number,
-  nowMs: number,
-  locale: string,
-): string {
-  const at = new Date(retryAtMs);
-  const now = new Date(nowMs);
-  const sameDay =
-    at.getFullYear() === now.getFullYear() &&
-    at.getMonth() === now.getMonth() &&
-    at.getDate() === now.getDate();
-  return sameDay
-    ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
-    : at.toLocaleString(locale, {
-        month: "short",
-        day: "numeric",
-        hour: "numeric",
-        minute: "2-digit",
-      });
-}
 
 /**
  * The one status row of the automatic wallet recovery (issue #161). It is
@@ -60,7 +36,7 @@ export function WalletRecoveryStatusRow({
         return t("wallet.recovery.waitingForMint");
       case "resumesAt":
         return t("wallet.recovery.resumesAt", {
-          time: formatWalletRecoveryResumeTime(display.retryAtMs!, Date.now(), i18n.language),
+          time: formatClockTime(display.retryAtMs!, Date.now(), i18n.language),
         });
       default:
         throw new Error(`unknown wallet recovery wait: ${JSON.stringify(display.text)}`);

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  BROWSER_CTF_RANGE_RECOVERY_BACKOFF_BASE_MS,
   BROWSER_CTF_RANGE_RECOVERY_BACKOFF_MAX_MS,
   BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT,
   BrowserCtfRangeRecoverySchedule,
@@ -54,22 +55,30 @@ describe("browser CTF range recovery schedule", () => {
     expect(state.nextAttemptAtMs).toBeLessThan(15_000);
   });
 
-  it("honors Retry-After and an earlier protocol deadline", () => {
+  it("honors Retry-After", () => {
     const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
     schedule.recordFailure(SCOPE, OPERATION, 0, { mintError: null, retryAfterMs: 120_000 });
     expect(schedule.state(SCOPE, OPERATION, 0)).toEqual({
       kind: "waiting",
       nextAttemptAtMs: 120_000,
     });
-    const deadline = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
-    deadline.recordFailure(SCOPE, OPERATION, 0, {
-      mintError: null,
-      retryAfterMs: null,
-      notAfterMs: 5_000,
-    });
-    expect(deadline.state(SCOPE, OPERATION, 0)).toEqual({
+  });
+
+  // Before authorization expiry, every input stays UNSPENT, and another mint
+  // check cannot make progress.
+  it("waits until a protocol time, such as authorization expiry, without a failure", () => {
+    const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
+    schedule.recordWait(SCOPE, OPERATION, 300_000);
+    expect(schedule.state(SCOPE, OPERATION, 1_000)).toEqual({
       kind: "waiting",
-      nextAttemptAtMs: 5_000,
+      nextAttemptAtMs: 300_000,
+    });
+    expect(schedule.state(SCOPE, OPERATION, 300_000)).toEqual({ kind: "due" });
+    // The wait is not a failed attempt: the next failure gets the first delay.
+    schedule.recordFailure(SCOPE, OPERATION, 300_000, transient());
+    expect(schedule.state(SCOPE, OPERATION, 300_000)).toEqual({
+      kind: "waiting",
+      nextAttemptAtMs: 300_000 + BROWSER_CTF_RANGE_RECOVERY_BACKOFF_BASE_MS,
     });
   });
 

@@ -43,6 +43,8 @@ import { decodeBrowserCustodyProofRow } from "@/stores/durable-custody-types";
 import { db } from "@/stores/proof-db";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
 import { useOrderSettlementObservations } from "@/stores/orderSettlementObservations";
+import { requestTradeRetry, useTradeRetryRequest } from "@/stores/tradeRetryRequest";
+import en from "@/i18n/locales/en.json";
 import {
   joinMarket,
   onConfirmedTradeRecorded,
@@ -1004,6 +1006,7 @@ describe("MarketDetailPage live market status", () => {
     mocks.settingsState.signerBackupState = "confirmed";
     mocks.createImplicitWalletAndNostrIdentity.mockReset();
     mocks.topUpOverlayProps = null;
+    useTradeRetryRequest.setState({ request: null });
   });
 
   it("preserves the trade draft across locale changes but clears it on genuine navigation", async () => {
@@ -3465,7 +3468,10 @@ describe("MarketDetailPage live market status", () => {
 
   it.each([
     { final: "filled", message: "Order filled." },
-    { final: "failed", message: "Order failed." },
+    // One term names a trade that ended without a fill.
+    { final: "failed", message: "Trade failed." },
+    { final: "cancelled", message: en.trade.fokCancelled },
+    { final: "rejected_capacity", message: "Trade failed." },
   ] as const)(
     "shows a matched FOK as settling until its order status is $final",
     async ({ final, message }) => {
@@ -3489,7 +3495,10 @@ describe("MarketDetailPage live market status", () => {
         activeSettlementGroup: null,
       });
       const walletId = browserWalletIdFromMnemonic(mocks.walletState.mnemonic)!;
-      const observe = (status: "matched" | "filled" | "failed", observedWalletId = walletId) =>
+      const observe = (
+        status: "matched" | "filled" | "failed" | "cancelled" | "rejected_capacity",
+        observedWalletId = walletId,
+      ) =>
         act(() =>
           useOrderSettlementObservations.setState({
             byOrderId: {
@@ -3564,7 +3573,7 @@ describe("MarketDetailPage live market status", () => {
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     fireEvent.click(screen.getByTestId("trade-confirm"));
     await waitFor(() =>
-      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Order failed."),
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Trade failed."),
     );
     expect(screen.getByTestId("trade-submit-status")).toHaveClass("border-rose-200");
   });
@@ -3596,8 +3605,9 @@ describe("MarketDetailPage live market status", () => {
     fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
     await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
     fireEvent.click(screen.getByTestId("trade-confirm"));
+    // One term names this outcome, here and in the failure notice.
     await waitFor(() =>
-      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent("Order cancelled."),
+      expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(en.trade.fokCancelled),
     );
     expect(screen.getByTestId("trade-submit-status")).toHaveClass("border-amber-200");
     expect(screen.getByTestId("trade-attempt-fees")).toHaveTextContent(
@@ -3609,6 +3619,144 @@ describe("MarketDetailPage live market status", () => {
     expect(submitBrowserCtfRangeOrder).toHaveBeenCalledTimes(1);
     await waitFor(() => expect(screen.getByTestId("trade-amount-input")).toHaveValue(null));
     expect(screen.getByTestId("trade-confirm")).toBeDisabled();
+  });
+
+  it.each([
+    { side: "Buy", tokenSide: "Complement", selection: "no", tab: "buy" },
+    { side: "Sell", tokenSide: "Outcome", selection: "yes", tab: "sell" },
+  ] as const)(
+    "opens the trade form for a retried $side order with a fresh preview, and waits for the user",
+    async ({ side, tokenSide, selection, tab }) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+      vi.mocked(fetchOrderBook).mockResolvedValue(book(400));
+      mockAcceptedOrder();
+      render(<MarketDetailPage />);
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      const previewsBefore = mocks.previewFokOrder.mock.calls.length;
+
+      act(() =>
+        requestTradeRetry({
+          conditionId: "condition-yesno",
+          orderRouteId: "condition-yesno-Yes",
+          tokenSide,
+          side,
+          amountSubunits: 3_000,
+        }),
+      );
+
+      await waitFor(() => expect(screen.getByTestId("trade-amount-input")).toHaveValue(3));
+      expect(screen.getByTestId(`trade-tab-${tab}`)).toHaveAttribute("aria-selected", "true");
+      await waitFor(() =>
+        expect(mocks.previewFokOrder.mock.calls.length).toBeGreaterThan(previewsBefore),
+      );
+      expect(mocks.previewFokOrder.mock.calls.at(-1)?.[0]).toMatchObject({
+        marketId: "condition-yesno-Yes",
+        side,
+        tokenSide,
+        faceAmountSubunits: 3_000,
+      });
+      // The user confirms as usual: the form never submits by itself.
+      await waitFor(() => expect(screen.getByTestId("trade-confirm")).toBeEnabled());
+      expect(screen.getByTestId("trade-confirm")).toHaveTextContent(
+        new RegExp(`\\b${selection}\\b`, "i"),
+      );
+      expect(submitBrowserCtfRangeOrder).not.toHaveBeenCalled();
+      expect(useTradeRetryRequest.getState().request).toBeNull();
+    },
+  );
+
+  it("leaves the Liquidity tab for the trade form of a retried order", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockResolvedValue(book(400));
+    render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    fireEvent.click(screen.getByTestId("trade-tab-liquidity"));
+    expect(screen.getByTestId("trade-tab-liquidity")).toHaveAttribute("aria-selected", "true");
+
+    act(() =>
+      requestTradeRetry({
+        conditionId: "condition-yesno",
+        orderRouteId: "condition-yesno-Yes",
+        tokenSide: "Outcome",
+        side: "Buy",
+        amountSubunits: 3_000,
+      }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-tab-buy")).toHaveAttribute("aria-selected", "true"),
+    );
+    expect(screen.getByTestId("trade-amount-input")).toHaveValue(3);
+  });
+
+  // The tab request of a Retry applies once. MarketDetail remounts after a
+  // route change; a replayed request would show Sell over a Buy ticket.
+  it("keeps the displayed side and the ticket side equal on a later market after a Retry", async () => {
+    mocks.walletState.setupComplete = true;
+    mocks.walletState.activeMintUrl = "https://mint.example";
+    mocks.settingsState.nostrSignerMode = "nsec";
+    vi.mocked(fetchMarketDetail).mockImplementation(async (id) =>
+      fundedSatYesNoMarket({ id, state: "open" }),
+    );
+    vi.mocked(fetchOrderBook).mockResolvedValue(book(400));
+    const view = render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    act(() =>
+      requestTradeRetry({
+        conditionId: "condition-yesno",
+        orderRouteId: "condition-yesno-Yes",
+        tokenSide: "Outcome",
+        side: "Sell",
+        amountSubunits: 3_000,
+      }),
+    );
+    await waitFor(() =>
+      expect(screen.getByTestId("trade-tab-sell")).toHaveAttribute("aria-selected", "true"),
+    );
+    fireEvent.click(screen.getByTestId("trade-tab-buy"));
+    expect(screen.getByTestId("trade-tab-buy")).toHaveAttribute("aria-selected", "true");
+
+    mocks.routeParams.id = "condition-other";
+    view.rerender(<MarketDetailPage />);
+    await waitFor(() =>
+      expect(vi.mocked(fetchMarketDetail).mock.calls.at(-1)?.[0]).toBe("condition-other"),
+    );
+    await screen.findByRole("heading", { name: "Will it happen?" });
+
+    expect(screen.getByTestId("trade-tab-buy")).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByTestId("trade-tab-sell")).toHaveAttribute("aria-selected", "false");
+    fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+    fireEvent.change(screen.getByTestId("trade-amount-input"), { target: { value: "1" } });
+    await waitFor(() =>
+      expect(mocks.previewFokOrder.mock.calls.at(-1)?.[0]).toMatchObject({
+        marketId: "condition-other-Yes",
+        side: "Buy",
+      }),
+    );
+    expect(screen.getByTestId("trade-tab-buy")).toHaveAttribute("aria-selected", "true");
+  });
+
+  it("keeps a retry request for another market", async () => {
+    vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+    vi.mocked(fetchOrderBook).mockResolvedValue(book(400));
+    const request = {
+      conditionId: "condition-other",
+      orderRouteId: "condition-other-Yes",
+      tokenSide: "Outcome",
+      side: "Buy",
+      amountSubunits: 3_000,
+    } as const;
+    act(() => requestTradeRetry(request));
+    render(<MarketDetailPage />);
+    await screen.findByRole("heading", { name: "Will it happen?" });
+    expect(useTradeRetryRequest.getState().request).toEqual(request);
+    expect(screen.queryByTestId("trade-amount-input")).not.toBeInTheDocument();
   });
 
   it("does not attach an earlier failed attempt's fees to a new pre-submission refusal", async () => {
@@ -4283,7 +4431,7 @@ describe("MarketDetailPage live market status", () => {
       regularCashSubunits: [],
       maxOutputs: 256,
       refusal:
-        "The wallet needs ordinary sats to pay the source preparation fee. Add sats to the wallet and try again.",
+        "The wallet needs ordinary sats to pay the preparation fee. Add sats to the wallet and try again.",
     },
     {
       name: "the held share is missing from custody",

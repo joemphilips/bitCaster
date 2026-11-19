@@ -15,8 +15,13 @@ import {
   type BrowserCtfRangeMessageCursor,
 } from "@/stores/ctf-range-order-messages";
 import { marketLabel, useMarketTitles } from "@/hooks/useMarketTitles";
-import { readCtfRangeOrderFunds, refusedOrderAlertFunds } from "@/lib/ctfRangeOrderFunds";
-import { withFundsSentence } from "@/lib/orderFailureText";
+import {
+  ctfRangeOrderLock,
+  readCtfRangeOrderFunds,
+  refusedOrderAlertFunds,
+  type CtfRangeOrderLock,
+} from "@/lib/ctfRangeOrderFunds";
+import { withFundsSentence, type FundsLockText } from "@/lib/orderFailureText";
 import { assertNever } from "@/lib/enumDiscipline";
 
 const VISIBLE_MESSAGE_LIMIT = 8;
@@ -76,14 +81,16 @@ function alertText(
   t: (key: string, options?: Record<string, unknown>) => string,
   message: BrowserCtfRangeMessage,
   funds: "pending" | "refunded" | undefined,
+  lock: FundsLockText,
 ): string {
   const text = t(`walletRecovery.errors.${message.code}`);
-  return funds === undefined ? text : withFundsSentence(t, text, funds);
+  return funds === undefined ? text : withFundsSentence(t, text, funds, lock);
 }
 
 /**
- * The market of each order alert, from its journal operation, and the funds of
- * each refused order request whose refund follows.
+ * The market of each order alert, from its journal operation, the funds of
+ * each refused order request whose refund follows, and what that refund
+ * waits for.
  */
 async function readOrderAlertFacts(
   scopeId: string,
@@ -91,26 +98,28 @@ async function readOrderAlertFacts(
 ): Promise<{
   orderMarkets: Readonly<Record<string, string>>;
   orderFunds: Readonly<Record<string, "pending" | "refunded">>;
+  orderLocks: Readonly<Record<string, CtfRangeOrderLock>>;
 }> {
   const orderMarkets: Record<string, string> = {};
   const orderFunds: Record<string, "pending" | "refunded"> = {};
+  const orderLocks: Record<string, CtfRangeOrderLock> = {};
   for (const message of messages) {
     if (!namesMarket(message.kind)) continue;
     try {
-      if (!Object.hasOwn(orderMarkets, message.operationId)) {
-        const record = await readCtfRangePreparation(scopeId, message.operationId);
-        if (record !== null) orderMarkets[message.operationId] = record.orderRouteId;
-      }
+      const record = await readCtfRangePreparation(scopeId, message.operationId);
+      if (record !== null) orderMarkets[message.operationId] = record.orderRouteId;
       const funds = refusedOrderAlertFunds(
         message.code,
         await readCtfRangeOrderFunds(scopeId, message.operationId),
       );
       if (funds !== null) orderFunds[message.operationId] = funds;
+      const lock = funds === "pending" && record !== null ? ctfRangeOrderLock(record) : null;
+      if (lock !== null) orderLocks[message.operationId] = lock;
     } catch {
       // Without its journal record, the alert shows no market and no funds.
     }
   }
-  return { orderMarkets, orderFunds };
+  return { orderMarkets, orderFunds, orderLocks };
 }
 
 export function DurableWalletErrors() {
@@ -120,7 +129,7 @@ export function DurableWalletErrors() {
 }
 
 function WalletAlertPage({ scopeId }: { scopeId: string }) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [after, setAfter] = useState<BrowserCtfRangeMessageCursor>();
   const titles = useMarketTitles();
   const page = useLiveQuery(async () => {
@@ -152,7 +161,10 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
               <p>
                 {message.code === "order-attempt-ended" && message.fundsReleased === true
                   ? t("walletRecovery.fundsReleased")
-                  : alertText(t, message, page.orderFunds[message.operationId])}
+                  : alertText(t, message, page.orderFunds[message.operationId], {
+                      lock: page.orderLocks[message.operationId] ?? null,
+                      locale: i18n.language,
+                    })}
               </p>
               {PARTICIPATION_SCORE_MESSAGE_CODES.has(message.code) && <ParticipationScoreHelp />}
             </div>
@@ -183,7 +195,7 @@ function WalletAlertPage({ scopeId }: { scopeId: string }) {
           </div>
           <button
             type="button"
-            className="rounded p-1 hover:bg-rose-100 dark:hover:bg-rose-900/50"
+            className="-mr-2 -my-1.5 flex h-11 w-11 shrink-0 items-center justify-center rounded hover:bg-rose-100 dark:hover:bg-rose-900/50"
             aria-label={t("walletRecovery.dismiss")}
             onClick={() =>
               void acknowledgeBrowserCtfRangeMessage({

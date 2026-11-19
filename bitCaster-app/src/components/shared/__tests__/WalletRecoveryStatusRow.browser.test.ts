@@ -14,7 +14,7 @@ import { Portfolio } from "@/components/portfolio/Portfolio";
 import { TradingPanel } from "@/components/market-detail/TradingPanel";
 import { ToastContainer } from "@/components/ui/Toast";
 import { useWalletHeaderBalance } from "@/hooks/useWalletHeaderBalance";
-import { formatWalletRecoveryResumeTime } from "@/components/shared/WalletRecoveryStatusRow";
+import { formatClockTime } from "@/lib/format";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import { listenForBrowserCtfRangeRecoveryWake } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import { initialSeedRestoreState, seedRestoreDatabase } from "@/stores/seed-restore-db";
@@ -319,11 +319,7 @@ function rowText(state: StateName): string {
     case "resumes-at":
       return i18n.t("wallet.recovery.resumesAt", {
         // The formatter has its own tests with a fixed clock.
-        time: formatWalletRecoveryResumeTime(
-          STATUSES["resumes-at"].retryAtMs,
-          Date.now(),
-          i18n.language,
-        ),
+        time: formatClockTime(STATUSES["resumes-at"].retryAtMs, Date.now(), i18n.language),
       });
     case "failed":
       return i18n.t("wallet.recovery.failed");
