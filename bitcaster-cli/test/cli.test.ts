@@ -1751,6 +1751,42 @@ test('P47-2: bitcaster-cli shows friendly error when daemon is unreachable', asy
   }
 })
 
+for (const args of [['health'], ['daemon', 'init']]) {
+  test(
+    `bitcaster-cli ${args.join(' ')} names the Unix socket path limit for a long --datadir`,
+    { skip: process.platform === 'win32' ? 'the daemon uses loopback TCP on Windows' : false },
+    async () => {
+      const root = await mkdtemp(join(tmpdir(), 'bitcaster-cli-socket-limit-'))
+      const home = join(root, 'd'.repeat(120))
+      const socketPath = join(home, 'daemon.sock')
+      // Linux binds a full 108-byte `sun_path` (measured); macOS keeps 103 (not measured).
+      const limit = process.platform === 'linux' ? 108 : 103
+      try {
+        await assert.rejects(
+          () =>
+            runCliWithEnv(
+              args,
+              { ...process.env, BITCASTER_DAEMON_HOME: home },
+              { childTimeoutMs: 60_000 },
+            ),
+          (err: unknown) => {
+            assert.equal(
+              (err as { stderr?: string }).stderr,
+              `daemon socket path is ${Buffer.byteLength(socketPath)} bytes, over the ` +
+                `${limit}-byte Unix socket path limit: ${socketPath}. Choose a shorter --datadir.\n`,
+            )
+            return true
+          },
+        )
+        // The CLI starts no daemon, and init writes no profile.
+        assert.deepEqual(await readdir(home), ['config.json'])
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    },
+  )
+}
+
 test('P47-3: market list with a configured engine calls it without daemon RPC', async () => {
   const daemonCalls: unknown[] = []
   const daemon = createServer(async (req, res) => {

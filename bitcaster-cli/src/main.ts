@@ -62,6 +62,7 @@ import {
   callDaemon,
   daemonLogPath,
   DaemonNotReachableError,
+  daemonSocketPath,
   isNetworkFailure,
   preventDaemonAutoStart,
   restartDaemon,
@@ -3104,6 +3105,8 @@ function registerDaemonCommand(program: Command): void {
     .option('--nostr-secret-key-hex-file <path>', 'File containing Nostr secret key hex')
     .addHelpText('after', '\nExample:\n  bitcaster-cli daemon init')
     .action(async (options: { walletSeedHexFile?: string; nostrSecretKeyHexFile?: string }) => {
+      // Report a socket path over the Unix limit here, not as the failed daemon command.
+      daemonSocketPath()
       const passthrough = ['init']
       pushOption(passthrough, '--wallet-seed-hex-file', options.walletSeedHexFile)
       pushOption(passthrough, '--nostr-secret-key-hex-file', options.nostrSecretKeyHexFile)

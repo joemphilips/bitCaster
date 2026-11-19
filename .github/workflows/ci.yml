@@ -67,7 +67,7 @@ jobs:
 
   frontend:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     defaults:
       run:
         working-directory: bitCaster-app
@@ -81,9 +81,6 @@ jobs:
           node-version: 22
       - name: Install boundary-check prerequisite
         run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
-      - name: Test boundary checks
-        working-directory: .
-        run: node --test scripts/tests/boundary-checks.test.mjs
       - run: npm ci --ignore-scripts
         working-directory: .
       - run: npm run patch:dependencies
@@ -94,12 +91,45 @@ jobs:
       - name: Build SDK exports for cross-client tests
         working-directory: .
         run: npm run build --workspace @bitcaster-market/client-sdk
+      - name: Test the SDK
+        working-directory: .
+        run: npm test --workspace @bitcaster-market/client-sdk
       - run: npm run typecheck
       - run: npm run lint:enum-discipline
       - run: npm run lint:identity-ops
       - run: npm run lint:wallet-ops
       - run: npm run build
       - run: npm run test
+      - run: npm run test:server
+
+  scripts-daemon-and-cli:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - name: Install boundary-check prerequisite
+        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+      - run: npm ci --ignore-scripts
+      - run: npm run patch:dependencies
+      # The Playwright launch test starts full Chromium and reads its sandbox state.
+      - name: Install Chromium for the Playwright launch test
+        run: npx playwright install --with-deps chromium
+      - name: Test the scripts
+        run: node --test scripts/tests/*.test.mjs
+      # The daemon build builds the SDK first. Some daemon tests load the built
+      # daemon package, as the CLI does.
+      - name: Build the SDK and daemon packages
+        run: npm run build --workspace @bitcaster-market/daemon
+      - name: Test the daemon
+        run: npm test --workspace @bitcaster-market/daemon
+      - name: Test the CLI
+        run: npm test --workspace @bitcaster-market/cli
 
   docs:
     runs-on: ubuntu-latest

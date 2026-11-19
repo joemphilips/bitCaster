@@ -61,8 +61,9 @@ const rpcSource = `
     record({ action: 'restart', config: JSON.parse(readFileSync(join(process.env.BITCASTER_TEST_SETTINGS_DIRECTORY, 'config.json'), 'utf8')) })
   }
   const unexpected = () => { throw Error('Unexpected RPC or daemon I/O') }
-  export const callDaemon = unexpected, daemonLogPath = unexpected, isNetworkFailure = unexpected,
-    stopDaemon = unexpected, submitOrderWithProgress = unexpected, watchDaemonToOutput = unexpected
+  export const callDaemon = unexpected, daemonLogPath = unexpected, daemonSocketPath = unexpected,
+    isNetworkFailure = unexpected, stopDaemon = unexpected, submitOrderWithProgress = unexpected,
+    watchDaemonToOutput = unexpected
 `
 
 registerHooks({
