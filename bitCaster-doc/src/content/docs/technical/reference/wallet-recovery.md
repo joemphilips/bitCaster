@@ -173,9 +173,10 @@ bitCaster can show that an output of your order was already used by another
 operation of your wallet, it removes your order from that settlement. The
 other orders can still settle. Your order fails, and the **Trade failed**
 panel shows the reason until you dismiss it. A Participation Score penalty of
-100 Score is charged once for that settlement. Your funds are not lost. They
-return to this wallet, less preparation and refund fees, after the order
-expires, as for another failed order.
+100 Score is charged once for that settlement. Your funds are not lost. As
+for another failed order, the panel shows the locked funds and the time when
+the lock ends. Then they return to this wallet, less preparation and refund
+fees.
 The wallet recovers them automatically while the app is open. Your order can
 also fail when another output in the same settlement was already used. Then
 no penalty is charged for your order.

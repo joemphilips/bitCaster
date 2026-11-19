@@ -130,6 +130,16 @@ describe("order failure notices", () => {
     expect(stored("operation-1")?.reason).toBe("OwnOutputReused");
   });
 
+  it("keeps the cancelled FOK reason after a reload", async () => {
+    const { record } = useOrderFailureNotices.getState();
+    record(notice("operation-1", { reason: "FokCancelled" }), 10);
+    record(notice("operation-1", { reason: "Unspecified" }), 30);
+
+    await reload();
+
+    expect(stored("operation-1")?.reason).toBe("FokCancelled");
+  });
+
   it("keeps the same operation of two wallets apart", () => {
     const { record, dismiss } = useOrderFailureNotices.getState();
     record(notice("operation-1"), 10);

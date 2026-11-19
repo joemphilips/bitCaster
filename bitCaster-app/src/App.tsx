@@ -151,7 +151,10 @@ export function ShellRoutes({
       <ShellBanners>
         <RecoveryIndexStatus />
         <DurableWalletErrors />
-        <SettlementProgress canReadStatus={canReadOrderStatus} />
+        <SettlementProgress
+          canReadStatus={canReadOrderStatus}
+          onNavigate={(href) => navigate(href)}
+        />
       </ShellBanners>
       <Routes>
         <Route path="/" element={<MarketsPage />} />

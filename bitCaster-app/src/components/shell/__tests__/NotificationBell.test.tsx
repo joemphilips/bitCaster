@@ -1,11 +1,26 @@
 import { render, screen, fireEvent, within } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { NotificationBell } from "../NotificationBell";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
 import { orderFailureNoticeKey, useOrderFailureNotices } from "@/stores/orderFailureNotices";
+import { useTradeRetryRequest } from "@/stores/tradeRetryRequest";
+import type { CtfRangeOrderLock } from "@/lib/ctfRangeOrderFunds";
+import { formatClockTime } from "@/lib/format";
 import i18n from "@/i18n";
 import en from "@/i18n/locales/en.json";
 import ja from "@/i18n/locales/ja.json";
+
+// The journal read is browser storage I/O; the panel tests read a real journal.
+const mocks = vi.hoisted(() => ({
+  locks: {} as Record<string, CtfRangeOrderLock>,
+  lockReads: [] as Array<{ scopeId: string | null; operationIds: readonly string[] }>,
+}));
+vi.mock("@/hooks/useCtfRangeOrderLocks", () => ({
+  useCtfRangeOrderLocks: (scopeId: string | null, operationIds: readonly string[]) => {
+    mocks.lockReads.push({ scopeId, operationIds });
+    return mocks.locks;
+  },
+}));
 
 const COND = "b".repeat(64);
 const TITLE = "Will Alice win the 2026 cup?";
@@ -51,6 +66,9 @@ function openBell(onNavigate?: (href: string) => void) {
 beforeEach(async () => {
   useNotificationsStore.setState({ items: [] });
   useOrderFailureNotices.setState({ notices: {} });
+  useTradeRetryRequest.setState({ request: null });
+  mocks.locks = {};
+  mocks.lockReads = [];
   await i18n.changeLanguage("en");
 });
 
@@ -158,30 +176,29 @@ describe("NotificationBell order failures", () => {
     let navigated: string | null = null;
 
     openBell((href) => (navigated = href));
-    fireEvent.click(screen.getByText(`Order failed on “${TITLE}”`));
+    fireEvent.click(screen.getByText(`Trade failed on “${TITLE}”`));
 
-    expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Order cancelled|Order failed/i)).not.toBeInTheDocument();
     expect(navigated).toBe(`/markets/${COND}`);
   });
 
-  // The reason and the funds sentence of the notice form one paragraph.
+  // The reason and the funds sentence of the notice are separate lines.
   it.each([
     [
       "en",
       "OwnOutputReused",
       "pending",
-      `${en.settlementProgress.OwnOutputReused} ${en.settlementProgress.fundsPending}`,
+      [en.settlementProgress.OwnOutputReused, en.settlementProgress.fundsPending],
     ],
     [
       "ja",
       "GroupOutputReused",
       "refunded",
-      `${ja.settlementProgress.GroupOutputReused}${ja.settlementProgress.fundsReturned}`,
+      [ja.settlementProgress.GroupOutputReused, ja.settlementProgress.fundsReturned],
     ],
-    ["en", "Unspecified", "ended", en.settlementProgress.failed],
   ] as const)(
     "shows the recorded failure reason in the %s Failed notification, also after dismissal (%s, funds %s)",
-    async (language, reason, funds, text) => {
+    async (language, reason, funds, lines) => {
       await i18n.changeLanguage(language);
       useNotificationsStore.getState().add(orderNotice("Matched", 1_000, 0));
       useNotificationsStore
@@ -205,13 +222,154 @@ describe("NotificationBell order failures", () => {
 
       const entries = screen.getAllByRole("listitem");
       expect(entries).toHaveLength(2);
-      const failed = entries.find((entry) => entry.textContent?.includes(text));
+      const failed = entries.find((entry) => entry.textContent?.includes(lines[0]));
       expect(failed).toBeDefined();
-      expect(within(failed!).getByText(text)).toBeVisible();
       // Only the Failed entry of the order carries the reason.
-      expect(screen.getAllByText(text)).toHaveLength(1);
+      for (const line of lines) {
+        expect(within(failed!).getByText(line)).toBeVisible();
+        expect(screen.getAllByText(line)).toHaveLength(1);
+      }
     },
   );
+
+  it("shows no reason line and no funds claim for a failure with no reason and no refund", () => {
+    useNotificationsStore
+      .getState()
+      .add({ ...orderNotice("Failed", 0, 1_000), id: "order-1-failed" });
+    useOrderFailureNotices.getState().record({
+      scopeId: "scope-1",
+      operationId: "operation-1",
+      orderId: "order-1",
+      marketId: `${COND}-Yes`,
+      marketTitle: null,
+      reason: "Unspecified",
+    });
+    useOrderFailureNotices
+      .getState()
+      .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: "ended" });
+
+    openBell();
+
+    const entry = screen.getByRole("listitem");
+    expect(entry).toHaveTextContent(`Trade failed on “${TITLE}”`);
+    expect(entry).not.toHaveTextContent(/Your funds|were returned/);
+  });
+
+  describe("an engine-cancelled FOK", () => {
+    const unlockAtMs = Date.UTC(2026, 10, 19, 5, 5);
+    const retry = {
+      conditionId: COND,
+      orderRouteId: `${COND}-Yes`,
+      tokenSide: "Complement" as const,
+      side: "Buy" as const,
+      amountSubunits: 2_000,
+    };
+    const lock: CtfRangeOrderLock = {
+      side: "Buy",
+      lockedSubunits: 1_025,
+      divisibility: 1_000,
+      unlockAtMs,
+      retry,
+    };
+    const lockedSats = en.settlementProgress.fundsLockedSats
+      .replace("{{amount}}", "1.025 sats")
+      .replace("{{time}}", formatClockTime(unlockAtMs, Date.now(), "en"));
+    const retryName = en.settlementProgress.retryTrade.replace("{{market}}", TITLE);
+
+    beforeEach(() => {
+      useNotificationsStore
+        .getState()
+        .add({ ...orderNotice("cancelled", 0, 2_000), id: "order-1-cancelled" });
+      useOrderFailureNotices.getState().record({
+        scopeId: "scope-1",
+        operationId: "operation-1",
+        orderId: "order-1",
+        marketId: `${COND}-Yes`,
+        marketTitle: null,
+        reason: "FokCancelled",
+      });
+      mocks.locks = { "operation-1": lock };
+    });
+
+    it("shows the reason, the locked sats and their lock end, and Retry", () => {
+      openBell();
+
+      const entry = screen.getByRole("listitem");
+      expect(entry).toHaveTextContent(`Trade failed on “${TITLE}”`);
+      expect(within(entry).getByText(en.settlementProgress.FokCancelled)).toBeVisible();
+      expect(within(entry).getByText(lockedSats)).toBeVisible();
+      expect(within(entry).getByRole("button", { name: retryName })).toBeVisible();
+    });
+
+    it("opens the market page first, then asks it for the same order", () => {
+      let navigated: string | null = null;
+      openBell((href) => (navigated = href));
+
+      fireEvent.click(screen.getByRole("button", { name: retryName }));
+
+      expect(navigated).toBe(`/markets/${COND}`);
+      expect(useTradeRetryRequest.getState().request).toEqual(retry);
+      // The panel closes, so the market page shows the prefilled trade form.
+      expect(screen.queryByRole("listitem")).not.toBeInTheDocument();
+    });
+
+    it.each(["evicted_capacity", "rejected_capacity"] as const)(
+      "shows the locked funds and Retry on the %s entry, as the panel does",
+      (kind) => {
+        useNotificationsStore.setState({ items: [] });
+        useNotificationsStore
+          .getState()
+          .add({ ...orderNotice(kind, 0, 2_000), id: `order-1-${kind}` });
+        useOrderFailureNotices.setState({ notices: {} });
+        useOrderFailureNotices.getState().record({
+          scopeId: "scope-1",
+          operationId: "operation-1",
+          orderId: "order-1",
+          marketId: `${COND}-Yes`,
+          marketTitle: null,
+          reason: "Unspecified",
+        });
+
+        openBell();
+
+        const entry = screen.getByRole("listitem");
+        expect(within(entry).getByText(lockedSats)).toBeVisible();
+        expect(within(entry).getByRole("button", { name: retryName })).toBeVisible();
+      },
+    );
+
+    // A retry from a wallet that another browser uses can repeat the penalty.
+    it("offers no Retry when this wallet was used in two places", () => {
+      useOrderFailureNotices.setState({ notices: {} });
+      useOrderFailureNotices.getState().record({
+        scopeId: "scope-1",
+        operationId: "operation-1",
+        orderId: "order-1",
+        marketId: `${COND}-Yes`,
+        marketTitle: null,
+        reason: "OwnOutputReused",
+      });
+
+      openBell();
+
+      const entry = screen.getByRole("listitem");
+      expect(within(entry).getByText(en.settlementProgress.OwnOutputReused)).toBeVisible();
+      expect(within(entry).getByText(lockedSats)).toBeVisible();
+      expect(within(entry).queryByRole("button", { name: retryName })).toBeNull();
+    });
+
+    it("shows that the funds were returned and no Retry after the refund", () => {
+      useOrderFailureNotices
+        .getState()
+        .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: "refunded" });
+
+      openBell();
+
+      const entry = screen.getByRole("listitem");
+      expect(within(entry).getByText(en.settlementProgress.fundsReturned)).toBeVisible();
+      expect(within(entry).queryByRole("button", { name: retryName })).toBeNull();
+    });
+  });
 
   it("shows no failure reason for an order whose settlement completed after all", () => {
     useNotificationsStore
@@ -244,10 +402,10 @@ describe("NotificationBell order failures", () => {
     openBell();
 
     const entry = screen.getByRole("listitem");
-    expect(entry).toHaveTextContent(`Order failed on “${TITLE}”`);
+    expect(entry).toHaveTextContent(`Trade failed on “${TITLE}”`);
     expect(entry).not.toHaveTextContent(en.settlementProgress.OwnOutputReused);
     expect(entry).not.toHaveTextContent(en.settlementProgress.GroupOutputReused);
-    expect(entry).not.toHaveTextContent(en.settlementProgress.failed);
+    expect(within(entry).queryByRole("button", { name: /Retry/ })).toBeNull();
   });
 });
 
@@ -307,7 +465,7 @@ describe("NotificationBell order notices", () => {
     expect(
       screen.getByText(`一部約定: 「${TITLE}」で 400 枚が約定、残り 600 枚`),
     ).toBeInTheDocument();
-    expect(screen.getByText(`「${TITLE}」の注文がキャンセルされました`)).toBeInTheDocument();
+    expect(screen.getByText(`「${TITLE}」の取引が失敗しました`)).toBeInTheDocument();
   });
 
   // ADR-049: entries persisted before release 4 have no title and no denominator.

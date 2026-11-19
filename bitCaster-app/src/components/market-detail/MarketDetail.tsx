@@ -118,6 +118,8 @@ export function MarketDetail({
   onTradeSideChange,
   tradeTab: controlledTradeTab,
   onTradeTabChange,
+  tradeTabRequest = null,
+  onTradeTabRequestApplied,
   sellHoldings,
   walletReady = true,
   onWalletRequired,
@@ -140,6 +142,13 @@ export function MarketDetail({
       setLocalTradeTab((current) => (current === "Liquidity" ? current : tradeSide));
     }
   }, [controlledTradeTab, tradeSide]);
+  // A side change keeps the Liquidity tab; an explicit request leaves it.
+  useEffect(() => {
+    if (tradeTabRequest === null) return;
+    setLocalTradeTab(tradeTabRequest.side);
+    onTradeTabChange?.(tradeTabRequest.side);
+    onTradeTabRequestApplied?.(tradeTabRequest);
+  }, [tradeTabRequest, onTradeTabChange, onTradeTabRequestApplied]);
   const outcomes =
     market.type === "categorical"
       ? market.outcomes

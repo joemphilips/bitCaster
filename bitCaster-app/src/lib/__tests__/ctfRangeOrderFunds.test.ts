@@ -21,9 +21,16 @@ import {
 import { browserCustodyOperationId } from "../browserCtfRangeOrderSource";
 import {
   browserRangeCustodyOperationId,
+  ctfRangeOrderLock,
   readCtfRangeOrderFunds,
+  readCtfRangeOrderLocks,
   refusedOrderAlertFunds,
 } from "../ctfRangeOrderFunds";
+import {
+  RANGE_FIXTURE_CONDITION_ID,
+  RANGE_FIXTURE_OUTCOME,
+  ctfRangePreparationRecordFixture,
+} from "@/test/ctfRangePreparationRecordFixture";
 
 const databases: BitcasterDB[] = [];
 afterEach(async () => {
@@ -103,6 +110,76 @@ describe("CTF range order funds", () => {
     ["order-submission-uncertain", { kind: "refunded" }, null],
   ] as const)("gives the funds of a %s alert in state %o: %s", (code, funds, expected) => {
     expect(refusedOrderAlertFunds(code, funds)).toBe(expected);
+  });
+});
+
+describe("funds that an order attempt holds until its authorization expires", () => {
+  it("names the planned Buy inputs in msat, the lock end, and the order to start again", () => {
+    // Two shares at 512 msat cost 1,024 msat. The inputs 1,024 + 1 msat pay
+    // the 1 msat input fee of two inputs.
+    const record = ctfRangePreparationRecordFixture({
+      scopeId,
+      operationId: "range-buy",
+      side: "Buy",
+      tokenSide: "Complement",
+      price: 512,
+      amountSubunits: 2_000,
+    });
+    expect(ctfRangeOrderLock(record)).toEqual({
+      side: "Buy",
+      lockedSubunits: 1_025,
+      divisibility: 1_000,
+      unlockAtMs: record.authorizationExpiresAtUnixSeconds * 1_000,
+      retry: {
+        conditionId: RANGE_FIXTURE_CONDITION_ID,
+        orderRouteId: `${RANGE_FIXTURE_CONDITION_ID}-${RANGE_FIXTURE_OUTCOME}`,
+        tokenSide: "Complement",
+        side: "Buy",
+        amountSubunits: 2_000,
+      },
+    });
+  });
+
+  it("names the offered shares of a Sell in face subunits", () => {
+    const record = ctfRangePreparationRecordFixture({
+      scopeId,
+      operationId: "range-sell",
+      side: "Sell",
+      price: 512,
+      amountSubunits: 3_000,
+    });
+    expect(ctfRangeOrderLock(record)).toMatchObject({ side: "Sell", lockedSubunits: 3_000 });
+  });
+
+  it("gives no lock for a preparation that does not decode", () => {
+    expect(ctfRangeOrderLock(journal("order-submitted"))).toBeNull();
+  });
+
+  it("reads the locks of active journal records only", async () => {
+    const database = createDatabase();
+    const active = ctfRangePreparationRecordFixture({
+      scopeId,
+      operationId: "range-active",
+      side: "Buy",
+      price: 512,
+      amountSubunits: 2_000,
+    });
+    const ended = ctfRangePreparationRecordFixture({
+      scopeId,
+      operationId: "range-ended",
+      side: "Buy",
+      price: 512,
+      amountSubunits: 2_000,
+      lifecycleState: "terminal",
+    });
+    await database.ctfRangePreparations.bulkPut([active, ended]);
+    const locks = await readCtfRangeOrderLocks(
+      scopeId,
+      ["range-active", "range-ended", "range-missing"],
+      database,
+    );
+    expect(Object.keys(locks)).toEqual(["range-active"]);
+    expect(locks["range-active"]?.lockedSubunits).toBe(1_025);
   });
 });
 

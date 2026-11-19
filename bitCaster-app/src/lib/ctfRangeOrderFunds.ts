@@ -1,5 +1,13 @@
-import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import type {
+  CtfRangeOrderPreparationLifecycle,
+  CtfRangeOrderPreparationRecord,
+} from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import {
+  decodeCtfRangeOrderPreparationFromRecord,
+  planPersistedCtfRangeOrderAuthorization,
+} from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import type { BrowserCtfRangeOrderErrorCode } from "@/lib/browserCtfRangeOrderCoordinator";
+import type { TradeRetryRequest } from "@/stores/tradeRetryRequest";
 import { assertNever } from "@/lib/enumDiscipline";
 import { browserRangeCustodyOperationId } from "@/lib/browserRangeCustodyIdentity";
 import {
@@ -70,6 +78,70 @@ function custodyOutcome(state: BrowserCustodyOperationRow["operationState"]): Ct
     default:
       return assertNever(state);
   }
+}
+
+/**
+ * The funds that an active order attempt holds until its authorization
+ * expires. Display state only: it grants no funds authority.
+ */
+export interface CtfRangeOrderLock {
+  readonly side: "Buy" | "Sell";
+  /** The planned authorization inputs: msat for a Buy, share face subunits for a Sell. */
+  readonly lockedSubunits: number;
+  readonly divisibility: number;
+  /** The authorization expiry. The refund can start at this time. */
+  readonly unlockAtMs: number;
+  /** The order that a Retry starts again from. */
+  readonly retry: TradeRetryRequest;
+}
+
+/**
+ * The lock of one journal record, or null when its preparation does not
+ * decode. The SDK plans the same exact inputs that the source preparation
+ * created, so this reads no custody row.
+ */
+export function ctfRangeOrderLock(
+  record: CtfRangeOrderPreparationRecord,
+): CtfRangeOrderLock | null {
+  let lockedSubunits: number;
+  try {
+    lockedSubunits = Number(
+      planPersistedCtfRangeOrderAuthorization(decodeCtfRangeOrderPreparationFromRecord(record))
+        .inputAmount,
+    );
+  } catch {
+    return null;
+  }
+  if (!Number.isSafeInteger(lockedSubunits)) return null;
+  return {
+    side: record.side,
+    lockedSubunits,
+    divisibility: record.divisibility,
+    unlockAtMs: record.authorizationExpiresAtUnixSeconds * 1_000,
+    retry: {
+      conditionId: record.conditionId,
+      orderRouteId: record.orderRouteId,
+      tokenSide: record.tokenSide,
+      side: record.side,
+      amountSubunits: record.amountSubunits,
+    },
+  };
+}
+
+/** The locks of the active journal records among these operations, by operation. */
+export async function readCtfRangeOrderLocks(
+  scopeId: string,
+  operationIds: readonly string[],
+  database: BitcasterDB = db,
+): Promise<Record<string, CtfRangeOrderLock>> {
+  const locks: Record<string, CtfRangeOrderLock> = {};
+  for (const operationId of operationIds) {
+    const record = await readCtfRangePreparation(scopeId, operationId, database);
+    if (record === null || isTerminalCtfRangePreparation(record.lifecycleState)) continue;
+    const lock = ctfRangeOrderLock(record);
+    if (lock !== null) locks[operationId] = lock;
+  }
+  return locks;
 }
 
 /**

@@ -435,6 +435,12 @@ export interface BrowserCtfRangeRecoveryPage {
     revision: number;
     code: BrowserCtfRangeRecoveryPendingCode;
     mintError?: BrowserCtfRangeMintError;
+    /**
+     * The next time that a mint request of this operation can make progress:
+     * authorization expiry or the end of its backoff. Null when a pass can
+     * make progress at any time.
+     */
+    retryAtMs: number | null;
   }[];
   /**
    * Operations whose automatic replay stopped: after repeated identical
@@ -606,6 +612,13 @@ const REFUSED_SOURCE_RELEASED_MESSAGE =
  * issued authorization, and a cancelled FOK stays locked until this expiry.
  */
 const BROWSER_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS = 300;
+
+/**
+ * The mint refuses a refund before authorization expiry by its own clock. A
+ * browser clock that runs a little ahead would send the refund too early, and
+ * that refusal shows a funds-recovery alert. Wait this much after expiry.
+ */
+export const BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS = 3_000;
 
 // Each recovery pass builds a new coordinator, so the tab keeps one schedule.
 // It is a load control: losing it on a reload only allows an earlier read.
@@ -927,6 +940,7 @@ export class BrowserCtfRangeOrderCoordinator {
       // hold an engine result read, apply, or acknowledgement, which send no
       // mint request. A settlement notice wakes those at once.
       let mintDue = true;
+      let mintDueAtMs: number | null = null;
       if (schedule !== undefined) {
         const state = schedule.state(scope.scopeId, operationId, this.#now());
         switch (state.kind) {
@@ -934,6 +948,7 @@ export class BrowserCtfRangeOrderCoordinator {
             break;
           case "waiting":
             mintDue = false;
+            mintDueAtMs = state.nextAttemptAtMs;
             break;
           case "halted":
             // Only a manual retry resumes it. Report it on every pass, so its
@@ -952,18 +967,36 @@ export class BrowserCtfRangeOrderCoordinator {
             recoveredOperationIds.push(operationId);
             break;
           case "awaiting-mint-retry":
+            pending.push({
+              operationId,
+              revision: record.revision,
+              code: outcome,
+              retryAtMs: mintDueAtMs,
+            });
+            break;
           // The lookup backoff spaces engine reads; it is not a mint failure.
           case "awaiting-order-confirmation":
-            pending.push({ operationId, revision: record.revision, code: outcome });
+            pending.push({
+              operationId,
+              revision: record.revision,
+              code: outcome,
+              retryAtMs: null,
+            });
             break;
+          // Every input stays UNSPENT until expiry, so an earlier mint check
+          // cannot make progress. The engine result read still runs each pass.
           case "awaiting-authorization-expiry": {
             const current = await this.#currentPreparation(record);
-            schedule?.recordFailure(scope.scopeId, operationId, this.#now(), {
-              mintError: null,
-              retryAfterMs: null,
-              notAfterMs: decodeCtfRangeOrderPreparationFromRecord(current).expiry * 1_000,
+            const refundAtMs =
+              decodeCtfRangeOrderPreparationFromRecord(current).expiry * 1_000 +
+              BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS;
+            schedule?.recordWait(scope.scopeId, operationId, refundAtMs);
+            pending.push({
+              operationId,
+              revision: current.revision,
+              code: outcome,
+              retryAtMs: refundAtMs,
             });
-            pending.push({ operationId, revision: current.revision, code: outcome });
             break;
           }
           default:
@@ -1011,6 +1044,7 @@ export class BrowserCtfRangeOrderCoordinator {
           revision: current.revision,
           code: error.code,
           ...(error.mintError === null ? {} : { mintError: error.mintError }),
+          retryAtMs: null,
         });
       }
     }

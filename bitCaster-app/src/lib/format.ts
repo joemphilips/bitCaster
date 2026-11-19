@@ -13,6 +13,27 @@ export function formatBalance(sats?: number): string {
   return formatBtc(sats);
 }
 
+/**
+ * A clock time in the given language: the time alone on the same day, else the
+ * date and the time.
+ */
+export function formatClockTime(atMs: number, nowMs: number, locale: string): string {
+  const at = new Date(atMs);
+  const now = new Date(nowMs);
+  const sameDay =
+    at.getFullYear() === now.getFullYear() &&
+    at.getMonth() === now.getMonth() &&
+    at.getDate() === now.getDate();
+  return sameDay
+    ? at.toLocaleTimeString(locale, { hour: "numeric", minute: "2-digit" })
+    : at.toLocaleString(locale, {
+        month: "short",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+      });
+}
+
 /** Short relative-time label in the active language ("Just now", "5m ago",
  *  "2h ago"). Falls back to a "Mon DD" date after a week. Accepts an ISO
  *  string, unix ms, or Date — callers pick whichever form they already have.

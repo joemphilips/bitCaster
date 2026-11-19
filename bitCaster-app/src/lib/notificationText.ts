@@ -4,14 +4,19 @@ import type { Notification } from "@/stores/notifications";
 
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
+/** The market name of one notification. */
+export function notificationMarketName(n: Notification): string {
+  const parts = splitMarketId(n.marketId);
+  // Entries stored before titles were kept name the route outcome instead.
+  return n.marketTitle ?? (parts ? parts.outcomeName : n.marketId);
+}
+
 /**
  * Text of one notification in the active language. The bell and the order
  * toast use it, so the same event reads the same in both places.
  */
 export function formatNotificationText(n: Notification, t: Translate): string {
-  const parts = splitMarketId(n.marketId);
-  // Entries stored before titles were kept name the route outcome instead.
-  const market = n.marketTitle ?? (parts ? parts.outcomeName : n.marketId);
+  const market = notificationMarketName(n);
   // Order amounts are share face subunits. Order entries stored before the
   // denominator was kept all come from sat markets with D = 1,000.
   const divisibility = n.divisibility ?? DEFAULT_SAT_MARKET_DIVISIBILITY;

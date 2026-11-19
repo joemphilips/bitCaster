@@ -413,6 +413,18 @@ export interface MarketDetailProps {
   /** Called when the trade pane tab changes. */
   onTradeTabChange?: (tab: TradeTab) => void;
 
+  /**
+   * Show this trade side's tab, also from the Liquidity tab. A new object
+   * asks again, for example for each Retry of a failed trade.
+   */
+  tradeTabRequest?: { readonly side: TradeSide } | null;
+
+  /**
+   * Called once the tab shows the request. The owner clears the request, so
+   * a later mount cannot show a side that the trade no longer has.
+   */
+  onTradeTabRequestApplied?: (request: { readonly side: TradeSide }) => void;
+
   /** Read-only capacity across the full legal discovery range. */
   tradeCapacityPreview?: UseFokOrderCapacityPreviewResult | null;
   isFullyEmptyBook?: boolean;

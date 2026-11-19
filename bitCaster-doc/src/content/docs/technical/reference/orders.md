@@ -128,7 +128,7 @@ return to the start. Dismissing an alert does not stop recovery or delete funds.
 
 An alert can show the code that the mint returned, for example
 **Mint code: 11008**. If the mint refused an order preparation, the alert says
-**Order was not completed**, and the reserved funds, less any consolidation fee
+**Trade failed**, and the reserved funds, less any consolidation fee
 already paid, are available again. If the
 wallet stopped the automatic retries, the alert shows **Retry**. Select
 **Retry** to send the check one more time.
@@ -143,27 +143,43 @@ seconds before the trade leaves it. The list is not your completed-trade
 history.
 
 When bitCaster accepts an order but its settlement does not complete, or when
-bitCaster ends the accepted order without a settlement, the order leaves
+bitCaster ends the accepted order without a trade, the order leaves
 **Active trade progress**. A separate **Trade failed** panel shows the market of
-the order and **This order was not completed. Your funds, less preparation and
-refund fees, return to this wallet after the order expires.** The wallet
-recovers the funds automatically while the app is open. After the refund, the
-panel says **Your funds, less preparation and refund fees, were returned to
-this wallet.** The failure stays after the refund and after a reload until you
-dismiss it. If the settlement completes after all, the failure leaves the panel. The failed-order notification in the notification list shows the
-same reason.
+the order. bitCaster cancels an order only when it cannot fill the order within
+the total that you accepted. The panel then says **The price or the available
+shares changed after your preview, so nothing was traded.** A failure with
+another known cause starts with that cause. A failure with no known cause
+shows no reason.
+
+Until the refund, the panel shows the locked amount and the time when the lock
+ends. A buy locks sats, and a sell locks shares. For example: **1,250 sats are
+locked until 2:05 PM. Then they return to this wallet, less preparation and
+refund fees.** The wallet recovers the funds automatically while the app is
+open. After the refund, the panel says **Your funds, less preparation and
+refund fees, were returned to this wallet.** The failure stays after the refund
+and after a reload until you dismiss it. If the settlement completes after
+all, the failure leaves the panel. The failed-order notification in the
+notification list shows the same lines.
+
+Until the refund, the failure also shows **Retry**. **Retry** opens the trade
+form of the market with the same outcome, side, and shares. The form gets a new
+preview. Review it and confirm the order as usual. The wallet does not send the
+order again by itself. The locked funds cannot pay for the new order. In the
+notification list, **Retry** opens the market page first. After the refund,
+**Retry** goes away. A failure because this wallet was used in another browser
+or device at the same time shows no **Retry**, because a retry can fail in the
+same way and charge the penalty again.
 
 When bitCaster refuses the order request itself, the wallet alert
-**Order was not completed** shows the refusal and the market of the order. The
-alert also says when your funds, less preparation and refund fees, return to
-this wallet, and that they were returned after the refund. The order does not
+**Trade failed** shows the refusal and the market of the order. The
+alert also shows the locked funds and the time when the lock ends, and that
+they were returned after the refund. The order does not
 show in either list. When you select **Stop waiting**, leave the market, or change the
 trade while the order waits between two attempts, that is not a failure. Until
 its refund, the order shows in **Active trade progress** as **This order ended
-without a trade. Your funds, less preparation and refund fees, return to this
-wallet after the order expires.** Only its refund is still active. When the
-list shows only such orders, it does not show **Refresh status**. An order that bitCaster cancels because it
-cannot fill at once shows the same text. If you stop while the wallet is sending an attempt, the result is
+without a trade.**, with the locked funds and the time when the lock ends.
+Only its refund is still active. When the
+list shows only such orders, it does not show **Refresh status**. If you stop while the wallet is sending an attempt, the result is
 uncertain, and the order can still fill. The wallet then reads the status of
 the order and does not send it again.
 

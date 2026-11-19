@@ -391,18 +391,37 @@ describe("read-only settlement progress", () => {
     },
   );
 
-  it.each(["cancelled", "expired", "matched"] as const)(
-    "records no failure for an order that ended %s with no settlement group",
-    async (status) => {
+  // The engine cancels a FOK only when it cannot fill within the consented
+  // total. The wire carries no reason, so the cancellation is the reason.
+  it.each([
+    ["cancelled", "FokCancelled"],
+    ["expired", "Unspecified"],
+  ] as const)(
+    "records an order that ended %s with no settlement group as a failed trade (%s)",
+    async (status, reason) => {
       mocks.read.mockResolvedValue(progressRead(null, status));
       const view = renderHook(() => useSettlementProgress(entries, true, scope));
-      await waitFor(() =>
-        expect(view.result.current.observations["operation-1"]?.orderStatus).toBe(status),
-      );
+      await waitFor(() => expect(recordedNotice()?.reason).toBe(reason));
       await waitFor(() => expect(view.result.current.loading).toBe(false));
-      expect(useOrderFailureNotices.getState().notices).toEqual({});
+      expect(recordedNotice()).toMatchObject({
+        orderId: "order-1",
+        marketId: "condition-Alpha",
+        funds: "pending",
+        dismissed: false,
+      });
+      expect(mocks.readFailure).not.toHaveBeenCalled();
     },
   );
+
+  it("records no failure for a matched order with no settlement group", async () => {
+    mocks.read.mockResolvedValue(progressRead(null, "matched"));
+    const view = renderHook(() => useSettlementProgress(entries, true, scope));
+    await waitFor(() =>
+      expect(view.result.current.observations["operation-1"]?.orderStatus).toBe("matched"),
+    );
+    await waitFor(() => expect(view.result.current.loading).toBe(false));
+    expect(useOrderFailureNotices.getState().notices).toEqual({});
+  });
 
   it("writes the notice once while later reads observe the same failure", async () => {
     mocks.read.mockResolvedValue(progressRead(groupWith("Refundable", 4)));

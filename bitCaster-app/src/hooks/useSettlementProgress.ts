@@ -27,6 +27,7 @@ import {
   orderFailureNoticeKey,
   recordOrderFailureNotice,
   useOrderFailureNotices,
+  type OrderFailureReason,
 } from "@/stores/orderFailureNotices";
 import {
   useOrderSettlementObservations,
@@ -59,14 +60,14 @@ export interface SettlementObservation {
 
 /**
  * How the panel shows one active journal entry. `failed` is a final failure
- * with a notice. `refusal` is a local refusal: its wallet alert shows an
- * engine refusal; otherwise the user stopped it, and the entry shows
- * `message` until the refund. `progress` shows `message`. A `final` entry
- * ended without a trade: only its refund is still active, so it has no
- * status to refresh.
+ * with a notice and its first known reason. `refusal` is a local refusal: its
+ * wallet alert shows an engine refusal; otherwise the user stopped it, and
+ * the entry shows `message` until the refund. `progress` shows `message`. A
+ * `final` entry ended without a trade: only its refund is still active, so it
+ * has no status to refresh.
  */
 export type SettlementEntryDisplay =
-  | { readonly kind: "failed" }
+  | { readonly kind: "failed"; readonly reason: OrderFailureReason }
   | { readonly kind: "refusal"; readonly message: string }
   | { readonly kind: "progress"; readonly message: string; readonly final: boolean };
 
@@ -212,13 +213,11 @@ export function useSettlementProgress(
   useLayoutEffect(() => {
     const { notices } = useOrderFailureNotices.getState();
     for (const entry of entries) {
-      const display = settlementEntryDisplay(
-        entry.lifecycleState,
-        observations[entry.operationId],
-        enabled,
+      const reason = failureReason(
+        settlementEntryDisplay(entry.lifecycleState, observations[entry.operationId], enabled),
       );
       if (
-        !recordsFailure(display) ||
+        reason === null ||
         entry.orderId === null ||
         notices[orderFailureNoticeKey(scopeId, entry.operationId)] !== undefined
       )
@@ -229,7 +228,7 @@ export function useSettlementProgress(
         orderId: entry.orderId,
         marketId: entry.marketId,
         marketTitle: knownMarketTitle(entry.orderId, entry.marketId),
-        reason: "Unspecified",
+        reason,
       });
     }
   }, [entries, observations, enabled, scopeId]);
@@ -355,20 +354,22 @@ function mergeRead(
   };
 }
 
-const FAILED: SettlementEntryDisplay = { kind: "failed" };
+const FAILED: SettlementEntryDisplay = { kind: "failed", reason: "Unspecified" };
+/** The engine cancels a public FOK only when it cannot fill within the consented total. */
+const FOK_CANCELLED: SettlementEntryDisplay = { kind: "failed", reason: "FokCancelled" };
 
 function progress(message: string, final = false): SettlementEntryDisplay {
   return { kind: "progress", message, final };
 }
 
 /** Only a final failure of an engine order gets a failure notice. */
-function recordsFailure(display: SettlementEntryDisplay): boolean {
+function failureReason(display: SettlementEntryDisplay): OrderFailureReason | null {
   switch (display.kind) {
     case "failed":
-      return true;
+      return display.reason;
     case "refusal":
     case "progress":
-      return false;
+      return null;
     default:
       return assertNever(display);
   }
@@ -428,18 +429,19 @@ function groupDisplay(status: SettlementGroupStatus): SettlementEntryDisplay {
 
 /**
  * An accepted order with no settlement group. The engine fails it, for
- * example at capacity or when a bot fill is refused. A FOK that cannot fill is
- * cancelled, and a cancellation or an expiry is not a failure.
+ * example at capacity or when a bot fill is refused. A FOK that cannot fill
+ * within the consented total is cancelled. Each end without a trade fails the
+ * trade; only the cancellation has a known cause.
  */
 function orderStatusDisplay(status: OrderLifecycleStatus): SettlementEntryDisplay {
   switch (status) {
     case "failed":
     case "rejected_capacity":
     case "evicted_capacity":
+    case "expired":
       return FAILED;
     case "cancelled":
-    case "expired":
-      return progress("endedWithoutTrade", true);
+      return FOK_CANCELLED;
     case "resting":
     case "matched":
     case "partially_filled":
