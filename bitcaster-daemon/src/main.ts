@@ -11,12 +11,17 @@ import { createDaemonSecrets, createDaemonSecretsFromImport } from './secrets.ts
 import { bootstrapFreshDaemonProfile } from './profileBootstrap.ts'
 import { configureDataDir } from './dataDir.ts'
 import { readNativeConfig } from './nativeConfig.ts'
+import { rpcSocketPath } from './rpcAuth.ts'
 
 const MAX_SECRET_HEX_FILE_BYTES = 256
 const SECRET_FILE_READ_CHUNK_BYTES = 128
 
 const { command, args, dataDir } = parseInvocation(process.argv.slice(2))
 configureDataDir(dataDir)
+// The daemon listens on a Unix socket in the data directory. Refuse a socket
+// path that the platform cannot bind before init writes a profile or run
+// starts recovery.
+if ((command === 'init' || command === 'run') && process.platform !== 'win32') rpcSocketPath()
 
 switch (command) {
   case 'init': {

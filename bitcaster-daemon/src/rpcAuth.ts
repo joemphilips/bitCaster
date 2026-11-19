@@ -3,9 +3,29 @@ import { join } from 'node:path'
 import { isMissingDaemonProfileError, profileDatabasePath, profileDir } from './profile.ts'
 import { readBootstrappedRpcToken, readLiveBootstrappedRpcToken } from './profileBootstrap.ts'
 import { withProfileStorageAccess } from './profileAccess.ts'
+import { DAEMON_RPC_SOCKET } from './profileSchema.ts'
 
-export function rpcSocketPath(): string {
-  return join(profileDir(), 'daemon.sock')
+/**
+ * Linux binds and connects a path that fills its 108-byte `sun_path`, measured
+ * on Node.js 22, 24 and 26. Node.js 22 truncates a longer path without an
+ * error, so the daemon would bind a different file. macOS and the BSDs have a
+ * 104-byte `sun_path`; 103 bytes leaves room for the NUL byte. That value is
+ * conservative and not measured.
+ */
+function unixSocketPathBytesMax(platform: NodeJS.Platform): number {
+  return platform === 'linux' || platform === 'android' ? 108 : 103
+}
+
+export function rpcSocketPath(platform: NodeJS.Platform = process.platform): string {
+  const path = join(profileDir(), DAEMON_RPC_SOCKET)
+  const bytes = Buffer.byteLength(path)
+  const limit = unixSocketPathBytesMax(platform)
+  if (bytes > limit) {
+    throw new Error(
+      `daemon socket path is ${bytes} bytes, over the ${limit}-byte Unix socket path limit: ${path}. Choose a shorter --datadir.`,
+    )
+  }
+  return path
 }
 
 export function rpcTokenPath(): string {
