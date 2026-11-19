@@ -339,14 +339,6 @@
       "types": "./dist/marketUnits.d.ts",
       "import": "./dist/marketUnits.js"
     },
-    "./lmsrDomain": {
-      "types": "./dist/lmsrDomain.d.ts",
-      "import": "./dist/lmsrDomain.js"
-    },
-    "./lmsrTypes": {
-      "types": "./dist/lmsrTypes.d.ts",
-      "import": "./dist/lmsrTypes.js"
-    },
     "./orderValidation": {
       "types": "./dist/orderValidation.d.ts",
       "import": "./dist/orderValidation.js"
