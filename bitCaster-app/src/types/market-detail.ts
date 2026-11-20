@@ -46,7 +46,6 @@ export interface ResolutionDetails {
 export interface MarketCreator {
   id: string;
   name: string;
-  avatarUrl?: string;
   reputationScore?: number;
   totalMarketsCreated: number;
   feePercent: number;
@@ -178,6 +177,12 @@ interface BaseMarketDetail {
   commentsUnavailable?: boolean;
   mint?: MarketMintInfo;
   creator: MarketCreator;
+  /**
+   * The key that signed the registered oracle announcement. Only this key can
+   * attest the outcome, and it can differ from the creator. Absent when the
+   * engine has no recorded signer.
+   */
+  oraclePubkey?: string;
   outcomes?: Outcome[];
   /**
    * Engine-side lifecycle state per ADR-009 Amendment 2026-05-04. The detail

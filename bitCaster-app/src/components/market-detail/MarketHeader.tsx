@@ -25,16 +25,6 @@ interface MarketHeaderProps {
   onShare?: () => void;
 }
 
-const HexPubkeyPattern = /^[0-9a-f]{64}$/i;
-
-function formatCreatorNpub(creatorId: string): string | null {
-  const trimmed = creatorId.trim();
-  if (!trimmed || trimmed === "unknown") return null;
-  if (trimmed.startsWith("npub1")) return trimmed;
-  if (HexPubkeyPattern.test(trimmed)) return nip19.npubEncode(trimmed.toLowerCase());
-  return trimmed;
-}
-
 function formatShortNpub(npub: string): string {
   if (npub.length <= 24) return npub;
   return `${npub.slice(0, 12)}...${npub.slice(-8)}`;
@@ -90,19 +80,19 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     new Date(market.closingDate).getTime() - now.getTime() < 7 * 24 * 60 * 60 * 1000;
   const isBookmarked = useBookmarkStore((s) => s.markets.includes(market.id));
   const toggleBookmark = useBookmarkStore((s) => s.toggle);
-  const creatorNpub = formatCreatorNpub(market.creator.id);
+  // The oracle card shows the announcement signer. Only that key can attest
+  // the outcome, and it can differ from the market creator.
+  const oracleHex = market.oraclePubkey ? parseNostrPublicKey(market.oraclePubkey) : null;
+  const oracleNpub = oracleHex ? nip19.npubEncode(oracleHex) : null;
   const [oracleProfile, setOracleProfile] = useState<PublicNostrProfile | null>(null);
   const [oracleProfileLoaded, setOracleProfileLoaded] = useState(false);
-  const creatorHex = parseNostrPublicKey(market.creator.id);
   // A kind-0 picture names a host that the oracle chose. Load only https without a
   // referrer, or an embedded data image. A data image can be 64 KiB, so check it
   // only when the raw value changes.
   const rawOracleAvatar = oracleProfile?.avatar;
-  const rawCreatorAvatar = market.creator.avatarUrl;
   const oracleAvatar = useMemo(
-    () =>
-      safeNostrProfilePictureUrl(rawOracleAvatar) ?? safeNostrProfilePictureUrl(rawCreatorAvatar),
-    [rawOracleAvatar, rawCreatorAvatar],
+    () => safeNostrProfilePictureUrl(rawOracleAvatar),
+    [rawOracleAvatar],
   );
   // An empty sanitized name has no visible character, so the label falls back to the key.
   const oracleName = sanitizeNostrDisplayText(
@@ -110,9 +100,8 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     MAX_NOSTR_PROFILE_NAME_CHARACTERS,
     { singleLine: true },
   );
-  const creatorLabel =
-    oracleName ||
-    (creatorNpub ? formatShortNpub(creatorNpub) : t("market.oraclePubkeyUnavailable"));
+  const oracleLabel =
+    oracleName || (oracleNpub ? formatShortNpub(oracleNpub) : t("market.oraclePubkeyUnavailable"));
   const mintIconUrl = activeMint
     ? getMintIconUrl(activeMint.url, activeMint.info as Record<string, unknown> | undefined)
     : undefined;
@@ -126,11 +115,11 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     let cancelled = false;
     setOracleProfile(null);
     setOracleProfileLoaded(false);
-    if (!creatorHex) {
+    if (!oracleHex) {
       setOracleProfileLoaded(true);
       return;
     }
-    fetchPublicNostrProfile(creatorHex).then((profile) => {
+    fetchPublicNostrProfile(oracleHex).then((profile) => {
       if (cancelled) return;
       setOracleProfile(profile);
       setOracleProfileLoaded(true);
@@ -138,7 +127,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
     return () => {
       cancelled = true;
     };
-  }, [creatorHex]);
+  }, [oracleHex]);
 
   useEffect(() => {
     if (!market.closingDate || isClosed) return;
@@ -152,13 +141,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
       {oracleAvatar ? (
         <img
           src={oracleAvatar}
-          alt={creatorLabel}
+          alt={oracleLabel}
           className="w-10 h-10 rounded-full"
           referrerPolicy="no-referrer"
         />
       ) : (
         <div className="w-10 h-10 rounded-full bg-gradient-to-br from-blue-500 to-blue-600 flex items-center justify-center text-white font-bold">
-          {creatorLabel.charAt(0).toUpperCase()}
+          {oracleLabel.charAt(0).toUpperCase()}
         </div>
       )}
       <div className="min-w-0 flex-1">
@@ -171,7 +160,7 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         <p
           className={`truncate text-xs ${oracleProfileLoaded && !oracleName ? "font-mono" : ""} ${market.imageUrl ? "text-slate-400" : "text-slate-500 dark:text-slate-400"}`}
         >
-          {oracleProfileLoaded ? creatorLabel : t("market.searchingNostr")}
+          {oracleProfileLoaded ? oracleLabel : t("market.searchingNostr")}
         </p>
       </div>
     </>
@@ -273,13 +262,13 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
         </div>
 
         <div className="flex flex-col sm:flex-row gap-3">
-          {/* Creator Info */}
+          {/* Oracle Info */}
           <div
             className={`flex min-w-0 flex-1 items-center gap-3 p-3 rounded-xl ${market.imageUrl ? "bg-white/10" : "bg-slate-100 dark:bg-slate-800"}`}
           >
-            {creatorHex ? (
+            {oracleNpub ? (
               <Link
-                to={`/user/${nip19.npubEncode(creatorHex)}`}
+                to={`/user/${oracleNpub}`}
                 title={t("market.oracleAuditHint")}
                 className="flex min-w-0 flex-1 items-center gap-3 rounded-lg transition-opacity hover:opacity-80"
               >
@@ -288,9 +277,9 @@ export function MarketHeader({ market, onShare }: MarketHeaderProps) {
             ) : (
               <div className="flex min-w-0 flex-1 items-center gap-3">{oracleIdentity}</div>
             )}
-            {creatorNpub && (
+            {oracleNpub && (
               <CopyNpubButton
-                npub={creatorNpub}
+                npub={oracleNpub}
                 label={t("market.copyOraclePubkey")}
                 copiedMessage={t("market.oraclePubkeyCopied")}
                 failedMessage={t("market.oraclePubkeyCopyFailed")}

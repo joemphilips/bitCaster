@@ -1972,6 +1972,8 @@ export interface components {
       thumbnailUrl?: string | null
       /** @description Creator's Nostr pubkey (64-char lowercase hex), captured at registration time via NIP-98. Null on legacy markets that predate creator tracking. */
       creatorPubkey?: string | null
+      /** @description X-only public key (64-char lowercase hex) that signed the oracle announcement selected at registration. Only this key can attest the outcome. It can differ from creatorPubkey. Null when the market has no recorded announcement signer. */
+      oraclePubkey?: string | null
       /**
        * Format: date-time
        * @description Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.

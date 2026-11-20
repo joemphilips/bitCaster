@@ -539,6 +539,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
   const title = entry.title?.trim() || "Untitled Market";
   const description = entry.description?.trim();
   const creatorPubkey = entry.creatorPubkey?.trim();
+  const oraclePubkey = entry.oraclePubkey ?? undefined;
   const finalOutcome = entry.finalOutcome?.trim() || undefined;
   const resolutionDate = entry.closedAt ?? entry.deadline ?? null;
   const baseAsset = normalizeMarketBaseAsset(entry.baseAsset);
@@ -601,6 +602,7 @@ function mapCatalogueEntryToMarketDetail(entry: MarketCatalogueEntry): MarketDet
           totalMarketsCreated: 0,
           feePercent: 0,
         },
+    oraclePubkey,
     outcomes: mappedOutcomes,
     resolution: {
       conditionId: entry.conditionId,

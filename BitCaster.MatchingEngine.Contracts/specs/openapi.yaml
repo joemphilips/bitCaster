@@ -4915,6 +4915,15 @@ components:
             Creator's Nostr pubkey (64-char lowercase hex), captured at
             registration time via NIP-98. Null on legacy markets that
             predate creator tracking.
+        oraclePubkey:
+          type: string
+          nullable: true
+          pattern: '^[0-9a-f]{64}$'
+          description: >
+            X-only public key (64-char lowercase hex) that signed the oracle
+            announcement selected at registration. Only this key can attest
+            the outcome. It can differ from creatorPubkey. Null when the
+            market has no recorded announcement signer.
         deadline:
           type: string
           format: date-time

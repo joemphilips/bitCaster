@@ -19,6 +19,8 @@ sidebar:
 
 レスポンスには、ローリング出来高やソート用の `volume24hSubunits` と `volume30dSubunits` も含まれます。Volume、資金提供総額、Traders の表示には、`volumeLifetimeSubunits`、`ammBotBudgetSubunits`、`traderCount` を使ってください。`liquiditySubunits` は残存注文のサマリです。資金提供総額として表示しないでください。
 
+各項目には、null の場合がある `creatorPubkey` と `oraclePubkey` も含まれます。`creatorPubkey` はマーケットを登録したNostr鍵です。`oraclePubkey` は、そのマーケットが使うオラクルのアナウンスメントに署名したx-only公開鍵です。結果をアテストできるのはこの鍵だけです。2つの鍵は異なる場合があります。マーケットページはオラクルとして `oraclePubkey` を表示し、オラクルのリンクはその鍵のプロフィールページを開きます。
+
 ## 作成結果を確認する登録情報の読み取り
 
 `GET /api/v1/markets/{conditionId}/registration` は、コンディション1件の公開登録情報を返します。`conditionId`、null の場合がある `creatorPubkey`、登録済み `outcomes`、`baseAsset`、`divisibility`、null の場合がある `thumbnailUrl`、`outcomeDetails` を含みます。ウォレットやサインインは不要です。
