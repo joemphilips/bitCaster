@@ -1275,7 +1275,7 @@ export interface components {
             frozenAt: string | null;
         };
         /**
-         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split; `Merge` pairs two Sells for complementary outcome sets, which merge into collateral. The engine does not send `Merge` yet. Until it does, it reports a Sell matched against a Sell of the complementary set as `Complementary`, with the taker's token side and execution price. Clients must accept `Merge`, because a later engine version will send it.
+         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split; `Merge` pairs two Sells for complementary outcome sets, which merge into collateral. A `Merge` fill has the taker's token side and execution price.
          * @enum {string}
          */
         MatchPath: "Complementary" | "Mint" | "Merge";

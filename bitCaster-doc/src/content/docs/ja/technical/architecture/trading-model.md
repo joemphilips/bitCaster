@@ -158,7 +158,7 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 マッチした数量ごとに 1 件の fill が作成されます。`fillId` はその実際の fill を識別します。
 
-エンジンは 1 件以上の fill を 1 件のアトミック決済グループにまとめることができます。`groupId` は決済グループを識別します。ミントはグループに対して 1 件の複数当事者 conversion を受け取ります。現在のプロダクトは complementary conversion、mint conversion、merge conversion をサポートします。merge の約定では、売り注文が補集合のアウトカムの売り注文と組み合わされ、ミントが 2 つのポジションを担保に統合します。この API バージョンは merge の約定を `Complementary` として報告し、テイカーのトークン側と約定価格を示します。今後のエンジンバージョンは `Merge` を報告します。
+エンジンは 1 件以上の fill を 1 件のアトミック決済グループにまとめることができます。`groupId` は決済グループを識別します。ミントはグループに対して 1 件の複数当事者 conversion を受け取ります。現在のプロダクトは complementary conversion、mint conversion、merge conversion をサポートします。merge の約定では、売り注文が補集合のアウトカムの売り注文と組み合わされ、ミントが 2 つのポジションを担保に統合します。merge の約定の fill は path `Merge` を持ち、テイカーのトークン側と約定価格を示します。
 
 ミントが確定すると、正確な result entry を返します。クライアントは送信した operation と確定した result を保持します。クラッシュ後もこの正確な記録を回復できます。認識済みの FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。結果が不確実な場合、クライアントは永続的なエンジンとミントの authority で照合します。
 
