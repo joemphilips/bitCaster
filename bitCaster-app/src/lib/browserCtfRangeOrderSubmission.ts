@@ -1234,6 +1234,7 @@ async function persistRecoveryPending(
     case "awaiting-authorization-expiry":
     case "awaiting-mint-retry":
     case "awaiting-order-confirmation":
+    case "awaiting-settlement-result":
       return;
     default:
       await persistRangeMessages({
