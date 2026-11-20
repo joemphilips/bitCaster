@@ -202,8 +202,8 @@ def validate_scanner(scanner):
 
 
 FINDING_FIELDS = ("RuleID", "Blob", "File", "StartLine", "EndLine", "StartColumn", "EndColumn")
-MAX_REVIEW_BYTES = 64 * 1024
-MAX_REVIEW_ROWS = 128
+MAX_REVIEW_BYTES = 256 * 1024
+MAX_REVIEW_ROWS = 512
 
 
 def relative_path(value):

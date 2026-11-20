@@ -306,7 +306,7 @@ class IncrementalTests(unittest.TestCase):
     def test_manifest_and_location_errors_refuse(self):
         row = self.review_row()
         invalid = ["{", '{"schema_version":1,"schema_version":1,"findings":[]}',
-                   self.manifest([row, row]), self.manifest([row] * 129),
+                   self.manifest([row, row]),
                    self.manifest([{**row, "extra": 1}]),
                    json.dumps({"schema_version": True, "findings": []}),
                    json.dumps({"schema_version": 1, "findings": []}),
@@ -326,6 +326,29 @@ class IncrementalTests(unittest.TestCase):
         # Valid multiline ranges can end at a smaller column.
         self.assertEqual(scanner.finding_key(row)[-1], 2)
 
+    def test_manifest_unique_row_boundary(self):
+        rows = [self.review_row(StartLine=index + 1, EndLine=index + 1,
+                                StartColumn=1, EndColumn=2)
+                for index in range(scanner.MAX_REVIEW_ROWS + 1)]
+        permitted = self.manifest(rows[:-1])
+        oversized = self.manifest(rows)
+        self.assertLess(len(oversized.encode()), scanner.MAX_REVIEW_BYTES)
+        head = save(self.repo, "reviewed.json", permitted)
+        self.assertEqual(len(scanner.reviewed_findings(self.repo, head, "reviewed.json")),
+                         scanner.MAX_REVIEW_ROWS)
+        head = save(self.repo, "reviewed.json", oversized)
+        with self.assertRaisesRegex(ValueError, "unsupported schema"):
+            scanner.reviewed_findings(self.repo, head, "reviewed.json")
+
+    def test_manifest_byte_boundary_uses_valid_json(self):
+        document = self.manifest([])
+        document += " " * (scanner.MAX_REVIEW_BYTES - len(document.encode()))
+        head = save(self.repo, "reviewed.json", document)
+        self.assertEqual(scanner.reviewed_findings(self.repo, head, "reviewed.json"), set())
+        head = save(self.repo, "reviewed.json", document + " ")
+        with self.assertRaisesRegex(ValueError, "byte bound"):
+            scanner.reviewed_findings(self.repo, head, "reviewed.json")
+
     def test_exact_tuple_cannot_follow_new_content_or_location(self):
         row = self.review_row()
         keys = {scanner.finding_key(row)}
@@ -340,10 +363,23 @@ class IncrementalTests(unittest.TestCase):
 
     @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")
     def test_real_exact_disposition_preserves_new_secret_detection(self):
+        self.assert_real_exact_disposition_preserves_new_secret_detection("fixture.txt")
+
+    @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")
+    def test_real_recovery_fixture_disposition_preserves_new_secret_detection(self):
+        self.assert_real_exact_disposition_preserves_new_secret_detection(
+            "bitcaster-client-sdk/test/fixtures/recovery-index-v1.json")
+
+    @unittest.skipUnless(os.environ.get("GITLEAKS_TEST_BINARY"), "Set the pinned scanner for synthetic detection")
+    def test_real_wallet_fixture_disposition_preserves_new_secret_detection(self):
+        self.assert_real_exact_disposition_preserves_new_secret_detection(
+            "bitCaster-app/src/stores/__tests__/fixtures/release4-wallet-databases.json")
+
+    def assert_real_exact_disposition_preserves_new_secret_detection(self, fixture_path):
         binary = Path(os.environ["GITLEAKS_TEST_BINARY"])
         scanner.validate_scanner(binary)
         first = "ghp_" + hashlib.sha256(b"public reviewed fixture never issued").hexdigest()[:36]
-        introduced = save(self.repo, "fixture.txt", "token=" + first + "\n")
+        introduced = save(self.repo, fixture_path, "token=" + first + "\n")
         def observe(head):
             commits, _ = scanner.inspect_range(self.repo, self.base, head)
             with tempfile.TemporaryDirectory(dir=self.root) as temp:
@@ -367,7 +403,7 @@ class IncrementalTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("1 candidates; 1 reviewed; 0 actionable", result.stdout)
         second = "ghp_" + hashlib.sha256(b"other synthetic never issued").hexdigest()[:36]
-        adjacent = save(self.repo, "fixture.txt", "token=" + first + "\nother_token=" + second + "\n")
+        adjacent = save(self.repo, fixture_path, "token=" + first + "\nother_token=" + second + "\n")
         self.assertEqual(scanner.counts(observe(adjacent), reviewed), (2, 1, 1))
         result = invoke(adjacent)
         self.assertEqual(result.returncode, 1)
@@ -377,7 +413,7 @@ class IncrementalTests(unittest.TestCase):
         # Continue the replacement case from the reviewed fixture, so the
         # adjacent-credential branch does not affect its expected history.
         git(self.repo, "checkout", "-q", "--detach", head)
-        later = save(self.repo, "fixture.txt", "token=" + second + "\n")
+        later = save(self.repo, fixture_path, "token=" + second + "\n")
         self.assertEqual(scanner.counts(observe(later), reviewed), (2, 1, 1))
         result = invoke(later)
         self.assertEqual(result.returncode, 1)
