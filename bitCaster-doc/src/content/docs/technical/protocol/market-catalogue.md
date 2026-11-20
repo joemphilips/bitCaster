@@ -19,6 +19,8 @@ The catalogue exposes lifetime/display metrics for market cards and discovery pa
 
 The response also includes `volume24hSubunits` and `volume30dSubunits` for rolling-volume views and sorting. Use `volumeLifetimeSubunits`, `ammBotBudgetSubunits`, and `traderCount` to show Volume, Total funding, and Traders. `liquiditySubunits` summarizes resting orders. Do not label it as Total funding.
 
+Each entry also has a nullable `creatorPubkey` and a nullable `oraclePubkey`. `creatorPubkey` is the Nostr key that registered the market. `oraclePubkey` is the x-only public key that signed the oracle announcement that the market uses. Only that key can attest the outcome. The two keys can be different. The market page shows `oraclePubkey` as the oracle, and the oracle link opens the profile page of that key.
+
 ## Registration lookup for creation recovery
 
 `GET /api/v1/markets/{conditionId}/registration` returns the public registration facts for one condition. It returns `conditionId`, nullable `creatorPubkey`, registered `outcomes`, `baseAsset`, `divisibility`, nullable `thumbnailUrl`, and `outcomeDetails`. It does not require a wallet or sign-in.

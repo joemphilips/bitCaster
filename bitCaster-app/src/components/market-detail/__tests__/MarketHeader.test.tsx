@@ -16,8 +16,14 @@ vi.mock("@/lib/nostr", () => ({
 }));
 
 const creatorPubkey = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-const creatorNpub = nip19.npubEncode(creatorPubkey);
-const shortCreatorNpub = `${creatorNpub.slice(0, 12)}...${creatorNpub.slice(-8)}`;
+// The announcement signer differs from the creator, so a test can tell them apart.
+const oraclePubkey = "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210";
+const oracleNpub = nip19.npubEncode(oraclePubkey);
+const shortOracleNpub = `${oracleNpub.slice(0, 12)}...${oracleNpub.slice(-8)}`;
+
+function escapeRegExp(text: string): string {
+  return text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
 
 interface NavigatorMutable {
   clipboard?: { writeText: (text: string) => Promise<void> };
@@ -51,6 +57,7 @@ function makeMarket(overrides: Partial<YesNoMarketDetail> = {}): YesNoMarketDeta
       totalMarketsCreated: 0,
       feePercent: 0,
     },
+    oraclePubkey,
     resolution: {
       criteria: "Will BTC hit 100K?",
       source: "oracle",
@@ -84,6 +91,7 @@ describe("MarketHeader", () => {
   let originalClipboard: NavigatorMutable["clipboard"];
 
   beforeEach(() => {
+    vi.mocked(fetchPublicNostrProfile).mockClear();
     originalClipboard = (navigator as unknown as NavigatorMutable).clipboard;
     useToastStore.setState({ toasts: [] });
   });
@@ -115,7 +123,7 @@ describe("MarketHeader", () => {
 
     expect(screen.getByText("Mint")).toBeInTheDocument();
     expect(screen.getByText("SAT CTF - 2 keysets")).toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("renders explicit missing mint metadata degradation", async () => {
@@ -123,7 +131,7 @@ describe("MarketHeader", () => {
 
     expect(screen.getByText("Mint")).toBeInTheDocument();
     expect(screen.getByText("Unknown")).toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("shows a past-deadline engine-closed market without an outcome as awaiting resolution", async () => {
@@ -134,7 +142,7 @@ describe("MarketHeader", () => {
     expect(screen.queryByText("Closed")).not.toBeInTheDocument();
     expect(screen.queryByText("Final Outcome")).not.toBeInTheDocument();
     expect(screen.queryByText(/remaining/i)).not.toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("uses the Japanese awaiting-resolution term for a closed market without an outcome", async () => {
@@ -149,7 +157,7 @@ describe("MarketHeader", () => {
     );
     expect(screen.getByText("結果判定待ち")).toBeInTheDocument();
     expect(screen.queryByText("結果判定済み")).not.toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("does not render an open engine market as closed only because its deadline is stale", async () => {
@@ -161,7 +169,7 @@ describe("MarketHeader", () => {
     );
 
     expect(screen.queryByText("Closed")).not.toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("renders the final answer prominently when closed with an outcome", async () => {
@@ -178,7 +186,7 @@ describe("MarketHeader", () => {
     expect(screen.getByText("Final Outcome")).toBeInTheDocument();
     expect(screen.getByText("Yes")).toBeInTheDocument();
     expect(screen.getByText(/Resolved on/)).toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("keeps the resolved lifecycle label without inventing a missing resolution date", async () => {
@@ -198,7 +206,7 @@ describe("MarketHeader", () => {
     expect(screen.getAllByText("Resolved")).toHaveLength(2);
     expect(screen.queryByText(/Resolved on/)).not.toBeInTheDocument();
     expect(screen.queryByText(/January 1, 1970/)).not.toBeInTheDocument();
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
   });
 
   it("updates the remaining-time label while the market stays open", async () => {
@@ -234,10 +242,10 @@ describe("MarketHeader", () => {
     });
     renderHeader(makeMarket());
 
-    expect(await screen.findByText(shortCreatorNpub)).toBeInTheDocument();
+    expect(await screen.findByText(shortOracleNpub)).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
 
-    expect(writeText).toHaveBeenCalledWith(creatorNpub);
+    expect(writeText).toHaveBeenCalledWith(oracleNpub);
     expect(await screen.findByRole("status")).toHaveTextContent("Oracle Nostr ID copied.");
   });
 
@@ -306,17 +314,8 @@ describe("MarketHeader", () => {
     );
   });
 
-  it("does not render a copy button when the detail has no creator pubkey", () => {
-    renderHeader(
-      makeMarket({
-        creator: {
-          id: "unknown",
-          name: "Unknown",
-          totalMarketsCreated: 0,
-          feePercent: 0,
-        },
-      }),
-    );
+  it("does not render a copy button when the detail has no announcement signer", () => {
+    renderHeader(makeMarket({ oraclePubkey: undefined }));
 
     expect(screen.getByText("Oracle Nostr ID unavailable")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Copy oracle Nostr ID" })).not.toBeInTheDocument();
@@ -326,11 +325,7 @@ describe("MarketHeader", () => {
     render(
       <I18nextProvider i18n={i18n.cloneInstance({ lng: "ja" })}>
         <MemoryRouter>
-          <MarketHeader
-            market={makeMarket({
-              creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
-            })}
-          />
+          <MarketHeader market={makeMarket({ oraclePubkey: undefined })} />
         </MemoryRouter>
       </I18nextProvider>,
     );
@@ -342,21 +337,36 @@ describe("MarketHeader", () => {
     renderHeader(makeMarket());
 
     const link = await screen.findByRole("link", {
-      name: new RegExp(shortCreatorNpub.replace(/\./g, "\\.")),
+      name: new RegExp(escapeRegExp(shortOracleNpub)),
     });
-    expect(link).toHaveAttribute("href", `/user/${creatorNpub}`);
+    expect(link).toHaveAttribute("href", `/user/${oracleNpub}`);
     expect(link).toHaveAttribute("title", "Open the oracle's profile");
     expect(link).not.toContainElement(screen.getByRole("button", { name: "Copy oracle Nostr ID" }));
   });
 
-  it("does not link a market without a valid oracle Nostr ID", () => {
-    renderHeader(
-      makeMarket({
-        creator: { id: "unknown", name: "Unknown", totalMarketsCreated: 0, feePercent: 0 },
-      }),
-    );
+  it("shows the announcement signer and not the market creator", async () => {
+    renderHeader(makeMarket());
+
+    const link = await screen.findByRole("link", {
+      name: new RegExp(escapeRegExp(shortOracleNpub)),
+    });
+    expect(link).toHaveAttribute("href", `/user/${oracleNpub}`);
+    expect(fetchPublicNostrProfile).toHaveBeenCalledWith(oraclePubkey);
+    expect(fetchPublicNostrProfile).not.toHaveBeenCalledWith(creatorPubkey);
+    const creatorNpub = nip19.npubEncode(creatorPubkey);
+    expect(screen.queryByText(new RegExp(escapeRegExp(creatorNpub.slice(0, 12))))).toBeNull();
+  });
+
+  it.each([
+    ["no announcement signer", undefined],
+    ["an invalid announcement signer", "not-a-key"],
+  ])("does not link a market with %s, even with a valid creator", (_case, signer) => {
+    renderHeader(makeMarket({ oraclePubkey: signer }));
 
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByText("Oracle Nostr ID unavailable")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Copy oracle Nostr ID" })).not.toBeInTheDocument();
+    expect(fetchPublicNostrProfile).not.toHaveBeenCalledWith(creatorPubkey);
   });
 
   it("loads only an https oracle picture on a public host or a data image and sends no referrer", async () => {
@@ -369,7 +379,7 @@ describe("MarketHeader", () => {
       "data:image/svg+xml,<svg onload=alert(1)>",
     ]) {
       vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-        pubkey: creatorPubkey,
+        pubkey: oraclePubkey,
         displayName: "Alice Oracle",
         avatar,
       });
@@ -382,7 +392,7 @@ describe("MarketHeader", () => {
     }
 
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
+      pubkey: oraclePubkey,
       displayName: "Alice Oracle",
       avatar: "https://img.example/oracle.png",
     });
@@ -394,7 +404,7 @@ describe("MarketHeader", () => {
 
     const picture = "data:image/png;base64,AAAA";
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
+      pubkey: oraclePubkey,
       displayName: "Alice Oracle",
       avatar: picture,
     });
@@ -406,7 +416,7 @@ describe("MarketHeader", () => {
 
   it("shows the oracle name as bounded single-line text without invisible characters", async () => {
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
+      pubkey: oraclePubkey,
       displayName: "Evil\u202Egnp.exe\u200B\nline",
       avatar: "",
     });
@@ -417,7 +427,7 @@ describe("MarketHeader", () => {
     hostile.unmount();
 
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
+      pubkey: oraclePubkey,
       displayName: "n".repeat(500),
       avatar: "",
     });
@@ -428,13 +438,13 @@ describe("MarketHeader", () => {
     long.unmount();
 
     vi.mocked(fetchPublicNostrProfile).mockResolvedValueOnce({
-      pubkey: creatorPubkey,
+      pubkey: oraclePubkey,
       displayName: "\u3164\u200B\u2060",
       avatar: "",
     });
     renderHeader(makeMarket());
     expect(
-      await screen.findByText(shortCreatorNpub, { selector: "p.font-mono" }),
+      await screen.findByText(shortOracleNpub, { selector: "p.font-mono" }),
     ).toBeInTheDocument();
   });
 });
