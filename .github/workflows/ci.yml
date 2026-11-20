@@ -64,6 +64,8 @@ jobs:
           dotnet-version: ${{ env.DOTNET_VERSION }}
       - run: dotnet tool restore
       - run: dotnet build BitCaster.MatchingEngine.Contracts/
+      - name: Test the public contracts
+        run: dotnet test BitCaster.MatchingEngine.Contracts.Tests/
 
   frontend:
     runs-on: ubuntu-latest

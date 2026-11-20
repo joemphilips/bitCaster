@@ -1763,8 +1763,9 @@ export function decodeOrderLifecycleChangedDelta(value: unknown): OrderLifecycle
   }
 }
 
-// The readers accept every contract value, including `Merge`, which the
-// engine does not send yet. A new generated value is a compile error here.
+// The readers accept every contract value. The engine sends `Merge` for a Sell
+// matched against a Sell of the complementary set. A new generated value is a
+// compile error here.
 const MATCH_PATHS: Readonly<Record<MatchPath, true>> = {
   Complementary: true,
   Mint: true,

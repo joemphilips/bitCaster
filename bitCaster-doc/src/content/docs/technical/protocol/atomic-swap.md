@@ -80,11 +80,12 @@ request.
 
 A client that uses the two-step route cannot place orders. This includes the
 CLI releases `cli-v0.1.0-afaa6cc6aa6b` and `cli-v0.1.0-4fe7f6e6c08f`, and a
-browser tab that still runs an app of the same period. Download the latest CLI
-release, or reload the browser app. The current wallet reads the order records
-that an older client left in the same wallet profile. It sends no request that
-can create their orders. It refunds their locked funds after the authorization
-expires.
+browser tab that still runs an app of the same period. These clients also
+refuse a fill with the path `Merge`, so they cannot read an order that has a
+merge fill. Download the latest CLI release, or reload the browser app. The
+current wallet reads the order records that an older client left in the same
+wallet profile. It sends no request that can create their orders. It refunds
+their locked funds after the authorization expires.
 
 ## Capability API errors
 

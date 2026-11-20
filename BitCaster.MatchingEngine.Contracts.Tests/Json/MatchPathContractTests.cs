@@ -6,7 +6,8 @@ namespace BitCaster.MatchingEngine.Contracts.Tests.Json;
 
 /// <summary>
 /// A client of the contract must accept every <c>MatchPath</c> value,
-/// including <c>Merge</c>, which the engine does not send yet.
+/// including <c>Merge</c>, which the engine sends for a Sell matched against a
+/// Sell of the complementary set.
 /// </summary>
 public sealed class MatchPathContractTests
 {

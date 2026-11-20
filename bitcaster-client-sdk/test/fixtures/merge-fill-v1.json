@@ -1,0 +1,118 @@
+{
+  "description": "The v1 payloads of one MERGE fill. A FOK seller of 1,000 msat of NO in a binary market takes a resting Sell of YES at 380. The seller uses the public YES route, so its token side is Complement. The fill is in the taker's frame: path Merge, execution price 1000 - 380 = 620, and the canonical quote payment for 620 and the face. submitOrderResponse is the order part of the submit response. The order route can add settlementCapability to it, and the release 5 reader accepts that member. The engine contract tests check that the engine writes exactly submitOrderResponse and matchedDelta.",
+  "release5Reader": {
+    "commit": "e6a7b349ef39ecfda1d246b7f3c6e64794926c1f",
+    "readers": ["decodeSubmitOrderResponse", "decodeMatchedDelta"],
+    "method": "release5-merge-fill-reads.mjs in this directory decoded submitOrderResponse and matchedDelta with these readers, from a git archive export of bitcaster-client-sdk at the commit. Its header states how to run it. CI does not run it. release5Reads holds the results. In that release, the browser, the daemon and the CLI read each engine fill through these readers, and decodeOrderStatusResponse uses the same fill reader as decodeSubmitOrderResponse."
+  },
+  "submitOrderResponse": {
+    "orderId": "00000000-0000-4000-8000-000000000082",
+    "status": "matched",
+    "remainingAmountSubunits": 0,
+    "fills": [
+      {
+        "id": "00000000-0000-4000-8000-000000000081",
+        "takerOrderId": "00000000-0000-4000-8000-000000000082",
+        "makerOrderId": "00000000-0000-4000-8000-000000000080",
+        "amountSubunits": 1000,
+        "executionPrice": 620,
+        "path": "Merge",
+        "filledAt": "2030-01-01T00:00:00+00:00",
+        "tokenSide": "Complement",
+        "baseAsset": "sat",
+        "divisibility": 1000,
+        "status": "Matched",
+        "quotePaymentSubunits": 620,
+        "outcomeFaceAmountSubunits": 1000,
+        "settlementGroup": {
+          "groupId": "00000000-0000-4000-8000-000000000090",
+          "status": "Prepared",
+          "revision": 1,
+          "coalescingDeadline": "2030-01-01T00:00:30+00:00",
+          "frozenAt": null
+        }
+      }
+    ],
+    "baseAsset": "sat",
+    "divisibility": 1000,
+    "activeSettlementGroup": {
+      "groupId": "00000000-0000-4000-8000-000000000090",
+      "status": "Prepared",
+      "revision": 1,
+      "coalescingDeadline": "2030-01-01T00:00:30+00:00",
+      "frozenAt": null
+    }
+  },
+  "matchedDelta": {
+    "marketId": "condition-YES",
+    "fillId": "00000000-0000-4000-8000-000000000081",
+    "makerOrderId": "00000000-0000-4000-8000-000000000080",
+    "takerOrderId": "00000000-0000-4000-8000-000000000082",
+    "executionPrice": 620,
+    "amountSubunits": 1000,
+    "path": "Merge",
+    "matchedAt": "2030-01-01T00:00:00+00:00",
+    "baseAsset": "sat",
+    "collateralUnit": "msat",
+    "divisibility": 1000,
+    "quotePaymentSubunits": 620,
+    "outcomeFaceAmountSubunits": 1000,
+    "tokenSide": "Complement"
+  },
+  "release5Reads": {
+    "submitOrderResponse": {
+      "orderId": "00000000-0000-4000-8000-000000000082",
+      "status": "matched",
+      "remainingAmountSubunits": 0,
+      "fills": [
+        {
+          "id": "00000000-0000-4000-8000-000000000081",
+          "makerOrderId": "00000000-0000-4000-8000-000000000080",
+          "takerOrderId": "00000000-0000-4000-8000-000000000082",
+          "amountSubunits": 1000,
+          "executionPrice": 620,
+          "path": "Merge",
+          "status": "Matched",
+          "filledAt": "2030-01-01T00:00:00+00:00",
+          "settlementGroup": {
+            "groupId": "00000000-0000-4000-8000-000000000090",
+            "status": "Prepared",
+            "revision": 1,
+            "coalescingDeadline": "2030-01-01T00:00:30+00:00",
+            "frozenAt": null
+          },
+          "baseAsset": "sat",
+          "divisibility": 1000,
+          "tokenSide": "Complement",
+          "quotePaymentSubunits": 620,
+          "outcomeFaceAmountSubunits": 1000
+        }
+      ],
+      "baseAsset": "sat",
+      "divisibility": 1000,
+      "activeSettlementGroup": {
+        "groupId": "00000000-0000-4000-8000-000000000090",
+        "status": "Prepared",
+        "revision": 1,
+        "coalescingDeadline": "2030-01-01T00:00:30+00:00",
+        "frozenAt": null
+      }
+    },
+    "matchedDelta": {
+      "marketId": "condition-YES",
+      "fillId": "00000000-0000-4000-8000-000000000081",
+      "makerOrderId": "00000000-0000-4000-8000-000000000080",
+      "takerOrderId": "00000000-0000-4000-8000-000000000082",
+      "executionPrice": 620,
+      "amountSubunits": 1000,
+      "path": "Merge",
+      "matchedAt": "2030-01-01T00:00:00+00:00",
+      "baseAsset": "sat",
+      "collateralUnit": "msat",
+      "divisibility": 1000,
+      "quotePaymentSubunits": 620,
+      "outcomeFaceAmountSubunits": 1000,
+      "tokenSide": "Complement"
+    }
+  }
+}

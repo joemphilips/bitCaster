@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
 import { test } from 'node:test'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex } from '@noble/hashes/utils.js'
@@ -1230,6 +1231,31 @@ test('order fill readers accept every contract match path and refuse any other',
     () => decodeSubmitOrderResponse(submitted('Merge', { mergedWith: 'YES' })),
     /fields are invalid/,
   )
+})
+
+// The engine contract tests check that the engine writes exactly these MERGE
+// fill payloads, and the fixture holds the results of the release 5 readers on
+// them. That protects release 5 clients. This test shows that the current
+// readers give the same results as the release 5 readers.
+test('the engine MERGE fill payloads read as the release 5 readers read them', async () => {
+  const fixture = JSON.parse(
+    await readFile(new URL('./fixtures/merge-fill-v1.json', import.meta.url), 'utf8'),
+  ) as {
+    readonly submitOrderResponse: unknown
+    readonly matchedDelta: unknown
+    readonly release5Reads: {
+      readonly submitOrderResponse: unknown
+      readonly matchedDelta: unknown
+    }
+  }
+
+  const submitted = decodeSubmitOrderResponse(fixture.submitOrderResponse)
+  const matched = decodeMatchedDelta(fixture.matchedDelta)
+
+  assert.equal(submitted.fills[0]?.path, 'Merge')
+  assert.equal(matched.path, 'Merge')
+  assert.deepEqual(submitted, fixture.release5Reads.submitOrderResponse)
+  assert.deepEqual(matched, fixture.release5Reads.matchedDelta)
 })
 
 test('BitcasterEngineClient.submitOrder rejects an oversized response before decoding', async () => {

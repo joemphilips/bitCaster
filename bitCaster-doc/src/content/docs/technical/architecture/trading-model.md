@@ -186,8 +186,8 @@ The engine can group one or more fills into one atomic settlement group.
 conversion for the group. The current product supports complementary, mint,
 and merge conversion. A merge match pairs a sell with a sell of the
 complementary outcome set, and the mint merges the two positions into
-collateral. This API version reports a merge match as `Complementary`, with the
-taker's token side and execution price. A later engine version reports `Merge`.
+collateral. The fill of a merge match has the path `Merge`, with the taker's
+token side and execution price.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
