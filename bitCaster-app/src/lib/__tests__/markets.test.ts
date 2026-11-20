@@ -946,6 +946,35 @@ describe("fetchMarketDetail (engine merge — ADR-009 Amendment 2026-05-04)", ()
     expect(detail.imageUrl).toBe("/api/v1/abc123/thumbnail");
   });
 
+  it("keeps the announcement signer apart from the market creator", async () => {
+    const signer = "ab".repeat(32);
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/api/v1/markets/query")) {
+        const response = await engineQueryResponse("open", null, creatorPubkey).json();
+        response.markets[0].oraclePubkey = signer;
+        return new Response(JSON.stringify(response), { status: 200 });
+      }
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+
+    expect(detail.oraclePubkey).toBe(signer);
+    expect(detail.creator.id).toBe(creatorPubkey);
+  });
+
+  it("leaves the announcement signer absent when the engine has none", async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url.includes("/api/v1/markets/query"))
+        return engineQueryResponse("open", null, creatorPubkey);
+      return emptyMetadataResponse();
+    });
+
+    const detail = await fetchMarketDetail("abc123");
+
+    expect(detail.oraclePubkey).toBeUndefined();
+  });
+
   it("does not block engine detail rendering on mintd display metadata", async () => {
     const detail = await fetchMarketDetail("abc123");
     expect(detail.mint).toEqual({ collateral: "sat", keysetCount: 0 });

@@ -3794,7 +3794,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class MarketCatalogueEntry
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, string? @fundingRevision, System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<LatestConfirmedTrade> @latestConfirmedTrades, long @liquiditySubunits, System.Collections.Generic.List<MarketOutcomeDetails>? @outcomeDetails, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
+        public MarketCatalogueEntry(long @ammBotBudgetSubunits, BaseAsset @baseAsset, System.Collections.Generic.List<string> @categoryTags, System.DateTimeOffset? @closedAt, string @conditionId, System.DateTimeOffset @createdAt, string? @creatorPubkey, System.DateTimeOffset? @deadline, string? @description, MarketCatalogueEntryDivisibility @divisibility, string? @finalOutcome, string? @fundingRevision, System.DateTimeOffset @lastSuccessfulRefreshAt, System.Collections.Generic.List<LatestConfirmedTrade> @latestConfirmedTrades, long @liquiditySubunits, string? @oraclePubkey, System.Collections.Generic.List<MarketOutcomeDetails>? @outcomeDetails, System.Collections.Generic.List<string> @outcomes, MarketCatalogueEntryState @state, string? @thumbnailUrl, string? @title, long @volume24hSubunits, long @volume30dSubunits, long @volumeLifetimeSubunits)
         {
             this.ConditionId = @conditionId;
             this.Outcomes = @outcomes;
@@ -3803,6 +3803,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.Description = @description;
             this.ThumbnailUrl = @thumbnailUrl;
             this.CreatorPubkey = @creatorPubkey;
+            this.OraclePubkey = @oraclePubkey;
             this.Deadline = @deadline;
             this.ClosedAt = @closedAt;
             this.FinalOutcome = @finalOutcome;
@@ -3869,6 +3870,13 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("creatorPubkey")]
         public string? CreatorPubkey { get; }
+
+        /// <summary>
+        /// X-only public key (64-char lowercase hex) that signed the oracle announcement selected at registration. Only this key can attest the outcome. It can differ from creatorPubkey. Null when the market has no recorded announcement signer.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("oraclePubkey")]
+        public string? OraclePubkey { get; }
 
         /// <summary>
         /// Oracle attestation deadline carried from the mintd condition snapshot. The market auto-closes at this instant when the kind-89 attestation has not yet been observed.
