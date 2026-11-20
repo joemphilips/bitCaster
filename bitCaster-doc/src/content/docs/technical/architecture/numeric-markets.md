@@ -1,6 +1,8 @@
 ---
 title: Numeric Markets
 description: The planned numeric outcome model, which is not available for trading
+sidebar:
+  order: 9
 ---
 
 # Numeric Markets

@@ -1,0 +1,142 @@
+---
+title: 'Orders: preparation, settlement, and recovery'
+description: 'Order rules, wallet preparation, settlement confirmation, refunds, and what the matching engine can see.'
+sidebar:
+  order: 2
+  label: 'Orders'
+---
+
+## Order rules
+
+Choose a market, an outcome, and how many shares to buy or sell.
+Review the quoted cost or sale proceeds and the separate fees before confirming.
+The order cannot buy for more, or sell for less, than the trade value you accept.
+Equal or better execution is allowed. If the current orders give a worse deal,
+the whole order is refused. Review a fresh quote before confirming a new order.
+The estimated last fill price describes the last match in your proposed order.
+It is not a promise of the next orderbook midpoint.
+The form checks your entered quantity and its fees. It warns when the current
+orders cannot fill that quantity within your price limit. A very small buy
+can be refused although the order book shows depth: the market maker's fee
+must cover the mint fee. The form then says **Too few shares**. Buy more shares.
+A preview does not reserve liquidity. Your order fills in full
+within the limit or does not fill. It does not stay on the order book for later.
+Markets can have two outcomes, such as Yes and No, or up to eight named
+outcomes. You can fund your wallet through a Lightning invoice or with an
+existing Cashu token from the supported mint. The app shows amounts in sats.
+Small amounts can have decimal places. Compact balance and market summaries
+show these digits in smaller text. The amount stays exact.
+
+Check the selected outcome before confirming. In the example above, Alpha
+means that Alpha wins. Not Alpha means that Beta or Gamma wins.
+
+Submitting an order is not the same as completing a trade. The matching engine
+finds matching orders. The Cashu mint then exchanges the authorized funds and
+shares. The mint completes each settlement group as one operation. It does not
+complete only one side of that exchange. This is what **atomic settlement** means.
+
+## Before you confirm
+
+Review the quantity, quoted trade value, and separate fees.
+The engine refuses a trade that costs more, or pays less, than the trade value
+you accepted. It also checks the accepted worst execution price.
+These limits do not remove wallet preparation or refund fees.
+Preparation can cost a fee even if no trade completes.
+
+The trade summary can also show a Participation Score row. Participation Score
+is an anti-spam fee. bitCaster charges a few sats of Score when your order uses
+the order book. The row shows the Score charge for this order. If your Score
+balance does not cover the charge, a **Score top-up at confirm (kept as
+balance)** row also appears. It shows the Score that the app buys with ordinary
+sats from your wallet when you confirm. This purchase can be larger than the
+shortfall. Score that the order does not use stays in your Score balance for
+later orders. The trade totals do not include these rows. Score is not
+refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
+for the charge and top-up rules.
+
+To sell all your shares, keep some ordinary sats available for preparation
+fees. The wallet can pay those fees with sats instead of reducing the shares
+you sell. The sale proceeds cannot pay this fee because preparation comes first.
+
+Both the web app and CLI use fill-or-kill (FOK) orders in this release. When the
+engine accepts the order, the available matching orders must cover its full
+quantity within the accepted trade-value and price limits. Otherwise, it cancels
+the whole order.
+It does not fill only part of your request or leave the rest waiting for a buyer
+or seller. A matching decision still needs settlement confirmation. The app
+shows the order as matched until settlement ends, then shows the final result.
+
+Cancellation because the full quantity cannot match does not itself spend the
+trade authorization or start a refund. If your wallet already prepared locked
+funds, they can remain unavailable until the refund conditions are met.
+
+The wallet keeps a completed preparation if the order fails. It does not undo
+the preparation or refund its paid fees. Unused locked funds follow the normal
+expiry and refund process. Recovery does not submit a new order automatically.
+
+If the mint's preparation reply is missing, the wallet keeps the affected
+funds reserved while it checks the result. An expired authorization or most
+rejected retries do not prove that the first request failed. The wallet tries
+the check again after an interval. The interval increases after each failed
+try, up to 15 minutes. If the mint sends a wait time, the wallet obeys it.
+If the mint refuses the same retry several times, the wallet stops the
+automatic retries. The alert then shows the mint code and **Retry**. The funds
+stay reserved.
+
+Some mint refusals prove that the mint did not complete the preparation and
+cannot complete it later. After such a refusal, the wallet checks the reserved
+funds again. If the mint did not spend them, the wallet ends the order attempt
+and makes the funds available again. It does not submit the order. If another
+operation spent part of the funds, the wallet releases the remaining funds. If
+the mint still processes a reserved input, the wallet waits.
+
+While an earlier sell in a market prepares its funds, the app does not start
+another sell in the same market. Wait until the earlier preparation finishes
+or ends. The **Active trade progress** list shows it.
+
+## If a trade is delayed
+
+A lost connection does not prove that a trade failed. The mint may have
+completed the exchange before your wallet received its reply. Do not create a
+new order just to retry a trade whose result is still unknown.
+
+Keep the same wallet and its local data. The wallet stores the submitted
+operation and checks the existing result during recovery. A saved result
+survives a server restart. Recovery of that same operation must not create
+another trade.
+
+Do not clear browser storage or delete the wallet's local records while an
+operation is unresolved. Your recovery phrase does not reconstruct every
+pending operation or refund record. See [wallet backup and recovery](/technical/reference/wallet-recovery/).
+
+If settlement does not complete, the authorized funds can become refundable
+after the authorization expires. A timeout alone does not make them available
+to spend. The wallet must check the existing settlement and refund conditions.
+
+Expiry reclaim unlocks the original asset. Regular ecash keeps its currency unit.
+Conditional tokens keep their condition and outcome collection.
+The mint's swap fee still applies. The protocol calls this operation `refund`.
+The mint operator's discretionary compensation policy is separate.
+See [market resolution](/technical/reference/resolution/).
+
+When bitCaster reports that the settlement of your order is confirmed, the
+wallet applies the result at once. Your balance, your positions, and the
+Portfolio Funds tab then update. You do not need to reload the page. If the
+result is not ready yet, the wallet checks again after short delays, then at
+a longer interval.
+
+Wallet preparation is separate from order acceptance. The progress list shows
+which stage is confirmed. A prepared payment does not prove that the engine
+accepted an order. A rejected order can still need funds recovery. An accepted
+order is not a completed trade until settlement is confirmed.
+
+## What the engine can see
+
+Your wallet sends the ecash records, called proofs, that authorize this order.
+The engine sees those proofs and their secrets. It does not receive your
+recovery phrase, the private material needed to unlock the received outputs,
+your refund key, or your other wallet proofs.
+
+The engine can select only the outputs your wallet authorized. It cannot
+redirect that value or extend the authorization. It can delay settlement,
+which can keep the authorized funds unavailable until a refund becomes valid.

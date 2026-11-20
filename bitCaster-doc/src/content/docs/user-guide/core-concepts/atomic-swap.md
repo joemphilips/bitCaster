@@ -1,149 +1,37 @@
 ---
-title: 'Atomic Settlement'
-description: 'What happens after you submit a trade, and how to handle a delay.'
+title: 'How Trades Settle'
+description: 'What happens between pressing Buy and holding your shares, and why you never have to trust the other side.'
 sidebar:
   order: 2
 ---
 
-# Atomic Settlement
+A trade on bitCaster has two steps. First the matching engine finds someone to trade with. Then the mint exchanges the tokens. The second step is **atomic**: either everyone receives what they agreed to, or nothing moves at all.
 
-Submitting an order is not the same as completing a trade. The matching engine
-finds matching orders. The Cashu mint then exchanges the authorized funds and
-shares. The mint completes each settlement group as one operation. It does not
-complete only one side of that exchange. This is what **atomic settlement** means.
+## Why you don't have to trust anyone to go first
 
-## Before you confirm
+In an ordinary swap, somebody has to send first and hope the other side follows. Here nobody does.
 
-Review the quantity, quoted trade value, and separate fees.
-The engine refuses a trade that costs more, or pays less, than the trade value
-you accepted. It also checks the accepted worst execution price.
-These limits do not remove wallet preparation or refund fees.
-Preparation can cost a fee even if no trade completes.
+When you place an order, your wallet locks exactly the tokens that order needs, and hands only those to the matching engine. The lock says what the tokens may be exchanged for. The engine can complete the trade you agreed to, and nothing else. It cannot send your tokens elsewhere, and it cannot touch the rest of your wallet.
 
-The trade summary can also show a Participation Score row. Participation Score
-is an anti-spam fee. bitCaster charges a few sats of Score when your order uses
-the order book. The row shows the Score charge for this order. If your Score
-balance does not cover the charge, a **Score top-up at confirm (kept as
-balance)** row also appears. It shows the Score that the app buys with ordinary
-sats from your wallet when you confirm. This purchase can be larger than the
-shortfall. Score that the order does not use stays in your Score balance for
-later orders. The trade totals do not include these rows. Score is not
-refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
-for the charge and top-up rules.
+When a match is found, the mint swaps both sides in a single operation. If the trade never happens, the lock expires and your wallet takes the tokens back.
 
-To sell all your shares, keep some ordinary sats available for preparation
-fees. The wallet can pay those fees with sats instead of reducing the shares
-you sell. The sale proceeds cannot pay this fee because preparation comes first.
+All of this is ecash moving through the mint. There is no blockchain transaction, no gas, and no waiting for a block.
 
-Both the web app and CLI use fill-or-kill (FOK) orders in this release. When the
-engine accepts the order, the available matching orders must cover its full
-quantity within the accepted trade-value and price limits. Otherwise, it cancels
-the whole order.
-It does not fill only part of your request or leave the rest waiting for a buyer
-or seller. A matching decision still needs settlement confirmation. The app
-shows the order as matched until settlement ends, then shows the final result.
+## All or nothing
 
-Cancellation because the full quantity cannot match does not itself spend the
-trade authorization or start a refund. If your wallet already prepared locked
-funds, they can remain unavailable until the refund conditions are met.
+Orders are fill-or-kill. Before you confirm, the app shows the cost and the fees. Your order then fills in full at that price or better, or it is cancelled. It never fills halfway and it never sits on the book waiting.
 
-The wallet keeps a completed preparation if the order fails. It does not undo
-the preparation or refund its paid fees. Unused locked funds follow the normal
-expiry and refund process. Recovery does not submit a new order automatically.
+## Fees
 
-If the mint's preparation reply is missing, the wallet keeps the affected
-funds reserved while it checks the result. An expired authorization or most
-rejected retries do not prove that the first request failed. The wallet tries
-the check again after an interval. The interval increases after each failed
-try, up to 15 minutes. If the mint sends a wait time, the wallet obeys it.
-If the mint refuses the same retry several times, the wallet stops the
-automatic retries. The alert then shows the mint code and **Retry**. The funds
-stay reserved.
+The mint charges a small fee whenever tokens are exchanged. Orders that use the order book also cost a few sats of **Participation Score**, a prepaid anti-spam fee that is not refundable. The app lists every fee before you confirm.
 
-Some mint refusals prove that the mint did not complete the preparation and
-cannot complete it later. After such a refusal, the wallet checks the reserved
-funds again. If the mint did not spend them, the wallet ends the order attempt
-and makes the funds available again. It does not submit the order. If another
-operation spent part of the funds, the wallet releases the remaining funds. If
-the mint still processes a reserved input, the wallet waits.
+## If a trade seems stuck
 
-While an earlier sell in a market prepares its funds, the app does not start
-another sell in the same market. Wait until the earlier preparation finishes
-or ends. The **Active trade progress** list shows it.
+A dropped connection does not mean that the trade failed. The mint may have finished it before the reply reached you. Your wallet remembers the order and checks its result by itself, and if the trade did not happen, it reclaims the locked tokens once the lock expires.
 
-## If a trade is delayed
-
-A lost connection does not prove that a trade failed. The mint may have
-completed the exchange before your wallet received its reply. Do not create a
-new order just to retry a trade whose result is still unknown.
-
-Keep the same wallet and its local data. The wallet stores the submitted
-operation and checks the existing result during recovery. A saved result
-survives a server restart. Recovery of that same operation must not create
-another trade.
-
-Do not clear browser storage or delete the wallet's local records while an
-operation is unresolved. Your recovery phrase does not reconstruct every
-pending operation or refund record. See [wallet backup and recovery](/user-guide/getting-started/wallet-backup/).
-
-If settlement does not complete, the authorized funds can become refundable
-after the authorization expires. A timeout alone does not make them available
-to spend. The wallet must check the existing settlement and refund conditions.
-
-Expiry reclaim unlocks the original asset. Regular ecash keeps its currency unit.
-Conditional tokens keep their condition and outcome collection.
-The mint's swap fee still applies. The protocol calls this operation `refund`.
-The mint operator's discretionary compensation policy is separate.
-See [market resolution](/user-guide/core-concepts/resolution/).
-
-The web app keeps wallet alerts until you dismiss them. One exception applies
-when the wallet finishes an operation. Its alerts that say the order result is
-uncertain or that funds recovery is pending then close. Use **Next** to read
-more alerts without dismissing an unresolved alert. Use **First alerts** to
-return to the start. Dismissing an alert does not stop recovery or delete funds.
-
-An alert can show the code that the mint returned, for example
-**Mint code: 11008**. If the mint refused an order preparation, the alert says
-**Order was not completed**, and the reserved funds are available again. If the
-wallet stopped the automatic retries, the alert shows **Retry**. Select
-**Retry** to send the check one more time.
-
-The **Active trade progress** list shows operations that the wallet still needs
-to finish. It survives a reload while the wallet data remains available.
-Use **Refresh status** to check again. An unavailable status is not a failed
-trade. A confirmed settlement can still need wallet recovery. Refund eligibility
-does not mean a refund is complete. An operation leaves this active list when
-the wallet finishes its work. After a confirmed trade, the list shows
-**Trade complete.** for a few seconds before the trade leaves it. The list is
-not your completed-trade history.
-
-While the wallet finishes the trade that you just submitted, the trading panel
-shows **Updating your wallet…**. This includes the refund of a failed trade.
-
-When bitCaster reports that the settlement of your order is confirmed, the
-wallet applies the result at once. Your balance, your positions, and the
-Portfolio Funds tab then update. You do not need to reload the page. If the
-result is not ready yet, the wallet checks again after short delays, then at
-a longer interval.
-
-Wallet preparation is separate from order acceptance. The progress list shows
-which stage is confirmed. A prepared payment does not prove that the engine
-accepted an order. A rejected order can still need funds recovery. An accepted
-order is not a completed trade until settlement is confirmed.
-
-## What the engine can see
-
-Your wallet sends the ecash records, called proofs, that authorize this order.
-The engine sees those proofs and their secrets. It does not receive your
-recovery phrase, the private material needed to unlock the received outputs,
-your refund key, or your other wallet proofs.
-
-The engine can select only the outputs your wallet authorized. It cannot
-redirect that value or extend the authorization. It can delay settlement,
-which can keep the authorized funds unavailable until a refund becomes valid.
+So don't place the same order again just to retry, and don't clear your browser data. Keep the wallet as it is and let it finish.
 
 ## Further reading
 
-See the [technical settlement protocol](/technical/protocol/atomic-swap/) for
-authorization rules, fill and group identifiers, conversion types, and client
-retry requirements.
+- [Orders: preparation, settlement, and recovery](/technical/reference/orders/) has the precise rules.
+- [NUT-CTF range settlement](/technical/protocol/atomic-swap/) describes the protocol.

@@ -6,6 +6,8 @@ sidebar:
 
 This section describes the public technical behavior of bitCaster.
 
+This section is written for AI agents and client developers. It is complete and precise, and it is long on purpose. If you are a person who wants to understand bitCaster, start with [bitCaster 101](/user-guide/getting-started/overview/).
+
 ## Request body limits
 
 Requests with a body can receive `429` before authentication when concurrent
@@ -417,7 +419,7 @@ Read `wallet request status <request-id>` or `wallet request watch <request-id>`
 Only `credited` confirms wallet credit. `pending` does not.
 Use `wallet request recover <request-id>` for the same incomplete receipt.
 Stopping the watch does not cancel the request or receiver.
-See [Ecash](/user-guide/core-concepts/ecash/) for the receive workflow.
+See [Deposits, withdrawals, and mint fees](/technical/reference/payments/) for the receive workflow.
 
 ### Order estimates without a wallet
 
@@ -647,7 +649,7 @@ that the size is unknown. The endpoint retains up to 500 comments.
 It is not a complete comment archive.
 An oracle resolution explanation is separate from paid trade comments.
 It does not supply a confirmed fill coordinate. See
-[market resolution](/user-guide/core-concepts/resolution/).
+[reporting results](/technical/reference/resolution/).
 
 ### Market subscriptions
 

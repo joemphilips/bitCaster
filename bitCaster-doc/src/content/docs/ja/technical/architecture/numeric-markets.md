@@ -1,6 +1,8 @@
 ---
 title: 数値マーケット
 description: 現在は取引できない、将来の数値アウトカムモデル
+sidebar:
+  order: 9
 ---
 
 # 数値マーケット

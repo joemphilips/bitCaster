@@ -1,93 +1,29 @@
 ---
-title: "Funding Bot Liquidity"
-description: "What bot funding pays for, its risks, and how to add it."
+title: 'Funding the Market Maker'
+description: 'What the market-making bot does, and what you get (and do not get) when you fund it.'
 sidebar:
   order: 5
 ---
 
-# Funding Bot Liquidity
+A market is only useful if there is someone to trade with. bitCaster can run a market-making bot for each market. The bot posts buy and sell orders, so traders can get in and out from the first minute. It needs money to do that, and funding is how it gets it.
 
-The market-making bot posts buy and sell orders so that people can trade.
-Funding gives the bot money to support those orders. Creating a market does
-not fund the bot. Any user can add funding, including after market creation.
+## It is a subsidy, not an investment
 
-## Before you pay
+Funding is **non-refundable**. It gives you no shares, no fee income, and no right to withdraw. The bot is expected to spend its budget paying the traders who move the price toward the truth, and whatever is left when the market closes goes to the operator.
 
-Bot funding is **non-refundable**. It is a subsidy, not an investment that
-gives you shares, fees, profits, or a right to withdraw. You have no right to
-the money left when the market closes. Fund your own trading wallet instead
-if you want money available for your trades.
+So fund a market because you want it to exist and to be liquid, not to make money from the funding. If you want money to trade with, deposit to your own wallet.
 
-Your payment stays allocated to the selected condition. The bot can use it
-across that condition's outcomes, but not for another condition. For example,
-Alpha, Beta, and Gamma can share one budget when they are outcomes of the
-same event.
+## How to fund
 
-Review the amount and any fees before you confirm. The app shows amounts in
-sats. Before it prepares a payment, the app checks that the amount remains at
-or above the required minimum after applicable receive fees. Mint fees can
-reduce the amount available to the bot. A completed payment does not
-guarantee immediate liquidity or a fill for your next order. The bot also
-depends on the supported mint being available.
+Right after you create a market, the app offers to fund it, and you can skip that step. Later, anyone can fund any open market from its **Liquidity** tab, as often as they like. Amounts are in sats.
 
-## Add funding
+## What funding changes
 
-After market creation, enter the amount in sats.
-You can skip funding. Closing this screen does not undo
-the market.
+The bot starts with every outcome at equal odds. The more funding it has, the more shares it can offer near the current price, and the less a single trade moves that price.
 
-For an existing market, open its `LIQUIDITY` tab. Follow the payment steps
-with funds from the supported mint. Wait for the app to confirm completion.
-You can make more funding payments later. You do not need to be the creator.
+Funding does not set the market's price. The price you see always comes from the latest trade, so a market that has been funded but never traded still shows no price.
 
-If a payment is still pending, the app resumes the same payment automatically
-for about two and a half minutes. After that, resume the payment in the app.
-After a reload, the app resumes the same payment. A received payment is not yet
-credited to the market. Wait for the app to show that market maker funding is
-complete before you make another explicit funding payment. Do not make a
-second payment only because the first one is taking time. A second payment is
-a separate, non-refundable subsidy.
+## Further reading
 
-If recovery is incomplete or unavailable, that is different from insufficient
-balance. Funds that are already ready in this wallet can be used without
-waiting for remote recovery.
-
-## What changes after funding
-
-The bot uses an LMSR pricing strategy. Its first funding starts it from an
-equal starting position across outcomes. You do not select an opening
-probability when you fund it.
-
-Later funding can increase the size of the bot's orders and change its buy
-and sell prices, even without a trade. If an earlier bot trade is still
-settling, new funding waits before it changes the strategy. New bot trades
-pause during that wait.
-
-Funding does not change the public market price. That price comes only from
-the latest confirmed trade. Before the first trade, the app shows
-**No trades yet** or an em dash. The prices of orders available now can differ
-from the last trade price.
-
-**Total funding** shows all confirmed funding after receive fees. Each new
-payment adds to this total. Trading does not reduce it. It is not the money
-left in the bot or the amount you can trade now. Use the current trade preview
-to check whether your whole order can fill.
-
-## Choose a budget
-
-A larger budget can support more shares near the current prices. It also
-commits more of your money without a refund. A smaller budget supports less
-trading, and trades can move the bot's prices more quickly. Estimates of
-order-book depth are not a promise of available liquidity.
-
-If an order is too large to fill, try a smaller amount. Consider a subsidy
-only when the preview says that more funding may help. Funding does not fix
-every refusal, such as a price limit or an unavailable market.
-It does not buy your shares. Review a new trade preview after funding.
-Funding and trading are separate actions.
-
-An empty book alone does not show that funding will help. With no selected
-trade, the `BUY` and `SELL` tabs show a neutral empty state. `LIQUIDITY` remains
-available for voluntary funding. An existing selected form and quote wait stay
-visible through empty-book updates. Submission still needs a current preview
-and fee consent.
+- [Market maker funding](/technical/reference/market-funding/) has the precise rules.
+- [AMM liquidity for new markets](/technical/architecture/market-making/) explains the bot's pricing model.

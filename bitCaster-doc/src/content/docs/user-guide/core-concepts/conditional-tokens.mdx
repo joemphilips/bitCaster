@@ -1,0 +1,36 @@
+---
+title: 'Conditional Tokens'
+description: 'What a market position is, and the four layers of tokens it is built on.'
+sidebar:
+  order: 1
+---
+
+import TokenLayers from '../../../../components/TokenLayers.astro';
+
+A **conditional token** is a share in a market. It behaves like any other ecash token, so you can hold it, send it, and trade it. The difference is that it pays out only if one specific outcome comes true. If another outcome wins, it is worth nothing.
+
+Every market is simply a set of these tokens, one kind for each outcome, waiting for the oracle to say which one wins.
+
+## Where the idea comes from
+
+The Conditional Token Framework (CTF) was designed by [Gnosis](https://gnosis.io/) for Ethereum, and [Polymarket](https://polymarket.com/) made it the standard for on-chain prediction markets. It separates the money you put in from the positions you hold.
+
+bitCaster keeps the idea and changes the material. A position here is not a token on a public blockchain. It is a Cashu ecash token, issued under an extension of the Cashu protocol called NUT-CTF. The mental model is the same, with more speed and more privacy.
+
+## Four layers of tokens
+
+A bitCaster position sits on top of three other kinds of money. Each layer wraps the one below it.
+
+<TokenLayers lang="en" />
+
+Each layer exists because the one below it is the wrong tool for the next job. Bitcoin is ideal for final settlement but too heavy to trade on. Lightning is fast and trustless, but you have to stay online, so it is an awkward place to keep a balance. Ecash is perfect for a fast, private balance, but it cannot express "this pays only if Yes wins". Conditional tokens can, and once the market resolves they have done their job and turn back into ecash.
+
+## Price and payout
+
+A winning share pays 1 sat, and a losing share pays nothing. So the price of a share, shown as a percentage, is what the market thinks its chances are. [bitCaster 101](/user-guide/getting-started/overview/#prices-and-payouts) walks through an example.
+
+## Further reading
+
+- [Ecash](/user-guide/core-concepts/ecash/) explains layer 3.
+- [Market resolution](/user-guide/core-concepts/resolution/) explains how layer 4 turns back into layer 3.
+- [Trading model](/technical/architecture/trading-model/) has the precise trading rules.

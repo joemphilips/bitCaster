@@ -53,7 +53,7 @@ bitcaster-cli market create --creation-id <id> \
 ```
 
 </CommandBlock>
-<ArrowLink href="/ja/user-guide/getting-started/ai-trading/">これらのコマンドを AI エージェントに渡す: CLI ガイドを読む</ArrowLink>
+<ArrowLink href="/ja/technical/reference/cli-setup/">これらのコマンドを AI エージェントに渡す: CLI ガイドを読む</ArrowLink>
 </TabItem>
 </Tabs>
 </LandingStart>
@@ -62,19 +62,21 @@ bitcaster-cli market create --creation-id <id> \
   label="bitCaster が大切にすること"
   items={[
     {
-      title: 'ブロックチェーンのない DEX',
-      text: '注文は公開注文板でマッチし、ecash のアトミックスワップで決済されます。チェーン上のトランザクションも、ガス代も、ブロック待ちもありません。',
+      title: '自由',
+      text: '誰もがあらゆる事象に関するマーケットを作成でき、誰もがトレードできます。資産の選択的凍結が絶対にできない仕組みを用いています。',
     },
     {
-      title: 'あなたのポジションは常に SAFU',
-      text: 'ポジションは ecash トークンです。誰もあなたの資金だけを狙って凍結したり奪ったりできません。許可を求めずに、いつでも使ったり交換したりできます。',
+      title: '安全',
+      text: '情報流出の危険性を極限まで減らすため、ユーザーは最小限の情報しか明かす必要がない仕組みになっています。',
     },
     {
-      title: '誰にでも開かれた市場',
-      text: '誰でもマーケットを作成でき、誰でも取引できます。あなたの ID は、あなたが持つ Nostr 鍵です。',
+      title: '高効率',
+      text: 'ブロックチェーンを使わないことで、DEX でありながら最大限のスループットを実現しています。',
     },
   ]}
-/>
+>
+  これらはすべて、予測市場のトークンを <a href="/ja/user-guide/core-concepts/ecash/">ecash</a> で表現することで可能になっています。
+</LandingMottos>
 
 <LandingResources
   title="技術リソース"
@@ -102,7 +104,7 @@ bitcaster-cli market create --creation-id <id> \
       title: 'ウォレット',
       links: [
         { label: 'Ecash', href: '/ja/user-guide/core-concepts/ecash/' },
-        { label: 'ウォレットの暗号化バックアップ', href: '/ja/user-guide/getting-started/wallet-backup/' },
+        { label: 'ウォレットのバックアップ', href: '/ja/user-guide/getting-started/wallet-backup/' },
         { label: '市場の結果判定', href: '/ja/user-guide/core-concepts/resolution/' },
         { label: 'よくある質問', href: '/ja/faq/' },
       ],

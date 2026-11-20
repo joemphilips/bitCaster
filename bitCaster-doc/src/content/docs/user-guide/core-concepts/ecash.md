@@ -1,166 +1,41 @@
 ---
 title: 'Ecash'
-description: 'What Cashu ecash is and how bitCaster uses sat-denominated conditional tokens.'
+description: 'What ecash is, why bitCaster chose Cashu, and why a prediction market does not need a blockchain.'
 sidebar:
   order: 0
 ---
 
-# Ecash
-
-bitCaster uses Cashu ecash for wallet balances and market positions. The app
-shows Bitcoin amounts in sats. One sat is one hundred millionth of a bitcoin.
+Everything you hold on bitCaster, your balance and your positions alike, is an **ecash token**. This page explains what that means and why it suits a prediction market better than a blockchain does.
 
 ## What is ecash?
 
-Ecash is digital cash issued by a service called a mint. Your wallet holds
-signed records called proofs. For ordinary ecash, control of those proofs
-gives control of the value. Keep wallet data and recovery material private.
+Ecash is digital cash built on blind signatures, an idea David Chaum published in the 1980s.
 
-Your wallet holds ordinary ecash for payments and conditional tokens for
-market positions. A trade exchanges these assets through the mint. A submitted
-order is not a completed trade. Wait for confirmation before treating its
-result as spendable.
+A **mint** issues tokens the way a bank issues banknotes, and signs each one to prove that it is genuine. The signature is blind: the mint signs without seeing what it signs. Later it can check that a token is real, but it cannot tell who received it. And like a banknote, a token belongs to whoever holds it. No account, login, or identity is attached.
 
-For an order, the wallet sends the matching engine only the proofs prepared
-for that order. These use a spending restriction called `PAY_TO_UNLOCK`.
-The engine sees those proof secrets, but the restriction prevents it from
-redirecting their value or extending their expiry. The wallet keeps its
-recovery phrase, refund keys, and other proofs private.
-
-## Funding and withdrawal
-
-The first release supports one mint operated by bitCaster. You can add funds
-to your wallet by paying a Lightning invoice or importing a Cashu token from
-that mint. You can withdraw ordinary ecash by paying a Lightning invoice
-through the mint. Check the amount and estimated fees before confirmation.
-
-A mint can limit the amount of each Lightning deposit and each Lightning
-withdrawal. If an amount is outside the limit, the app shows the limit next to
-the amount or the invoice and does not continue. Deposit or withdraw a larger
-amount in parts. When the required top-up is above the limit, the app
-suggests the limit. After that deposit, continue and deposit the
-remaining amount. The CLI refuses the same amounts with the error code
-`amount-outside-mint-limits`.
-
-The success screen appears after a confirmed receipt or Lightning payment.
-A pending or failed payment is not a success.
-
-A paid Lightning deposit completes even after you close the deposit screen.
-You do not need to reload the page. While the app is open, it watches the
-unpaid invoices of the open wallet. The mint's NUT-17 payment notice is the
-first signal. The app also asks the mint for the invoice state when it starts
-to watch the invoice, every 2 seconds while the invoice is on screen, and once
-when the invoice expires. It also asks when the browser goes back online or
-when you return to the page. For an invoice that is not on screen, it asks at
-regular intervals only while the notice connection to the mint is down. If you
-pay while the app is closed, the app checks the invoice the next time you open
-it. A completed deposit adds to your balance and appears once in Activity.
-
-The app keeps an expired invoice for 24 hours after its expiry. This covers a
-payment that the mint accepted shortly before the expiry. During this time,
-the app checks the invoice each time the app starts or the browser goes back
-online. If the mint reports a payment, the deposit completes. After the 24
-hours, the app checks the mint one more time. It closes the invoice only if
-the mint still reports it as unpaid.
-
-When you import a conditional token, the wallet asks the mint to replace it
-with tokens for the same market position. Mint fees can reduce the amount
-received. Pasting the token alone does not complete receipt. Keep browser
-data while receipt is pending so the wallet can recover an uncertain result.
-
-To send ecash, copy or save the displayed token before you acknowledge the
-handoff. The token screen does not close automatically. Acknowledging the
-handoff does not prove that the recipient redeemed the token. It does not
-clear the wallet's pending-send recovery record. Treat the token as cash:
-share it only with the intended recipient.
-
-Adding funds to your wallet is not the same as funding a market's bot.
-[Bot funding](/user-guide/core-concepts/funding-bot-liquidity/) is a separate,
-non-refundable subsidy. It does not add to your spendable wallet balance.
-
-## Receive a Cashu payment request in the CLI
-
-Start the configured daemon, then create a request:
-
-```bash
-bitcaster-cli wallet request create
-```
-
-Share the returned `encoded` value with the sender.
-The request has no fixed amount. It accepts msat tokens from the configured mint.
-The receive address belongs to the wallet seed, not the Nostr login key.
-The CLI receives these requests; it does not pay a scanned request.
-
-Use the returned `requestId` to check progress:
-
-```bash
-bitcaster-cli wallet request status <request-id>
-bitcaster-cli wallet request watch <request-id>
-```
-
-`awaiting` means that no receipt is saved.
-`pending` means that receipt processing is incomplete.
-Only `credited` confirms that the wallet applied the receipt.
-The result's `amountMsat` field uses msat, not sats.
-A saved receipt or a delivered Nostr message alone is not a completed payment.
-
-Press Ctrl+C to stop watching. This does not cancel the saved request or the
-daemon's receiver. Keep the daemon running to receive payments.
-A restart resumes saved requests after wallet recovery permits new operations.
-
-To list saved requests or retry an incomplete receipt, use:
-
-```bash
-bitcaster-cli wallet request list --page-size 32
-bitcaster-cli wallet request list --cursor <nextCursor> --page-size 32
-bitcaster-cli wallet request recover <request-id>
-```
-
-Pass `nextCursor` unchanged. Stop when it is `null`.
-`recover` reuses the saved receipt and wallet recovery records.
-It does not create another request or guarantee that the mint is available.
-Keep the native wallet profile while an operation is pending.
-
-## Mint fees
-
-The mint charges an input fee when it consumes proofs. The fee depends on
-the number of proofs and the rate attached to each proof's keyset. Ordinary
-ecash and conditional tokens can both have input fees. Existing proofs keep
-their original rate when the mint changes the rate for new keysets.
-Check the wallet's estimate before you confirm. Separate preparation steps
-can each incur a fee, even if a later order does not complete.
-
-## Trust model
-
-Ecash is a bearer system. You must protect wallet data and recovery material.
-The mint holds the Bitcoin reserves behind its issued tokens. You therefore
-trust the mint operator to honor its ecash obligations.
-
-Cashu uses blind signatures to help prevent the mint from linking token
-issuance to later spending. This does not hide all payment, timing, or network
-metadata. It also does not guarantee that the mint will serve a request.
-If the mint stops operating, trading and withdrawals can become unavailable.
-
-The matching engine can associate authenticated activity with your engine
-identity. Privacy against the mint is not anonymity against the engine.
-
-The matching engine cannot spend other wallet proofs. If an order does not
-settle, its funds can remain unavailable until refund conditions are met.
-Keep the local wallet records needed for recovery. See
-[wallet backup](/user-guide/getting-started/wallet-backup/) before clearing
-browser data or changing devices.
+On bitCaster, you deposit bitcoin over Lightning and receive ecash. When you buy shares, that ecash is exchanged for [conditional tokens](/user-guide/core-concepts/conditional-tokens/) tied to an outcome. If you win, they turn back into ordinary ecash, which you can withdraw over Lightning whenever you like.
 
 ## Why Cashu?
 
-Cashu provides private bearer tokens with Bitcoin and Lightning support. It
-also provides the NUT framework that bitCaster uses for conditional tokens and
-`PAY_TO_UNLOCK` authorization.
+bitCaster uses [Cashu](https://cashu.space/), an ecash protocol for Bitcoin. Its specification is open, in a set of documents called [NUTs](https://github.com/cashubtc/nuts), so anyone can build a wallet or a mint. The cryptography is simple enough to audit and to extend, which is how bitCaster adds conditional tokens. It works with Lightning out of the box, with no bridges or wrapped coins. And several independent teams maintain wallets, mints, and libraries.
+
+## Why not a blockchain?
+
+People often ask why bitCaster does not run on a blockchain, the way Polymarket runs on Polygon.
+
+The answer is that an exchange is centralized already. Somebody has to run the order book and match the trades. Moving that activity on-chain does not remove the operator. It only adds costs.
+
+Privacy gets worse, because every trade on a public chain is visible to everyone, forever. With ecash, not even the mint knows who holds which token. Speed and cost get worse, because on-chain settlement means gas fees and block times, and both spike exactly when a market gets busy. And getting started gets harder, because you need the right coin on the right chain, plus a gas token, before your first trade. Here you deposit sats and trade.
+
+Blockchains are good at public verifiability and at resisting censorship. A prediction market does not need every trade to be public, and a matching engine can always refuse an order anyway. What traders actually want is privacy, speed, and low fees, and that is what ecash delivers.
+
+## What ecash does not do
+
+Ecash is not magic. The mint holds the bitcoin behind your tokens, so you trust it to honor withdrawals. Privacy applies to the mint: the matching engine can still see the orders you place under your Nostr key. And because tokens are bearer cash, losing your [recovery phrase](/user-guide/getting-started/wallet-backup/) means losing your funds.
 
 ## Further reading
 
-- [Atomic settlement](/user-guide/core-concepts/atomic-swap/) explains the
-  mint conversion flow.
-- [Conditional Token Framework](/user-guide/core-concepts/conditional-tokens/)
-  explains conditional market positions.
-- [Bitcoin Design — Ecash Introduction](https://bitcoin.design/guide/how-it-works/ecash/introduction/)
-  gives an external introduction to ecash trust models.
+- [Conditional tokens](/user-guide/core-concepts/conditional-tokens/) shows how a market position is built on top of ecash.
+- [How trades settle](/user-guide/core-concepts/atomic-swap/) explains how tokens change hands safely.
+- The [Bitcoin Design guide to ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/) is a good outside introduction.
+- [Deposits, withdrawals, and mint fees](/technical/reference/payments/) has the precise rules.

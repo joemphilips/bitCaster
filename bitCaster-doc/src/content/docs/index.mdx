@@ -53,7 +53,7 @@ bitcaster-cli market create --creation-id <id> \
 ```
 
 </CommandBlock>
-<ArrowLink href="/user-guide/getting-started/ai-trading/">Give these commands to your AI agent: read the CLI guide</ArrowLink>
+<ArrowLink href="/technical/reference/cli-setup/">Give these commands to your AI agent: read the CLI guide</ArrowLink>
 </TabItem>
 </Tabs>
 </LandingStart>
@@ -62,19 +62,21 @@ bitcaster-cli market create --creation-id <id> \
   label="What bitCaster stands for"
   items={[
     {
-      title: 'DEX without blockchain',
-      text: 'Orders match on a public order book and settle as atomic swaps of ecash. No chain transaction, no gas, no wait for the next block.',
+      title: 'Freedom',
+      text: 'Anyone can create a market on anything, and anyone can trade. The design makes it impossible to single out one person and freeze their funds.',
     },
     {
-      title: 'Your positions are always SAFU',
-      text: 'Your position is an ecash token. No one can single out your funds to freeze or steal them. You can always spend or exchange it without asking permission.',
+      title: 'Privacy',
+      text: 'Data that is never collected can never leak. bitCaster is built so that you reveal only the bare minimum about yourself.',
     },
     {
-      title: 'Markets open to anyone',
-      text: 'Anyone can create a market, and anyone can trade. Your ID is a Nostr key that you hold.',
+      title: 'Efficiency',
+      text: 'A DEX with no blockchain underneath. Trades settle at full speed, with no gas to pay and no blocks to wait for.',
     },
   ]}
-/>
+>
+  All three come from one design choice: every token in the market is <a href="/user-guide/core-concepts/ecash/">ecash</a>.
+</LandingMottos>
 
 <LandingResources
   title="Technical resources"
@@ -102,7 +104,7 @@ bitcaster-cli market create --creation-id <id> \
       title: 'Wallet',
       links: [
         { label: 'Ecash', href: '/user-guide/core-concepts/ecash/' },
-        { label: 'Encrypted wallet backup', href: '/user-guide/getting-started/wallet-backup/' },
+        { label: 'Wallet backup', href: '/user-guide/getting-started/wallet-backup/' },
         { label: 'Resolution', href: '/user-guide/core-concepts/resolution/' },
         { label: 'FAQ', href: '/faq/' },
       ],
