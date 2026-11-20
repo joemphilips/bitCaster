@@ -14,6 +14,7 @@ import { PortfolioPage } from "@/pages/PortfolioPage";
 import { CreatorPage } from "@/pages/CreatorPage";
 import { MarketCreationPage } from "@/pages/MarketCreationPage";
 import { SettingsPage } from "@/pages/SettingsPage";
+import { scheduleSettingsPreload } from "@/components/settings/settingsModule";
 import { MintDetailPage } from "@/pages/MintDetailPage";
 import { UserPage } from "@/pages/UserPage";
 import { useEffect, useRef, useState } from "react";
@@ -205,6 +206,10 @@ function AppRoutes() {
   useEffect(() => {
     document.title = titleForPath(location.pathname);
   }, [location.pathname]);
+
+  // Load the lazy Settings chunk while the browser is idle, so that the first
+  // Settings visit does not wait on the chunk behind start-up and login work.
+  useEffect(() => scheduleSettingsPreload(), []);
 
   // Re-install the Nostr signer from persisted settings after Zustand
   // hydration. The identityOps helper owns the one-shot/hydration semantics.

@@ -1,18 +1,20 @@
 import { useEffect, useState } from "react";
 import { useTranslation } from "react-i18next";
 import type { Settings } from "./Settings";
+import { loadedSettingsComponent, loadSettingsComponent } from "./settingsModule";
 import type { SettingsProps } from "@/types/settings";
 
 export function DeferredSettings(props: SettingsProps) {
   const { t } = useTranslation();
-  const [Content, setContent] = useState<typeof Settings | null>(null);
+  // A preloaded chunk renders on the first render, without the loading state.
+  const [Content, setContent] = useState<typeof Settings | null>(loadedSettingsComponent);
   const [failed, setFailed] = useState(false);
   const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let current = true;
-    void import("./Settings").then(
-      (module) => {
-        if (current) setContent(() => module.Settings);
+    void loadSettingsComponent().then(
+      (component) => {
+        if (current) setContent(() => component);
       },
       () => {
         if (current) setFailed(true);
