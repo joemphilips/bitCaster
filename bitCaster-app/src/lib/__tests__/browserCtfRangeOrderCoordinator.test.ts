@@ -2166,6 +2166,177 @@ describe("browser CTF range order coordinator", () => {
     expect(engine.submitCalls).toBe(1);
   });
 
+  // An order that the lookup finds after a lost response has no submit notice,
+  // so no order notice wakes its recovery. While its settlement can still give
+  // a result, a pass asks for the normal retry and not the expiry wake. The mint
+  // still waits for expiry: one observation, then engine reads only.
+  it("keeps a found order with a pending settlement on the normal retry, then applies its result", async () => {
+    let now = 20_000;
+    const database = createDatabase();
+    const fixture = foundSettlingOrder(database, "range-found-order-settling", () => now);
+    await fixture.submitWithLostResponse();
+    const refundAtMs = fixture.preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS;
+
+    // The lookup finds the order. The engine has no result yet, the mint reads
+    // every input UNSPENT, and the engine order is still settling.
+    expect(await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [
+        {
+          operationId: fixture.preparation.operationId,
+          code: "awaiting-settlement-result",
+          retryAtMs: null,
+        },
+      ],
+    });
+    expect(fixture.mintObservations()).toBe(1);
+    expect(fixture.schedule.state(walletScopeId(), fixture.preparation.operationId, now)).toEqual({
+      kind: "waiting",
+      nextAttemptAtMs: refundAtMs,
+    });
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), fixture.preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("order-submitted");
+
+    // The next pass reads the engine again and sends no mint request.
+    now += 15_000;
+    expect(await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      pending: [
+        {
+          operationId: fixture.preparation.operationId,
+          code: "awaiting-settlement-result",
+          retryAtMs: null,
+        },
+      ],
+    });
+    expect(fixture.mintObservations()).toBe(1);
+
+    // The settlement confirms. The next pass, well before expiry, applies it.
+    fixture.settle();
+    now += 15_000;
+    expect(await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [fixture.preparation.operationId],
+      pending: [],
+    });
+    expect(now).toBeLessThan(fixture.preparation.expiry * 1_000);
+    expect(fixture.mintObservations()).toBe(1);
+    expect(
+      (await readCtfRangePreparation(walletScopeId(), fixture.preparation.operationId, database))
+        ?.lifecycleState,
+    ).toBe("terminal");
+    expect(fixture.engine.submitCalls).toBe(1);
+  });
+
+  // The clock margin holds also for a settling order: a pass in the margin
+  // after expiry sends no mint request, so no refund starts early.
+  it("sends no mint request for a settling found order inside the clock margin after expiry", async () => {
+    let now = 20_000;
+    const database = createDatabase();
+    const fixture = foundSettlingOrder(database, "range-found-order-margin", () => now);
+    await fixture.submitWithLostResponse();
+    await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 });
+    expect(fixture.mintObservations()).toBe(1);
+
+    now = fixture.preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS - 1;
+    expect(await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      recoveredOperationIds: [],
+      pending: [
+        { operationId: fixture.preparation.operationId, code: "awaiting-settlement-result" },
+      ],
+    });
+    expect(fixture.mintObservations()).toBe(1);
+  });
+
+  // The status read only chooses the pass cadence. An unavailable or foreign
+  // status keeps the normal pass and records no mint failure, so the mint
+  // schedule still waits exactly for expiry and the operation has no error.
+  it.each(["unavailable", "foreign"] as const)(
+    "keeps the normal pass for a found order whose status read is %s",
+    async (read) => {
+      const now = 20_000;
+      const database = createDatabase();
+      const fixture = foundSettlingOrder(
+        database,
+        `range-found-order-status-${read}`,
+        () => now,
+        read === "unavailable"
+          ? { orderStatusFailure: true }
+          : {
+              orderStatus: {
+                ...discoveredOrderStatus(),
+                orderId: "55555555-5555-4555-8555-555555555555",
+              },
+            },
+      );
+      await fixture.submitWithLostResponse();
+
+      expect(await fixture.coordinator.recoverPage({ seed: SEED, limit: 8 })).toEqual({
+        recoveredOperationIds: [],
+        pending: [
+          {
+            operationId: fixture.preparation.operationId,
+            revision: expect.any(Number),
+            code: "awaiting-settlement-result",
+            retryAtMs: null,
+          },
+        ],
+        attention: [],
+        refused: [],
+        nextCursor: null,
+      });
+      expect(fixture.schedule.state(walletScopeId(), fixture.preparation.operationId, now)).toEqual(
+        {
+          kind: "waiting",
+          nextAttemptAtMs:
+            fixture.preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS,
+        },
+      );
+      expect(fixture.engine.statusCalls).toBe(1);
+    },
+  );
+
+  // The order cannot settle any more: it ended without a fill, or the engine
+  // does not know it. Its inputs stay UNSPENT until expiry, so the pass waits
+  // for expiry.
+  it.each(["cancelled", "expired", "failed", "unknown"] as const)(
+    "waits for expiry for a found %s order without a fill",
+    async (status) => {
+      const database = createDatabase();
+      const preparation = persistedPreparation(`range-found-order-${status}`);
+      let sent: CreateSettlementCapabilityRequest | undefined;
+      const engine = engineMock({
+        onSubmit: async (request) => {
+          sent = request.settlementCapabilityAdmission;
+        },
+        submitFailure: true,
+        lookup: () => orderLookup(sent!),
+        orderStatus: status === "unknown" ? null : { ...discoveredOrderStatus(), status },
+      });
+      const coordinator = createCoordinator(database, sourceWallet(), engine, {
+        now: () => 20_000,
+        createMintRecovery: refundableRecovery(preparation),
+      });
+      await expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        pending: [
+          {
+            operationId: preparation.operationId,
+            code: "awaiting-authorization-expiry",
+            retryAtMs: preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS,
+          },
+        ],
+      });
+    },
+  );
+
   // The engine no longer serves the stage route or the reference form of the
   // order request (ADR-037, amendment of 2026-11-20). A stored release 4 record
   // still reads, makes only engine reads, waits for authorization expiry, and
@@ -6358,6 +6529,7 @@ function engineMock(
     onSubmit?: (request: SubmitOrderRequest, options?: SubmitOrderOptions) => Promise<void>;
     submitFailure?: boolean;
     orderStatus?: OrderStatusResponse | null;
+    orderStatusFailure?: boolean;
     foreignCapability?: boolean;
     foreignOrderResponse?: boolean;
     restingOrderResponse?: boolean;
@@ -6408,6 +6580,7 @@ function engineMock(
     },
     async getOrderStatus() {
       this.statusCalls += 1;
+      if (input.orderStatusFailure === true) throw new Error("engine order status is unavailable");
       return input.orderStatus ?? null;
     },
     async getSettlementCapabilityResultByOperation() {
@@ -6451,6 +6624,82 @@ function orderLookup(
     status: "accepted",
     settlementCapability: capability.reference,
     artifactDigest,
+  };
+}
+
+/**
+ * An order whose submit response the browser lost. The lookup finds it, the
+ * engine settles it later, and the mint reads every input UNSPENT until then.
+ */
+function foundSettlingOrder(
+  database: BitcasterDB,
+  name: string,
+  now: () => number,
+  status: { orderStatus?: OrderStatusResponse | null; orderStatusFailure?: boolean } = {
+    orderStatus: {
+      ...discoveredOrderStatus(),
+      status: "matched",
+      activeSettlementGroup: {
+        groupId: "55555555-5555-4555-8555-555555555555",
+        status: "SubmissionPending",
+        revision: 1,
+        coalescingDeadline: "2026-07-31T09:00:01.000Z",
+        frozenAt: "2026-07-31T09:00:01.000Z",
+      },
+    },
+  },
+) {
+  const preparation = persistedPreparation(name);
+  const unspentAtMint = refundableRecovery(preparation);
+  const schedule = new BrowserCtfRangeRecoverySchedule({ random: () => 1 });
+  let sent: CreateSettlementCapabilityRequest | undefined;
+  let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
+  let settled = false;
+  let mintObservations = 0;
+  const engine = engineMock({
+    onSubmit: async (request) => {
+      sent = request.settlementCapabilityAdmission;
+    },
+    submitFailure: true,
+    lookup: () => orderLookup(sent!),
+    ...status,
+    result: () => {
+      if (!settled) return null;
+      if (confirmed === undefined) throw new Error("confirmed fixture was not initialized");
+      return confirmedEngineResult(confirmed.operation, confirmed.selection, confirmed.signatures);
+    },
+  });
+  const coordinator = createCoordinator(database, sourceWallet(), engine, {
+    now,
+    recoverySchedule: schedule,
+    createMintRecovery: (operation) => {
+      confirmed = confirmedRangeRecovery(operation, preparation);
+      const mint = unspentAtMint(operation);
+      return {
+        async loadUncertainRecoveryObservation(input) {
+          mintObservations += 1;
+          return mint.loadUncertainRecoveryObservation(input);
+        },
+      };
+    },
+  });
+  return {
+    preparation,
+    engine,
+    coordinator,
+    schedule,
+    mintObservations: () => mintObservations,
+    settle: () => {
+      settled = true;
+    },
+    submitWithLostResponse: () =>
+      expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({ code: "order-submission-uncertain" }),
   };
 }
 

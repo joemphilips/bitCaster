@@ -418,12 +418,15 @@ export interface BrowserCtfRangeOrderCoordinatorDependencies {
  * `awaiting-authorization-expiry` is retry work, not an error. The mint shows
  * every authorization input unspent and the refund path opens at expiry.
  * `awaiting-mint-retry` is an operation whose recovery backoff has not ended.
+ * `awaiting-settlement-result` is a submitted order whose engine settlement can
+ * still give a result at any time, so the next pass does not wait for expiry.
  */
 export type BrowserCtfRangeRecoveryPendingCode =
   | BrowserCtfRangeOrderErrorCode
   | "awaiting-authorization-expiry"
   | "awaiting-mint-retry"
-  | "awaiting-order-confirmation";
+  | "awaiting-order-confirmation"
+  | "awaiting-settlement-result";
 
 /** A bounded mint error code and detail. It never holds proofs or blinded messages. */
 export type BrowserCtfRangeMintError = CashuMintRefusal;
@@ -467,7 +470,8 @@ type BrowserCtfRangeRecordRecoveryOutcome =
   | "recovered"
   | "awaiting-authorization-expiry"
   | "awaiting-mint-retry"
-  | "awaiting-order-confirmation";
+  | "awaiting-order-confirmation"
+  | "awaiting-settlement-result";
 
 export const BROWSER_CTF_RANGE_ORDER_ERROR_CODES = [
   "invalid-order-type",
@@ -984,18 +988,25 @@ export class BrowserCtfRangeOrderCoordinator {
             });
             break;
           // Every input stays UNSPENT until expiry, so an earlier mint check
-          // cannot make progress. The engine result read still runs each pass.
-          case "awaiting-authorization-expiry": {
+          // cannot make progress. After a mint observation, the mint schedule
+          // waits until expiry plus the clock margin, so no refund starts
+          // early. An order that the engine can still settle keeps the normal
+          // pass, which reads only the engine result and the order status. An
+          // order that cannot settle sleeps until the mint can make progress.
+          case "awaiting-authorization-expiry":
+          case "awaiting-settlement-result": {
             const current = await this.#currentPreparation(record);
             const refundAtMs =
               decodeCtfRangeOrderPreparationFromRecord(current).expiry * 1_000 +
               BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS;
-            schedule?.recordWait(scope.scopeId, operationId, refundAtMs);
+            // Without a mint observation in this pass (the mint already
+            // waits), keep the existing mint schedule.
+            if (mintDue) schedule?.recordWait(scope.scopeId, operationId, refundAtMs);
             pending.push({
               operationId,
               revision: current.revision,
               code: outcome,
-              retryAtMs: refundAtMs,
+              retryAtMs: expiryWaitRetryAtMs(outcome, refundAtMs),
             });
             break;
           }
@@ -1208,7 +1219,13 @@ export class BrowserCtfRangeOrderCoordinator {
       }
     }
     if (engineResult === null) {
-      if (!mintDue) return "awaiting-mint-retry";
+      // The mint waits, but the engine can still settle the order: the next
+      // pass reads the engine result again and sends no mint request.
+      if (!mintDue) {
+        return (await this.#submittedOrderCanStillSettle(journalRecord))
+          ? "awaiting-settlement-result"
+          : "awaiting-mint-retry";
+      }
       const observed = await this.#pendingOnRecoveryTransport(() =>
         recovery.loadUncertainRecoveryObservation({
           record: snapshot.record,
@@ -1232,8 +1249,13 @@ export class BrowserCtfRangeOrderCoordinator {
       switch (decision.kind) {
         case "confirmed":
           break;
+        // The inputs stay UNSPENT until expiry, unless the engine settles the
+        // order. An order notice wakes recovery only for an order that this
+        // page submitted, so a found order is read here.
         case "waiting":
-          return "awaiting-authorization-expiry";
+          return (await this.#submittedOrderCanStillSettle(journalRecord))
+            ? "awaiting-settlement-result"
+            : "awaiting-authorization-expiry";
         case "reconciling":
           throw rangeError("recovery-pending");
         case "refundable":
@@ -3198,6 +3220,61 @@ export class BrowserCtfRangeOrderCoordinator {
     }
   }
 
+  /**
+   * Whether the engine can still settle the submitted order of this record, so
+   * that its result can arrive before authorization expiry. An order that ended
+   * without a fill, or that the engine does not know, cannot settle. The answer
+   * chooses only the pass cadence, so it never fails the operation: an
+   * unavailable or foreign status read keeps the normal pass, and the refund
+   * guard decides at expiry.
+   */
+  async #submittedOrderCanStillSettle(
+    journalRecord: NonNullable<Awaited<ReturnType<typeof readCtfRangePreparation>>>,
+  ): Promise<boolean> {
+    switch (journalRecord.lifecycleState) {
+      case "order-submitted":
+        break;
+      case "prepared":
+      case "order-requested":
+      case "order-request-rejected":
+      case "capability-requested":
+      case "capability-bound":
+      case "submission-rejected":
+      case "terminal":
+        return false;
+      default:
+        return assertNever(journalRecord.lifecycleState);
+    }
+    const capability = journalRecord.capability;
+    if (capability === null) return true;
+    let status: OrderStatusResponse | null;
+    try {
+      status = await this.#engine.getOrderStatus(journalRecord.orderRouteId, capability.orderId);
+    } catch {
+      return true;
+    }
+    if (status === null) return false;
+    if (status.orderId !== capability.orderId || status.marketId !== journalRecord.orderRouteId) {
+      return true;
+    }
+    if (status.activeSettlementGroup !== null) return true;
+    switch (status.status) {
+      case "resting":
+      case "matched":
+      case "partially_filled":
+      case "filled":
+        return true;
+      case "cancelled":
+      case "expired":
+      case "evicted_capacity":
+      case "rejected_capacity":
+      case "failed":
+        return false;
+      default:
+        return assertNever(status.status);
+    }
+  }
+
   async #discoverBoundOrder(
     record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
   ): Promise<void> {
@@ -4772,6 +4849,21 @@ function storedRefundOutputGroups(
       }),
     ]),
   );
+}
+
+/** The next pass of an operation whose mint waits for expiry: at once while its order can still settle. */
+function expiryWaitRetryAtMs(
+  outcome: "awaiting-authorization-expiry" | "awaiting-settlement-result",
+  refundAtMs: number,
+): number | null {
+  switch (outcome) {
+    case "awaiting-authorization-expiry":
+      return refundAtMs;
+    case "awaiting-settlement-result":
+      return null;
+    default:
+      return assertNever(outcome);
+  }
 }
 
 function assertNever(value: never): never {
