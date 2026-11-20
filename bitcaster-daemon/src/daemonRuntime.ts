@@ -14,10 +14,17 @@ import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
 import type { NativeWalletPaymentApproval } from './nativeWalletPaymentOps.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
 import { freezeNativeConfigAtStartup, nativeRecoveryIndexRealm } from './nativeConfig.ts'
-import type { DaemonRecoveryIndex } from './daemonRecoveryIndex.ts'
+import {
+  applyNativeSettingOverrides,
+  nativeSettingOverridesDigest,
+  type NativeSettingOverrides,
+} from './nativeConfigLayers.ts'
+import type { DaemonRecoveryIndex, DaemonRecoveryIndexStatus } from './daemonRecoveryIndex.ts'
 
 export interface DaemonRuntimeOptions {
   readonly authorizationLifetimeSeconds?: number
+  /** The settings of the environment and options of the CLI that starts the daemon. */
+  readonly settingOverrides?: NativeSettingOverrides
 }
 
 /**
@@ -46,7 +53,10 @@ async function upgradeProfileUnderRunLock(
 
 export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Promise<void> {
   const observeOrderTimeline = createOrderTimelineStderrSink(process.stderr)
-  const nativeConfig = freezeNativeConfigAtStartup().config
+  const settingOverrides = options.settingOverrides ?? {}
+  const nativeConfig = freezeNativeConfigAtStartup((config) =>
+    applyNativeSettingOverrides(config, settingOverrides),
+  ).config
   const { acquireDaemonRunLock } = await import('./runLock.ts')
   await upgradeProfileUnderRunLock(acquireDaemonRunLock)
   await assertDaemonProfileStorageComplete()
@@ -122,6 +132,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   let nonRetirementRecoveryLoop: NonRetirementCustodyRecoveryLoop | undefined
   let assetMonitoring: { start(): void; stop(): void } | undefined
   let recoveryIndex: DaemonRecoveryIndex | undefined
+  let readRecoveryIndexStatus: (() => DaemonRecoveryIndexStatus) | undefined
   let assetMonitoringStarting = false
   let nativePaymentRequests: NativePaymentRequestService | undefined
   const liveViewLifetime = new AbortController()
@@ -292,26 +303,27 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       subscribeToDaemonWalletHoldingsCommits(profileDir(), callback),
   })
   try {
-    // The seed derives the request key of the recovery index, not the
-    // application signer. A daemon with a disconnected signer starts no
-    // background engine traffic, so the writer runs only with a connected
-    // signer. The start is the wallet open: it reads the index once and writes
-    // the pending keysets. Later commits ask for an upload. The startup
+    // The start is the wallet open: the writer reads the index once and
+    // writes the pending keysets. Later commits ask for an upload. The startup
     // recovery below commits through the same signal.
-    if (signerEnabled) {
-      const { createDaemonRecoveryIndex } = await import('./daemonRecoveryIndex.ts')
-      recoveryIndex = createDaemonRecoveryIndex({
-        directory: profileDir(),
-        scopeId,
-        walletSeed: Buffer.from(secrets.walletSeedHex, 'hex'),
-        realm: nativeRecoveryIndexRealm(nativeConfig),
-        engineBaseUrl: profile.engineBaseUrl,
-        walletMints: nativeConfig.daemon.mintUrls,
-        log: (line) => process.stderr.write(`${line}\n`),
-      })
-      recoveryIndex.start()
-    }
-    const runningRecoveryIndex = recoveryIndex
+    const { createDaemonRecoveryIndex, startDaemonRecoveryIndexWriter } =
+      await import('./daemonRecoveryIndex.ts')
+    const started = startDaemonRecoveryIndexWriter({
+      setting: nativeRecoveryIndexRealm(nativeConfig),
+      signerEnabled,
+      create: (realm) =>
+        createDaemonRecoveryIndex({
+          directory: profileDir(),
+          scopeId,
+          walletSeed: Buffer.from(secrets.walletSeedHex, 'hex'),
+          realm,
+          engineBaseUrl: profile.engineBaseUrl,
+          walletMints: nativeConfig.daemon.mintUrls,
+          log: (line) => process.stderr.write(`${line}\n`),
+        }),
+    })
+    recoveryIndex = started.writer
+    readRecoveryIndexStatus = started.readStatus
     const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
       observeOrderTimeline,
       ...(options.authorizationLifetimeSeconds === undefined
@@ -715,8 +727,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       nativeLightningOps,
       nativeWalletPaymentOps,
       nativePaymentRequests,
-      readRecoveryIndexStatus:
-        runningRecoveryIndex === undefined ? undefined : () => runningRecoveryIndex.status(),
+      readRecoveryIndexStatus,
+      launchSettingsDigest: nativeSettingOverridesDigest(settingOverrides),
       trackOwnedOrder: async (marketId, orderId) => {
         await orderHub.trackOrder(marketId, orderId)
         await startOrderHubWhenReady()

@@ -84,7 +84,7 @@ bitcaster-cli wallet invoice create --amount-msat 25000
 ```
 
 `daemon init` は、新しいウォレットシードと Nostr 鍵を `~/.bitcaster` に作成します。
-エージェントのウォレットを他の CLI ウォレットと分けるには、すべてのコマンドに `--datadir <path>` を付けてください。
+エージェントのウォレットを他の CLI ウォレットと分けるには、すべてのコマンドに `--datadir <path>` を付けるか、`BITCASTER_DATADIR` を設定してください。
 Lightning インボイスは別のウォレットから支払います。
 その後、`bitcaster-cli wallet invoice show <quote-record-id>` と `bitcaster-cli wallet balance` で確認します。
 金額の単位は msat です。1,000 msat が 1 sat です。

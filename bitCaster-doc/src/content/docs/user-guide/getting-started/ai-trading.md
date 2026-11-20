@@ -85,7 +85,7 @@ bitcaster-cli wallet invoice create --amount-msat 25000
 ```
 
 `daemon init` creates a new wallet seed and Nostr key in `~/.bitcaster`. To keep the agent's wallet
-apart from other CLI wallets, add `--datadir <path>` to every command. Pay the Lightning invoice
+apart from other CLI wallets, add `--datadir <path>` to every command, or set `BITCASTER_DATADIR`. Pay the Lightning invoice
 from another wallet. Then check it with `bitcaster-cli wallet invoice show <quote-record-id>` and
 `bitcaster-cli wallet balance`. Amounts use msat: 1,000 msat is 1 sat.
 

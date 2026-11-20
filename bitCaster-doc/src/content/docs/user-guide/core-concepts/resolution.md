@@ -298,10 +298,11 @@ Add `--acknowledge` to authorize the action. Winning proofs are redeemed.
 Losing proofs and proofs that cost too much to redeem remain visible as audit
 records. The command does not silently delete them.
 
-To authorize this flow automatically after a verified oracle attestation, set
-`daemon.autoRetireResolvedConditionInventory` to `true` in
-`~/.bitcaster/config.json`. The default is `false`. Restart the daemon after
-changing the setting.
+To authorize this flow automatically after a verified oracle attestation, run
+`bitcaster-cli config set --auto-retire-resolved-condition-inventory true`.
+This sets `daemon.autoRetireResolvedConditionInventory` in
+`~/.bitcaster/config.json`. The default is `false`. The command restarts a
+daemon that the CLI started. Restart another daemon yourself.
 
 ## Further reading
 

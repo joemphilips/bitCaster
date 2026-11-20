@@ -17,6 +17,11 @@ import { chmod, unlink } from 'node:fs/promises'
 import { readMarketThumbnail } from './marketThumbnail.ts'
 import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
 import { activeNativeConfig } from './nativeConfig.ts'
+import {
+  DAEMON_SETTINGS_MISMATCH_CODE,
+  NATIVE_SETTING_DIGEST_HEADER,
+  nativeSettingOverridesDigest,
+} from './nativeConfigLayers.ts'
 import { dispatchNativeMarketCreation } from './nativeMarketCreationRpc.ts'
 import {
   dispatchNativeOracleAccess,
@@ -230,6 +235,8 @@ export interface DaemonServerOptions {
   nativeLightningOps?: NativeLightningOps
   nativeWalletPaymentOps?: DispatchDependencies['nativeWalletPaymentOps']
   readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
+  /** The digest of the settings that the starting CLI passed. Absent: no check. */
+  launchSettingsDigest?: string
 }
 
 export interface EngineClientLike {
@@ -393,6 +400,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
   /** The recovery index writer of the running daemon. */
   readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
+  /** The digest of the settings that the starting CLI passed at the start. */
+  launchSettingsDigest?: string
 }
 
 const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
@@ -429,6 +438,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       nativeLightningOps: options.nativeLightningOps,
       nativeWalletPaymentOps: options.nativeWalletPaymentOps,
       readRecoveryIndexStatus: options.readRecoveryIndexStatus,
+      launchSettingsDigest: options.launchSettingsDigest,
     })
   })
   if (socketPath) {
@@ -473,6 +483,21 @@ export async function handleRequest(
   // Authenticate before body consumption, not after an unbounded JSON decode.
   if (expectedToken && !tokenMatches(bearerToken(req.headers.authorization), expectedToken)) {
     return writeJson(res, 401, { ok: false, error: 'unauthorized' })
+  }
+  // A CLI checks its own settings, such as the trust of its engine URL. So
+  // the daemon serves only a CLI with the environment and option settings
+  // that started it. A client without the header has no such settings.
+  if (
+    deps.launchSettingsDigest !== undefined &&
+    (headerText(req.headers[NATIVE_SETTING_DIGEST_HEADER]) ?? nativeSettingOverridesDigest({})) !==
+      deps.launchSettingsDigest
+  ) {
+    return writeJson(res, 409, {
+      ok: false,
+      code: DAEMON_SETTINGS_MISMATCH_CODE,
+      error:
+        'bitcaster-daemon runs with other environment or option settings. Run bitcaster-cli daemon restart with the settings of this command.',
+    })
   }
   const wantsSubmission = req.headers.accept === DAEMON_ORDER_SUBMISSION_MEDIA_TYPE
   const wantsWatch = req.headers.accept === DAEMON_WATCH_MEDIA_TYPE
@@ -3711,6 +3736,10 @@ async function readBody(req: IncomingMessage, maxBytes?: number): Promise<string
     chunks.push(body)
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+function headerText(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value.join(',') : value
 }
 
 function writeJson(res: ServerResponse, status: number, body: DaemonResponse): void {

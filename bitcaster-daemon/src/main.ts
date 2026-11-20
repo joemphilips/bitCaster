@@ -70,8 +70,12 @@ switch (command) {
     break
   }
   case 'run': {
+    // The CLI that starts the daemon passes the settings of its environment
+    // and options. The daemon reads no environment variable for a setting.
+    const { parseNativeSettingLaunchArguments } = await import('./nativeConfigLayers.ts')
+    const settingOverrides = parseNativeSettingLaunchArguments(args)
     const { runDaemonRuntime } = await import('./daemonRuntime.ts')
-    await runDaemonRuntime()
+    await runDaemonRuntime({ settingOverrides })
     break
   }
   default:
@@ -84,7 +88,10 @@ switch (command) {
                          --recovery-id <id> --mint <url> [--unit msat] [--gap-limit 300]
                          [--condition-id <id> | --all-conditions]
                          --acknowledge-seed-disclosure
-  bitcaster-daemon [--datadir <path>] run
+  bitcaster-daemon [--datadir <path>] run [--engine-url <url>] [--mint-url <url>]
+                         [--asset-monitoring-enabled <true|false>]
+                         [--auto-retire-resolved-condition-inventory <true|false>]
+                         [--recovery-index-realm <realm>]
 `)
     process.exitCode = 1
 }

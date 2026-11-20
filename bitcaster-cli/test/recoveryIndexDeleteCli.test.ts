@@ -32,6 +32,7 @@ test('wallet backup delete removes the engine document of the seed and leaves a 
         seedPath,
         '--realm',
         'bitcaster-staging',
+        '--trust-engine-url',
       ],
       {
         BITCASTER_TEST_RECOVERY_INDEX_REALM: 'bitcaster-staging',
@@ -52,6 +53,54 @@ test('wallet backup delete removes the engine document of the seed and leaves a 
       { tombstone: { version: 4, hasDocument: false } },
     ])
     assert.doesNotMatch(result.stdout + result.stderr, new RegExp(SEED_HEX))
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('wallet backup delete checks the trust of the engine URL from each layer before any request', async () => {
+  const home = await profile(['https://engine.example'])
+  try {
+    const seedPath = join(home, 'wallet-seed.hex')
+    await writeFile(seedPath, `${SEED_HEX}\n`, { mode: 0o600 })
+    const key = deriveRecoveryIndexKeys(
+      Buffer.from(SEED_HEX, 'hex'),
+      'bitcaster-staging',
+    ).locatorPublicKey
+    const log = join(home, 'engine.log')
+    await writeFile(log, '')
+    const engineEnv = {
+      BITCASTER_TEST_RECOVERY_INDEX_REALM: 'bitcaster-staging',
+      BITCASTER_TEST_RECOVERY_INDEX_KEY: key,
+      BITCASTER_TEST_RECOVERY_INDEX_LOG: log,
+    }
+    const args = [
+      'wallet',
+      'backup',
+      'delete',
+      '--wallet-seed-hex-file',
+      seedPath,
+      '--realm',
+      'bitcaster-staging',
+    ]
+    // The file URL is trusted, but the environment and the option replace it.
+    for (const [extraArgs, extraEnv] of [
+      [[], { BITCASTER_ENGINE_URL: 'https://other.example' }],
+      [['--engine-url', 'https://other.example'], {}],
+    ] as const) {
+      const refused = await runCli(home, [...extraArgs, ...args], { ...engineEnv, ...extraEnv })
+      assert.equal(refused.code, 3, refused.stderr)
+      assert.match(
+        refused.stderr,
+        /About to use engine URL for authenticated wallet backup delete: https:\/\/other\.example/,
+      )
+      assert.match(refused.stderr, /Refusing to trust a new engine URL without --trust-engine-url/)
+    }
+    assert.equal(await readFile(log, 'utf8'), '', 'no engine request before the trust check')
+    const saved = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
+      cli: { trustedEngineUrls: string[] }
+    }
+    assert.deepEqual(saved.cli.trustedEngineUrls, ['https://engine.example'])
   } finally {
     await rm(home, { recursive: true, force: true })
   }
@@ -104,7 +153,10 @@ test('config set keeps the recovery index realm of the daemon writer and refuses
     // Without a setting, the writer uses the production realm.
     const initial = await runCli(home, ['config', 'get', 'recoveryIndexRealm'])
     assert.equal(initial.code, 0, initial.stderr)
-    assert.equal(initial.stdout, '"bitcaster-production"\n')
+    assert.deepEqual(JSON.parse(initial.stdout), {
+      value: 'bitcaster-production',
+      source: 'default',
+    })
 
     const set = await runCli(home, ['config', 'set', '--recovery-index-realm', 'bitcaster-staging'])
     assert.equal(set.code, 0, set.stderr)
@@ -113,7 +165,7 @@ test('config set keeps the recovery index realm of the daemon writer and refuses
     }
     assert.equal(saved.daemon.recoveryIndexRealm, 'bitcaster-staging')
     const shown = await runCli(home, ['config', 'get', 'recoveryIndexRealm'])
-    assert.equal(shown.stdout, '"bitcaster-staging"\n')
+    assert.deepEqual(JSON.parse(shown.stdout), { value: 'bitcaster-staging', source: 'file' })
 
     const before = await readFile(configPath, 'utf8')
     const unknown = await runCli(home, [
@@ -123,7 +175,7 @@ test('config set keeps the recovery index realm of the daemon writer and refuses
       'bitcaster.local',
     ])
     assert.notEqual(unknown.code, 0)
-    assert.match(unknown.stderr, /recovery index realm must be one of/)
+    assert.match(unknown.stderr, /option --recovery-index-realm: Invalid recoveryIndexRealm/)
     assert.equal(await readFile(configPath, 'utf8'), before)
   } finally {
     await rm(home, { recursive: true, force: true })
@@ -159,7 +211,7 @@ test('wallet backup delete uses the configured realm when no --realm is given', 
   }
 })
 
-async function profile(): Promise<string> {
+async function profile(trustedEngineUrls: string[] = []): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-backup-'))
   await writeFile(
     join(home, 'config.json'),
@@ -173,7 +225,7 @@ async function profile(): Promise<string> {
         assetMonitoringEnabled: false,
         nostrRelays: [],
       },
-      cli: { trustedEngineUrls: [] },
+      cli: { trustedEngineUrls },
     })}\n`,
     { mode: 0o600 },
   )

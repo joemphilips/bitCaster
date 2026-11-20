@@ -16,6 +16,8 @@ import { RecoveryIndexFakeEngine } from '../../bitcaster-client-sdk/test/support
 import {
   createDaemonRecoveryIndex,
   readDaemonRecoveryIndexLocalEntries,
+  startDaemonRecoveryIndexWriter,
+  type DaemonRecoveryIndex,
 } from '../src/daemonRecoveryIndex.ts'
 import { dispatch } from '../src/server.ts'
 import { advanceDaemonKeysetCounter, type CounterBinding } from '../src/state.ts'
@@ -294,6 +296,53 @@ test('the status command reports the writer of the running daemon', async () => 
     code: 'recovery-index-unavailable',
     error: 'the recovery index writer is not running',
   })
+})
+
+test('the disabled realm setting starts no writer, and the status says disabled', async () => {
+  const created: string[] = []
+  const fake = (realm: string): DaemonRecoveryIndex => {
+    created.push(realm)
+    let started = 0
+    return {
+      start: () => void started++,
+      stop: () => {},
+      status: () => ({ realm: REALM, status: started === 1 ? 'starting' : 'current' }),
+      settled: async () => {},
+    }
+  }
+  const disabled = startDaemonRecoveryIndexWriter({
+    setting: 'disabled',
+    signerEnabled: true,
+    create: fake,
+  })
+  // No writer means no engine request for the index.
+  assert.equal(disabled.writer, undefined)
+  assert.deepEqual(created, [])
+  assert.deepEqual(
+    await dispatch(
+      { method: 'wallet.backup.status' },
+      { readRecoveryIndexStatus: disabled.readStatus },
+    ),
+    { ok: true, result: { status: 'disabled' } },
+  )
+
+  // A disconnected signer starts no writer either, so no status is available.
+  const disconnected = startDaemonRecoveryIndexWriter({
+    setting: REALM,
+    signerEnabled: false,
+    create: fake,
+  })
+  assert.equal(disconnected.writer, undefined)
+  assert.equal(disconnected.readStatus, undefined)
+  assert.deepEqual(created, [])
+
+  const running = startDaemonRecoveryIndexWriter({
+    setting: REALM,
+    signerEnabled: true,
+    create: fake,
+  })
+  assert.deepEqual(created, [REALM])
+  assert.deepEqual(running.readStatus?.(), { realm: REALM, status: 'starting' })
 })
 
 test('a realm that the engine does not use leaves the upload pending with its reason', async () => {

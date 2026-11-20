@@ -1330,22 +1330,7 @@ test('CLI and daemon reject missing or blank data-directory values', async () =>
     () => execFileAsync(process.execPath, ['--experimental-strip-types', daemonMain, '--datadir']),
     /Missing value for --datadir/,
   )
-  await assert.rejects(
-    () =>
-      execFileAsync(process.execPath, [
-        '--experimental-strip-types',
-        cliMain,
-        '--engine-url',
-        'https://ignored.example',
-        'config',
-        'path',
-      ]),
-    (error: unknown) => {
-      assert.equal((error as { code?: unknown }).code, 2)
-      assert.match((error as { stdout?: string }).stdout ?? '', /unknown option '--engine-url'/i)
-      return true
-    },
-  )
+  // The daemon takes setting options only on `run`, from the CLI that starts it.
   await assert.rejects(
     () =>
       execFileAsync(process.execPath, [
@@ -1715,10 +1700,11 @@ test('bitcaster-cli config list does not rewrite already sanitized config', asyn
     })
 
     assert.deepEqual(JSON.parse(result.stdout), {
-      engineUrl: 'https://engine.example',
-      mintUrl: 'https://mint.example',
-      assetMonitoringEnabled: false,
-      trustedEngineUrls: ['https://trusted-engine.example'],
+      engineUrl: { value: 'https://engine.example', source: 'file' },
+      mintUrl: { value: 'https://mint.example', source: 'file' },
+      assetMonitoringEnabled: { value: false, source: 'file' },
+      autoRetireResolvedConditionInventory: { value: false, source: 'file' },
+      recoveryIndexRealm: { value: 'bitcaster-production', source: 'default' },
     })
     const after = await stat(configPath)
     assert.equal(after.mtimeMs, before.mtimeMs)

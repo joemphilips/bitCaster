@@ -181,6 +181,12 @@ test('the recovery index realm is optional, defaults to production, and refuses 
   assert.equal(staging.daemon.recoveryIndexRealm, 'bitcaster-staging')
   assert.equal(nativeRecoveryIndexRealm(staging), 'bitcaster-staging')
 
+  // `disabled` turns the daemon writer off (ADR-034 CLI and daemon writer amendment).
+  const disabled = parseNativeConfig(
+    JSON.stringify({ ...config, daemon: { ...config.daemon, recoveryIndexRealm: 'disabled' } }),
+  )
+  assert.equal(nativeRecoveryIndexRealm(disabled), 'disabled')
+
   assert.throws(
     () =>
       parseNativeConfig(

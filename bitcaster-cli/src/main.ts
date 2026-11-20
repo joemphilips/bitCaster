@@ -6,7 +6,6 @@ import { deriveRecoveryIndexKeys } from '@bitcaster-market/client-sdk/recoveryIn
 import {
   RECOVERY_INDEX_REALMS,
   createRecoveryIndexEngineStore,
-  isRecoveryIndexRealm,
   type RecoveryIndexRealm,
 } from '@bitcaster-market/client-sdk/recoveryIndexEngine'
 import { deleteRecoveryIndexDocument } from '@bitcaster-market/client-sdk/recoveryIndexSync'
@@ -59,8 +58,22 @@ import {
 import { Command, CommanderError, Option } from 'commander'
 import { decodeOrderQuotePaymentBounds } from '@bitcaster-market/client-sdk/tradeTicket'
 import { configureDataDir, dataDir } from '@bitcaster-market/daemon/dataDir'
+import { RECOVERY_INDEX_DISABLED } from '@bitcaster-market/daemon/nativeConfig'
+import {
+  NATIVE_SETTING_KEYS,
+  isNativeSettingKey,
+  nativeSettingEnvironmentVariable,
+  nativeSettingOptionFlag,
+  nativeSettingOptionHelp,
+  parseNativeSettingEnvironment,
+  parseNativeSettingOptions,
+  type NativeSettingOverrides,
+  type NativeSettingTexts,
+  type ResolvedNativeSettings,
+} from '@bitcaster-market/daemon/nativeConfigLayers'
 import {
   callDaemon,
+  configureDaemonLaunchSettings,
   daemonLogPath,
   DaemonNotReachableError,
   daemonSocketPath,
@@ -80,11 +93,11 @@ import {
 } from './dryRunPolicy.ts'
 import {
   configFilePath,
-  effectiveRecoveryIndexRealm,
-  validateConfigUpdate,
   readConfig,
+  resolveCliSettings,
   updateConfig,
-  type CliConfig,
+  validateConfigSettingsWrite,
+  writeConfigSettings,
 } from './config.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
@@ -119,6 +132,9 @@ const execFileAsync = promisify(execFile)
 const cliVersionText = readCliVersion(new URL('../', import.meta.url))
 let globalEngineUrl: string | undefined
 let globalMintUrl: string | undefined
+let globalSettings: ResolvedNativeSettings | undefined
+// The option values of `config set` and `daemon config` are values to write, not a layer.
+let globalConfigWrite: NativeSettingOverrides = {}
 let globalDryRun = false
 let globalJson = false
 
@@ -144,9 +160,16 @@ async function main(): Promise<void> {
     .name('bitcaster-cli')
     .description('Command-line client for bitCaster markets.')
     .version(cliVersionText, '-V, --version')
-    .option('--datadir <path>', 'Use one directory for config, wallet state, and daemon files')
+    .option(
+      '--datadir <path>',
+      'Use one directory for config, wallet state, and daemon files. Environment: BITCASTER_DATADIR',
+    )
     .option('--dry-run', 'Check a command without acting; see "Dry run" below')
     .option('--json', 'Print JSON output (currently the default)')
+    .addHelpText(
+      'after',
+      '\nA setting option replaces its environment variable, which replaces config.json.',
+    )
     .addHelpText('after', '\nLong-running wallet operations are delegated to bitcaster-daemon.')
     .addHelpText('after', DRY_RUN_PROGRAM_HELP)
     .exitOverride()
@@ -156,13 +179,26 @@ async function main(): Promise<void> {
       outputError: (str, write) => write(str),
     })
 
+  for (const key of NATIVE_SETTING_KEYS) {
+    const help = nativeSettingOptionHelp(key)
+    program.option(help.flags, help.description)
+  }
+
   program.hook('preAction', (_thisCommand, actionCommand) => {
-    const opts = program.opts<{
-      datadir?: string
-      dryRun?: boolean
-      json?: boolean
-    }>()
-    configureDataDir(opts.datadir)
+    const opts = program.opts<
+      {
+        datadir?: string
+        dryRun?: boolean
+        json?: boolean
+      } & NativeSettingTexts
+    >()
+    configureDataDir(selectedDataDir(opts.datadir))
+    const environment = parseSettingLayer(() => parseNativeSettingEnvironment(process.env))
+    const options = parseSettingLayer(() => parseNativeSettingOptions(settingOptionTexts(opts)))
+    const writesConfig = commandWritesConfig(actionCommand)
+    globalConfigWrite = writesConfig ? options : {}
+    const layerOptions = writesConfig ? {} : options
+    configureDaemonLaunchSettings({ ...environment, ...layerOptions })
     globalDryRun = opts.dryRun === true
     globalJson = opts.json === true
     const unread = unreadDryRunRefusal(process.argv.slice(2), globalDryRun)
@@ -178,9 +214,13 @@ async function main(): Promise<void> {
       actionCommand.parent?.name() === 'signer'
     )
       return
-    const config = readConfig(commandAllowsMissingConfig(actionCommand))
-    globalEngineUrl = config.engineUrl
-    globalMintUrl = config.mintUrl
+    globalSettings = resolveCliSettings({
+      allowMissing: commandAllowsMissingConfig(actionCommand),
+      environment,
+      options: layerOptions,
+    })
+    globalEngineUrl = globalSettings.engineUrl.value
+    globalMintUrl = globalSettings.mintUrl.value
     void globalEngineUrl
     void globalMintUrl
     void globalDryRun
@@ -208,6 +248,43 @@ async function main(): Promise<void> {
     }
     throw err
   }
+}
+
+/** Only `--datadir` or `BITCASTER_DATADIR` selects the data directory, because it holds the file. */
+function selectedDataDir(option: string | undefined): string | undefined {
+  if (option !== undefined) return option
+  const environment = process.env.BITCASTER_DATADIR
+  if (environment !== undefined && environment.trim().length === 0) {
+    throwUsage('environment variable BITCASTER_DATADIR: data directory must not be empty')
+  }
+  return environment
+}
+
+function parseSettingLayer(parse: () => NativeSettingOverrides): NativeSettingOverrides {
+  try {
+    return parse()
+  } catch (error) {
+    throwUsage(errorMessage(error))
+  }
+}
+
+function settingOptionTexts(opts: NativeSettingTexts): NativeSettingTexts {
+  const texts: Partial<Record<keyof NativeSettingTexts, string>> = {}
+  for (const key of NATIVE_SETTING_KEYS) {
+    const value = opts[key]
+    if (value !== undefined) texts[key] = value
+  }
+  return texts
+}
+
+function commandWritesConfig(command: Command): boolean {
+  const path = commandPath(command)
+  return path === 'config set' || path === 'daemon config'
+}
+
+function requireSettings(): ResolvedNativeSettings {
+  if (globalSettings === undefined) throw new Error('settings are not resolved')
+  return globalSettings
 }
 
 function commandAllowsMissingConfig(command: Command): boolean {
@@ -1770,6 +1847,7 @@ function registerWalletCommand(program: Command): void {
         'Recovery index realm of the engine. The default is the configured realm.',
       ).choices(Object.values(RECOVERY_INDEX_REALMS)),
     )
+    .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .allowExcessArguments(false)
     .addHelpText(
       'after',
@@ -1780,6 +1858,7 @@ function registerWalletCommand(program: Command): void {
         walletSeedHexFile?: string
         recoveryPhraseFile?: string
         realm?: RecoveryIndexRealm
+        trustEngineUrl?: boolean
       }) => {
         if (
           (options.walletSeedHexFile === undefined) ===
@@ -1797,7 +1876,7 @@ function registerWalletCommand(program: Command): void {
             : seedRecoveryMnemonicBytes(
                 await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
               )
-        const realm = options.realm ?? effectiveRecoveryIndexRealm(readConfig(true))
+        const realm = options.realm ?? configuredRecoveryIndexRealm()
         const keys = deriveRecoveryIndexKeys(seed, realm)
         if (globalDryRun) {
           // The request key is public. Never print the seed.
@@ -1808,6 +1887,8 @@ function registerWalletCommand(program: Command): void {
           return
         }
         if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
+        // The seed signs this request, and the URL can come from any layer.
+        await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true, 'wallet backup delete')
         const result = await deleteRecoveryIndexDocument(
           createRecoveryIndexEngineStore({
             engineBaseUrl: globalEngineUrl,
@@ -3068,15 +3149,14 @@ function registerDaemonCommand(program: Command): void {
 
   daemon
     .command('config')
-    .description('Update daemon engine and mint endpoint configuration.')
-    .option('--engine-url <url>', 'Engine URL')
-    .option('--mint-url <url>', 'Mint URL')
+    .description('Write setting options to config.json, like config set.')
+    .addHelpText('after', configSetHelp())
     .addHelpText(
       'after',
       '\nExample:\n  bitcaster-cli daemon config --engine-url <url> --mint-url <url>',
     )
-    .action(async (options: { engineUrl?: string; mintUrl?: string }) => {
-      await setCliConfig(options)
+    .action(async () => {
+      await setCliConfig({})
     })
 
   daemon
@@ -3143,7 +3223,9 @@ Examples:
 
   config
     .command('get [key]')
-    .description('Print one config value, or all config as JSON.')
+    .description(
+      'Print the effective value of one setting and its source (default, file, environment, or option), or of all settings.',
+    )
     .addHelpText('after', '\nExample:\n  bitcaster-cli config get engineUrl')
     .action((key?: string) => {
       printConfigValue(key)
@@ -3151,25 +3233,13 @@ Examples:
 
   config
     .command('set')
-    .description('Set CLI config values and write through to the daemon when reachable.')
-    .option('--engine-url <url>', 'Engine URL')
-    .option('--mint-url <url>', 'Mint URL')
+    .description('Write setting options to config.json and restart a daemon that the CLI started.')
     .option('--asset-monitoring <enabled|disabled>', 'Asset monitoring. Disabled is privacy mode.')
-    .option(
-      '--recovery-index-realm <realm>',
-      `Recovery index realm of the engine (${Object.values(RECOVERY_INDEX_REALMS).join(', ')}). The default is ${RECOVERY_INDEX_REALMS.production}.`,
-    )
+    .addHelpText('after', configSetHelp())
     .addHelpText('after', '\nExample:\n  bitcaster-cli config set --engine-url <url>')
-    .action(
-      async (options: {
-        engineUrl?: string
-        mintUrl?: string
-        assetMonitoring?: string
-        recoveryIndexRealm?: string
-      }) => {
-        await setCliConfig(options)
-      },
-    )
+    .action(async (options: { assetMonitoring?: string }) => {
+      await setCliConfig(options)
+    })
 
   config
     .command('path')
@@ -3181,91 +3251,78 @@ Examples:
 
   config
     .command('list')
-    .description('List all config values as JSON.')
+    .description('List the effective value and the source of each setting as JSON.')
     .addHelpText('after', '\nExample:\n  bitcaster-cli config list')
     .action(() => {
-      process.stdout.write(`${JSON.stringify(readConfig(), null, 2)}\n`)
+      printConfigValue(undefined)
     })
 }
 
-function daemonConfigParams(options: {
-  engineUrl?: string
-  mintUrl?: string
-  assetMonitoring?: string
-  recoveryIndexRealm?: string
-}): {
-  engineUrl?: string
-  mintUrl?: string
-} {
-  const params: { engineUrl?: string; mintUrl?: string } = {}
-  const engineUrl = options.engineUrl
-  const mintUrl = options.mintUrl
-  if (engineUrl !== undefined) params.engineUrl = engineUrl
-  if (mintUrl !== undefined) params.mintUrl = mintUrl
-  if (
-    !params.engineUrl &&
-    !params.mintUrl &&
-    options.assetMonitoring === undefined &&
-    options.recoveryIndexRealm === undefined
-  ) {
-    throwUsage('Usage: bitcaster-cli daemon config [--engine-url <url>] [--mint-url <url>]')
-  }
-  return params
+function configSetHelp(): string {
+  const rows = NATIVE_SETTING_KEYS.map(
+    (key) =>
+      `  ${key.padEnd(38)} ${nativeSettingOptionFlag(key)}, ${nativeSettingEnvironmentVariable(key)}`,
+  )
+  return `
+Settings (each is also a global option and an environment variable):
+${rows.join('\n')}
+This command writes only config.json. An environment variable or an option
+of another command replaces the file value for that command.`
 }
 
-function printConfigValue(key?: string): void {
-  const config = readConfig()
+function printConfigValue(key: string | undefined): void {
+  const settings = requireSettings()
   if (key === undefined) {
-    process.stdout.write(`${JSON.stringify(config, null, 2)}\n`)
+    process.stdout.write(`${JSON.stringify(settings, null, 2)}\n`)
     return
   }
-  if (key === 'recoveryIndexRealm') {
-    process.stdout.write(`${JSON.stringify(effectiveRecoveryIndexRealm(config))}\n`)
-    return
-  }
-  if (key !== 'engineUrl' && key !== 'mintUrl' && key !== 'assetMonitoringEnabled') {
-    throwUsage(`Unknown config key: ${key}`)
-  }
-  const value = config[key]
-  process.stdout.write(value === undefined ? 'null\n' : `${JSON.stringify(value)}\n`)
+  if (!isNativeSettingKey(key)) throwUsage(`Unknown config key: ${key}`)
+  process.stdout.write(`${JSON.stringify(settings[key], null, 2)}\n`)
 }
 
-async function setCliConfig(options: {
-  engineUrl?: string
-  mintUrl?: string
-  assetMonitoring?: string
-  recoveryIndexRealm?: string
-}): Promise<void> {
-  const params = daemonConfigParams(options)
+async function setCliConfig(options: { assetMonitoring?: string }): Promise<void> {
+  const values: { -readonly [K in keyof NativeSettingOverrides]: NativeSettingOverrides[K] } = {
+    ...globalConfigWrite,
+  }
   const assetMonitoringEnabled = parseAssetMonitoringOption(options.assetMonitoring)
-  const recoveryIndexRealm = parseRecoveryIndexRealmOption(options.recoveryIndexRealm)
-  const update = (current: CliConfig): CliConfig => ({
-    ...current,
-    ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
-    ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
-    ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
-    ...(recoveryIndexRealm === undefined ? {} : { recoveryIndexRealm }),
-  })
+  if (assetMonitoringEnabled !== undefined) {
+    if (values.assetMonitoringEnabled !== undefined) {
+      throwUsage('Specify --asset-monitoring or --asset-monitoring-enabled, not both.')
+    }
+    values.assetMonitoringEnabled = assetMonitoringEnabled
+  }
+  if (Object.keys(values).length === 0) {
+    throwUsage(
+      'Usage: bitcaster-cli config set <setting option>... See bitcaster-cli config set --help.',
+    )
+  }
   if (globalDryRun) {
-    validateConfigUpdate(update)
-    printDryRun('config.set', {
-      ...params,
-      ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
-      ...(recoveryIndexRealm === undefined ? {} : { recoveryIndexRealm }),
-    })
+    validateConfigSettingsWrite(values)
+    printDryRun('config.set', values)
     return
   }
-  const config = updateConfig(update)
+  const config = writeConfigSettings(values)
+  const settings = requireSettings()
+  for (const key of NATIVE_SETTING_KEYS) {
+    if (values[key] !== undefined && settings[key].source === 'environment') {
+      process.stderr.write(
+        `${nativeSettingEnvironmentVariable(key)} overrides ${key} of the config file.\n`,
+      )
+    }
+  }
   await applySavedSettings()
   process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
 }
 
-function parseRecoveryIndexRealmOption(value: string | undefined): RecoveryIndexRealm | undefined {
-  if (value === undefined) return undefined
-  if (isRecoveryIndexRealm(value)) return value
-  throwUsage(
-    `recovery index realm must be one of ${Object.values(RECOVERY_INDEX_REALMS).join(', ')}`,
-  )
+/** The realm of `wallet backup delete` without `--realm`. */
+function configuredRecoveryIndexRealm(): RecoveryIndexRealm {
+  const setting = requireSettings().recoveryIndexRealm.value
+  if (setting === RECOVERY_INDEX_DISABLED) {
+    throwUsage(
+      'The recovery index realm setting is disabled; pass --realm <realm> to delete the backup.',
+    )
+  }
+  return setting
 }
 
 function parseAssetMonitoringOption(value: string | undefined): boolean | undefined {
@@ -4023,15 +4080,18 @@ function nativeMarketCreationInput(options: MarketCreateOptions): MarketCreation
   }
 }
 
-async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<void> {
+async function ensureTrustedAuthedEngineUrl(
+  trustEngineUrl: boolean,
+  purpose = 'market create',
+): Promise<void> {
   if (globalEngineUrl === undefined) return
-  validateAuthedEngineUrl(globalEngineUrl)
+  validateAuthedEngineUrl(globalEngineUrl, purpose)
 
   const config = readConfig()
   const normalizedEngineUrl = normalizeEndpointUrl(globalEngineUrl, 'trusted engine URL')
   if (config.trustedEngineUrls.includes(normalizedEngineUrl)) return
   if (!trustEngineUrl) {
-    const confirmed = await confirmEngineUrlTrust(globalEngineUrl)
+    const confirmed = await confirmEngineUrlTrust(globalEngineUrl, purpose)
     if (!confirmed) {
       throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
     }
@@ -4044,7 +4104,7 @@ async function ensureTrustedAuthedEngineUrl(trustEngineUrl: boolean): Promise<vo
   }))
 }
 
-function validateAuthedEngineUrl(value: string): void {
+function validateAuthedEngineUrl(value: string, purpose: string): void {
   let url: URL
   try {
     url = new URL(value)
@@ -4054,12 +4114,12 @@ function validateAuthedEngineUrl(value: string): void {
   const validation = validateMarketCreateEngineUrl(url.toString(), true)
   if (validation.ok) return
   throwValidation(
-    `Refusing insecure engine URL for market create: ${value}. Use https:// or a loopback URL.`,
+    `Refusing insecure engine URL for ${purpose}: ${value}. Use https:// or a loopback URL.`,
   )
 }
 
-async function confirmEngineUrlTrust(engineUrl: string): Promise<boolean> {
-  process.stderr.write(`About to use engine URL for authenticated market create: ${engineUrl}\n`)
+async function confirmEngineUrlTrust(engineUrl: string, purpose: string): Promise<boolean> {
+  process.stderr.write(`About to use engine URL for authenticated ${purpose}: ${engineUrl}\n`)
   if (!process.stdin.isTTY) {
     throwValidation(
       'Refusing to trust a new engine URL without --trust-engine-url in non-interactive mode',

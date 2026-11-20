@@ -44,10 +44,10 @@ export interface NativeConfig {
     readonly assetMonitoringEnabled: boolean
     readonly nostrRelays: readonly string[]
     /**
-     * The recovery index realm of the engine. It is absent until a user sets
-     * it, and an absent value is the production realm.
+     * The recovery index realm of the engine, or `disabled`. It is absent
+     * until a user sets it, and an absent value is the production realm.
      */
-    readonly recoveryIndexRealm?: RecoveryIndexRealm
+    readonly recoveryIndexRealm?: RecoveryIndexSetting
   }
   readonly cli: {
     readonly trustedEngineUrls: readonly string[]
@@ -71,8 +71,23 @@ export function nativeConfigPath(directory = dataDir()): string {
 /** The realm of a config with no recovery index realm. */
 export const DEFAULT_RECOVERY_INDEX_REALM: RecoveryIndexRealm = RECOVERY_INDEX_REALMS.production
 
-/** The realm that the daemon writer of the recovery index uses. */
-export function nativeRecoveryIndexRealm(config: NativeConfig): RecoveryIndexRealm {
+/**
+ * The value that turns the daemon writer of the recovery index off (ADR-034
+ * CLI and daemon writer amendment). It is a setting, not a realm of the engine.
+ */
+export const RECOVERY_INDEX_DISABLED = 'disabled'
+export type RecoveryIndexSetting = RecoveryIndexRealm | typeof RECOVERY_INDEX_DISABLED
+export const RECOVERY_INDEX_SETTINGS: readonly RecoveryIndexSetting[] = Object.freeze([
+  ...Object.values(RECOVERY_INDEX_REALMS),
+  RECOVERY_INDEX_DISABLED,
+])
+
+export function isRecoveryIndexSetting(value: unknown): value is RecoveryIndexSetting {
+  return value === RECOVERY_INDEX_DISABLED || isRecoveryIndexRealm(value)
+}
+
+/** The realm that the daemon writer of the recovery index uses, or `disabled`. */
+export function nativeRecoveryIndexRealm(config: NativeConfig): RecoveryIndexSetting {
   return config.daemon.recoveryIndexRealm ?? DEFAULT_RECOVERY_INDEX_REALM
 }
 
@@ -102,8 +117,17 @@ export function readNativeConfig(
   return readNativeConfigFile(allowMissing, directory)
 }
 
-export function freezeNativeConfigAtStartup(): NativeConfigSnapshot {
-  startupConfig ??= readNativeConfigFile(false, dataDir())
+/**
+ * Keep one config for the life of the daemon. `apply` adds the settings that
+ * the starting CLI resolved from its environment and options.
+ */
+export function freezeNativeConfigAtStartup(
+  apply: (config: NativeConfig) => NativeConfig = (config) => config,
+): NativeConfigSnapshot {
+  if (startupConfig === undefined) {
+    const file = readNativeConfigFile(false, dataDir())
+    startupConfig = { config: apply(file.config), revision: file.revision }
+  }
   return startupConfig
 }
 
@@ -196,9 +220,12 @@ export function parseNativeConfig(raw: string): NativeConfig {
   if (typeof daemon.assetMonitoringEnabled !== 'boolean') {
     throw new Error('config.daemon.assetMonitoringEnabled must be boolean')
   }
-  if (daemon.recoveryIndexRealm !== undefined && !isRecoveryIndexRealm(daemon.recoveryIndexRealm)) {
+  if (
+    daemon.recoveryIndexRealm !== undefined &&
+    !isRecoveryIndexSetting(daemon.recoveryIndexRealm)
+  ) {
     throw new Error(
-      `config.daemon.recoveryIndexRealm must be one of ${Object.values(RECOVERY_INDEX_REALMS).join(', ')}`,
+      `config.daemon.recoveryIndexRealm must be one of ${RECOVERY_INDEX_SETTINGS.join(', ')}`,
     )
   }
   if (
@@ -222,7 +249,7 @@ export function parseNativeConfig(raw: string): NativeConfig {
   if (typeof daemon.engineUrl !== 'string' || typeof daemon.mintUrl !== 'string') {
     throw new Error('config daemon endpoints must be strings')
   }
-  const mintUrl = normalizeEndpointUrl(daemon.mintUrl, 'mint URL')
+  const mintUrl = normalizeEndpointUrl(daemon.mintUrl, 'config.daemon.mintUrl')
   const mintUrls = parseMintUrls(daemon.mintUrls)
   if (!mintUrls.includes(mintUrl)) {
     throw new Error('config.daemon.mintUrl must be in mintUrls')
@@ -230,7 +257,7 @@ export function parseNativeConfig(raw: string): NativeConfig {
   return {
     version: NATIVE_CONFIG_VERSION,
     daemon: {
-      engineUrl: normalizeEndpointUrl(daemon.engineUrl, 'engine URL'),
+      engineUrl: normalizeEndpointUrl(daemon.engineUrl, 'config.daemon.engineUrl'),
       mintUrl,
       mintUrls,
       autoRetireResolvedConditionInventory: daemon.autoRetireResolvedConditionInventory,

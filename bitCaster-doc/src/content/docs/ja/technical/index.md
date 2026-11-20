@@ -48,6 +48,7 @@ OrderHub の Bearer またはクエリトークン認証では、`/negotiate` �
 CLI を利用できます。コマンドは、プログラムが読み取れる JSON の結果を返します。
 例えば、`bitcaster-cli order book <market-id>` は公開注文板を取得します。
 `bitcaster-cli config set --engine-url <url>` でエンジンの URL を設定します。
+環境変数とオプションは [CLI の設定](#cli-の設定)を参照してください。
 デーモンは、そのプロファイルのウォレットのバックアップを書き込みます。バックアップの環境は
 `bitcaster-cli config set --recovery-index-realm <realm>` で設定します。
 `bitcaster-cli wallet backup status` は、デーモンの書き込みの状態を JSON で返します。
@@ -94,6 +95,42 @@ CLI は、まだ Web アプリのすべての操作には対応していませ�
 アプリケーションの全機能を同等に利用できる設計を目指しています。
 ブラウザの描画や保存方式を CLI で再現するという意味ではありません。
 CLI クライアントにも、同じ公開認可ルールと決済ルールが適用されます。
+
+### CLI の設定
+
+CLI の各設定には、`config.json` のキー、環境変数、グローバルオプションがあります。
+
+| キー                                   | 環境変数                                             | オプション                                   | 値                                                                                | 既定値                  |
+| -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------- |
+| `engineUrl`                            | `BITCASTER_ENGINE_URL`                               | `--engine-url`                               | https またはループバックの http の URL                                            | `http://localhost:5000` |
+| `mintUrl`                              | `BITCASTER_MINT_URL`                                 | `--mint-url`                                 | https またはループバックの http の URL                                            | `http://localhost:8085` |
+| `assetMonitoringEnabled`               | `BITCASTER_ASSET_MONITORING_ENABLED`                 | `--asset-monitoring-enabled`                 | `true` または `false`                                                             | `false`                 |
+| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` または `false`                                                             | `false`                 |
+| `recoveryIndexRealm`                   | `BITCASTER_RECOVERY_INDEX_REALM`                     | `--recovery-index-realm`                     | `bitcaster-production`、`bitcaster-staging`、`bitcaster-local`、または `disabled` | `bitcaster-production`  |
+
+CLI は、値を設定している最も上の層の値を使います。層は、下から順に、組み込みの既定値、
+`config.json`、環境変数、オプションです。例えば、`BITCASTER_ENGINE_URL` は
+`config.json` の `engineUrl` に優先し、`--engine-url` はその両方に優先します。
+いずれかの層に無効な値があると、コマンドは停止します。エラーは設定と層の名前を示します。
+エンジンの URL の確認は、どの層の URL にも適用されます。例えば、マーケットの作成には、
+信頼済みの https またはループバックのエンジンの URL が必要です。
+
+`bitcaster-cli config set` は `config.json` だけに書き込みます。設定のオプションを
+指定してください。例: `bitcaster-cli config set --engine-url <url>`。
+`config set --asset-monitoring enabled` または `disabled` も
+`assetMonitoringEnabled` を設定します。`bitcaster-cli config get <key>` は、
+有効な値とその出所 (`default`、`file`、`environment`、`option`) を表示します。
+`bitcaster-cli config list` はすべての設定を表示します。
+
+データディレクトリは `config.json` を保持するため、`--datadir` または
+`BITCASTER_DATADIR` だけがこれを選びます。オプションは環境変数に優先します。
+既定値は `~/.bitcaster` です。
+`daemon init` と `wallet recover-seed` は、`config.json` と既定値だけを使います。
+
+CLI が起動したデーモンは、その CLI の環境変数とオプションの設定を使います。
+実行中のデーモンは、環境変数またはオプションの設定が異なる CLI のコマンドを拒否します。
+エラーコードは `daemon-settings-mismatch` です。この場合は、使いたい設定で
+`bitcaster-cli daemon restart` を実行してください。
 
 ### ネイティブウォレットのプロファイルを選択・インポートする
 

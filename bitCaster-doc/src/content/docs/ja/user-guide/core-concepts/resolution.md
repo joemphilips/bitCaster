@@ -306,8 +306,10 @@ bitcaster-cli wallet retire-condition <condition-id>
 このコマンドが黙って削除することはありません。
 
 検証済みのオラクルアテステーションの受信後にこの処理を自動で実行するには、
-`~/.bitcaster/config.json` の `daemon.autoRetireResolvedConditionInventory` を
-`true` に設定してください。既定値は `false` です。変更後に daemon を再起動してください。
+`bitcaster-cli config set --auto-retire-resolved-condition-inventory true` を実行してください。
+このコマンドは `~/.bitcaster/config.json` の `daemon.autoRetireResolvedConditionInventory` を
+設定します。既定値は `false` です。このコマンドは、CLI が起動した daemon を再起動します。
+それ以外の daemon は自分で再起動してください。
 
 ## 関連情報
 
