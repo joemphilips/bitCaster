@@ -102,7 +102,6 @@ import {
   decodeCtfRangeOrderPreparationFromRecord as decodePreparationFromJournal,
   decodeSettlementCoordinatorPublicKey as requireCoordinatorKey,
   exactCtfRangeOrderPreparationMintKeysets,
-  validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeConditionalMintKeyset,
   type PersistedCtfRangeOrderPreparation,
 } from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
@@ -244,7 +243,6 @@ import {
 import {
   appendRangePreparationConsolidation,
   bindRangePreparationAdmission,
-  bindRangePreparationCapability,
   linkRangePreparationSource,
   pageActiveRangePreparations,
   readPreparedRangeSells,
@@ -987,6 +985,9 @@ export class DaemonCtfRangeOrderCoordinator {
           client,
         )
         return
+      // A release 4 record whose stage response was lost. The engine no longer
+      // serves the stage route or the reference form, so no request can create
+      // its order. Like a prepared record, it waits for expiry, then refunds.
       case 'capability-requested':
       case 'prepared':
         break
@@ -1037,20 +1038,6 @@ export class DaemonCtfRangeOrderCoordinator {
         : { injectFault: this.#dependencies.injectRangeBindFault }),
     }
     await rangeCoordinator.bindPreparedSource(bindInput)
-    if (preparationRecord.lifecycleState === 'capability-requested') {
-      if (this.#nowSeconds() >= operation.expiry) {
-        await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
-        return
-      }
-      await this.#recoverRequestedCapability(
-        preparationInput,
-        operation,
-        capabilityRequest,
-        walletSeedHex,
-        client,
-      )
-      return
-    }
     await this.#recoverUnsubmittedAuthorization(preparationInput, walletSeedHex)
   }
 
@@ -1122,43 +1109,6 @@ export class DaemonCtfRangeOrderCoordinator {
       default:
         return assertNeverOrderRequestRecovery(recovery)
     }
-  }
-
-  /** Old two-step path: a release 4 record in `capability-requested` resends its stage request. */
-  async #recoverRequestedCapability(
-    input: PersistedPreparationInput,
-    operation: DurableCtfRangeOperation,
-    request: CreateSettlementCapabilityRequest,
-    walletSeedHex: string,
-    client: EngineClientLike,
-  ): Promise<void> {
-    const exactRequest = await this.#exactCapabilityRequest(
-      walletSeedHex,
-      operation.operationId,
-      request,
-    )
-    if (this.#nowSeconds() >= operation.expiry) {
-      await this.#recoverUnsubmittedAuthorization(input, walletSeedHex)
-      return
-    }
-    const createCapability = client.createSettlementCapability
-    if (createCapability === undefined) {
-      throw new Error('engine client does not support settlement capability creation')
-    }
-    const response = await createCapability.call(client, exactRequest)
-    const capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability: response,
-      preparation: input,
-      operation,
-      recovering: true,
-    })
-    await this.#bindCapability(operation.operationId, capability)
-    // Binding recovers admission, not custody. Continue through the bound journal so
-    // an unsubmitted authorization still gets its expiry refund without an order event.
-    throw new RangeRecoveryDeferredError(
-      'recovered range capability requires custody reconciliation',
-      this.#nowMs(),
-    )
   }
 
   async #recoverCapabilityBoundOrder(
@@ -1486,36 +1436,6 @@ export class DaemonCtfRangeOrderCoordinator {
         })
         for (const record of page.preparations) preparationFromJournal(record)
         return page
-      },
-    )
-  }
-
-  async #bindCapability(
-    rangeOperationId: string,
-    capability: RangePreparationCapability,
-  ): Promise<void> {
-    const mutation = this.#mutation()
-    await withDurableCustodyUnitOfWork(
-      this.#storage,
-      mutation.fence,
-      mutation.observedAtMs,
-      (database) => {
-        const current = readRangePreparation(database, mutation.fence.scopeId, rangeOperationId)
-        if (current === null) throw new Error('daemon CTF range preparation is missing')
-        const expected = capability
-        if (current.lifecycleState !== 'capability-requested') {
-          if (current.capability === null || !isDeepStrictEqual(current.capability, expected)) {
-            throw new Error('daemon CTF range capability conflicts with its journal')
-          }
-          return
-        }
-        bindRangePreparationCapability(database, {
-          scopeId: mutation.fence.scopeId,
-          rangeOperationId,
-          expectedRevision: current.revision,
-          capability: expected,
-          updatedAtMs: mutation.observedAtMs,
-        })
       },
     )
   }

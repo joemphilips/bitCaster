@@ -174,8 +174,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Submit multiple orders for one condition
-         * @description Applies current settlement-capability references in request order across visible books that share conditionId. The server loads every immutable order term from each durable DCB binding; the authenticated owner and route condition must exactly match the prebound intent. References are not bearer authority and foreign, stale, or non-current references fail closed. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns its prior accepted admission result even if the capability has since become selected or terminal. Each item returns an independent result; envelope, auth, closed-market, and rate-limit failures still use HTTP errors.
+         * Removed batch order submission
+         * @deprecated
+         * @description Removed. This route took only settlementCapability references, and the server no longer accepts that form. A request within the 1,048,576-byte body limit gets 410 with code order-reference-form-removed. The server ignores the body, needs no authentication, and writes nothing. Submit each order through POST /api/v1/{marketId}/orders with settlementCapabilityAdmission.
          */
         post: operations["batchSubmitOrders"];
         delete?: never;
@@ -219,7 +220,7 @@ export interface paths {
         put?: never;
         /**
          * Submit a new order
-         * @description Submits an order in one of two body forms (see SubmitOrderRequest). The reference form submits the current settlement capability that the request references. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. The admission form carries the capability artifact. One durable commit binds the capability and accepts the order; a refusal writes nothing and is not charged. An exact retry by the same authenticated owner for the same order returns the prior accepted admission result even if the capability has since become selected or terminal, without a second verification or charge. The body limit is 400,000 bytes.
+         * @description Submits an order with its capability artifact in settlementCapabilityAdmission (see SubmitOrderRequest). One durable commit binds the capability and accepts the order; a refusal writes nothing and is not charged. An exact retry by the same authenticated owner for the same order returns the prior accepted admission result even if the capability has since become selected or terminal, without a second verification or charge. The body limit is 400,000 bytes. The server no longer accepts the reference form settlementCapability: a body with only that form gets 410 order-reference-form-removed.
          */
         post: operations["submitOrder"];
         delete?: never;
@@ -499,8 +500,9 @@ export interface paths {
         get?: never;
         put?: never;
         /**
-         * Validate and bind one range-settlement authorization
-         * @description Stages one canonical NUT-CTF range-settlement artifact, validates its mint authority, reserves its exact input proofs, and binds it durably to the authenticated subject's order identity before returning. The artifact is a sensitive bearer capability containing conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A successful or response-uncertain attempt must be retried byte-identically. Once the key is durably associated with an artifact, changing any artifact or order-binding field fails closed. A definitive rejection before staging stores no key association.
+         * Removed stage route
+         * @deprecated
+         * @description Removed. The two-step order path (this stage request, then an order request with the settlementCapability reference) is no longer served. A request within the 400,000-byte body limit gets 410 with code settlement-capability-stage-route-removed. The server ignores the body, needs no authentication, and writes nothing. Send the capability in the order request as settlementCapabilityAdmission (POST /api/v1/{marketId}/orders). The read routes of a capability and its result stay.
          */
         post: operations["createSettlementCapability"];
         delete?: never;
@@ -1397,12 +1399,10 @@ export interface components {
             /** @description Atomic settlement group that durably owns this fill reservation. */
             settlementGroup: components["schemas"]["SettlementGroupSummary"];
         };
-        /** @description Order submission. The body holds exactly one of settlementCapability (reference form) and settlementCapabilityAdmission (admission form). A body with both forms or with neither form gets 400 order-invalid-request. In the reference form the server loads all immutable order identity and economic terms from the current durable DCB binding. In the admission form the server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. A reference is not bearer authority. */
+        /** @description Order submission. The server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. The server no longer accepts the reference form settlementCapability: a body with only that form gets 410 order-reference-form-removed, and a body with both forms gets 400 order-invalid-request. */
         SubmitOrderRequest: {
-            /** @description Reference form. A current capability binding from POST /api/v1/settlement-capabilities. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
-            settlementCapability?: components["schemas"]["SettlementCapabilityReference"];
-            /** @description Admission form. The capability artifact and order intent, with the same fields and limits as POST /api/v1/settlement-capabilities. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. A stageIdempotencyKey that the stage route used conflicts here, and the reverse. A capability that the stage route bound is accepted only through the reference form. */
-            settlementCapabilityAdmission?: components["schemas"]["CreateSettlementCapabilityRequest"];
+            /** @description The capability artifact and order intent. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. The artifact is a sensitive bearer capability: it holds conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A stageIdempotencyKey that the removed stage route used conflicts here. */
+            settlementCapabilityAdmission: components["schemas"]["CreateSettlementCapabilityRequest"];
             /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
             comment: components["schemas"]["NostrKind1Event"] | null;
             /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
@@ -1567,52 +1567,6 @@ export interface components {
             /** @description Digest of the capability artifact. A client compares it with its local artifact digest before it uses the reference. */
             artifactDigest: components["schemas"]["Sha256Digest"];
         };
-        BatchSubmitOrdersRequest: {
-            orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
-        };
-        /** @description Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified. */
-        BatchSubmitOrderRequestItem: {
-            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
-            /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
-            walletId?: string;
-        };
-        /** @description Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`. */
-        BatchSubmitOrdersResponse: {
-            accepted: components["schemas"]["BatchSubmitOrderSuccess"][];
-            rejected: components["schemas"]["BatchSubmitOrderFailure"][];
-        };
-        /** @description Accepted admission result with binding-owned order and execution facts. */
-        BatchSubmitOrderSuccess: {
-            /** Format: int32 */
-            requestIndex: number;
-            clientOrderId: string;
-            marketId: string;
-            /** Format: uuid */
-            orderId: string;
-            status: components["schemas"]["OrderLifecycleStatus"];
-            remainingAmountSubunits: components["schemas"]["CollateralSubunits"];
-            fills: components["schemas"]["Fill"][];
-            baseAsset: components["schemas"]["BaseAsset"];
-            /**
-             * Format: int32
-             * @description Immutable price denominator `D`, server-determined.
-             * @enum {integer}
-             */
-            divisibility: 1000 | 1000000;
-            /** @description Current nonterminal settlement group for this order, or null. */
-            activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
-        };
-        /** @description Per-item admission failure. This variant exposes no binding-owned identity, market, order, amount, fill, asset, divisibility, or free-form dependency details. */
-        BatchSubmitOrderFailure: {
-            /** Format: int32 */
-            requestIndex: number;
-            errorCode: components["schemas"]["BatchSubmitOrderErrorCode"];
-        };
-        /**
-         * @description `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
-         * @enum {string}
-         */
-        BatchSubmitOrderErrorCode: "capabilityNotFound" | "capabilityNotCurrent" | "routeMismatch" | "authorityUnavailable" | "marketClosed" | "bookRejected";
         BatchCancelOrdersRequest: {
             orderIds: string[];
         };
@@ -2569,23 +2523,10 @@ export interface operations {
             };
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BatchSubmitOrdersRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Per-item batch submit result */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BatchSubmitOrdersResponse"];
-                };
-            };
-            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
-            400: {
+            /** @description order-reference-form-removed. The route is removed. Nothing is written. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -2593,48 +2534,12 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Missing or invalid NIP-98 authentication */
-            401: {
+            /** @description The body exceeds 1,048,576 bytes; the server refuses it before it reads the body, with no body. */
+            413: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content?: never;
-            };
-            /** @description market-closed. The market is closed before submission. Framework authorization failures can return a different body. */
-            403: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-market-not-found. The condition is not registered. */
-            404: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-batch-conflict or order-market-closed. A failed whole-request response does not establish that no item was accepted. Reconcile the original item identities before retrying without changes. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description order-batch-limited. The application item-weighted rate limit was reached. Framework rate limiting can return a different body. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
             };
         };
     };
@@ -2772,7 +2677,7 @@ export interface operations {
                     "application/json": components["schemas"]["SubmitOrderResponse"];
                 };
             };
-            /** @description Application validation failed with order-invalid-request or order-invalid-comment. In the admission form, settlement-capability-policy-rejected means the capability does not meet the admission policy, including an authorization that expires less than 15 seconds after the request; settlement-capability-invalid-artifact means the artifact is invalid or unsupported; settlement-capability-invalid-request means an invalid capability request field. Framework input validation can return a different body shape. */
+            /** @description Application validation failed with order-invalid-request or order-invalid-comment. A body with both settlementCapability and settlementCapabilityAdmission, or with neither, gets order-invalid-request. settlement-capability-policy-rejected means the capability does not meet the admission policy, including an authorization that expires less than 15 seconds after the request; settlement-capability-invalid-artifact means the artifact is invalid or unsupported; settlement-capability-invalid-request means an invalid capability request field. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2788,7 +2693,7 @@ export interface operations {
                 };
                 content?: never;
             };
-            /** @description Admission form. settlement-capability-score-required means the Participation Score balance is below the binding tariff. Nothing is written and nothing is charged. */
+            /** @description settlement-capability-score-required means the Participation Score balance is below the binding tariff. Nothing is written and nothing is charged. */
             402: {
                 headers: {
                     [name: string]: unknown;
@@ -2806,7 +2711,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. In the admission form, settlement-capability-not-found means the market of the capability is not registered. */
+            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability of a repeated request is absent, belongs to another owner, or its binding digest does not match. settlement-capability-not-found means the market of the capability is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2815,7 +2720,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. In the admission form, order-capability-not-current also means that the capability expired unbound or that the stage route bound it. settlement-capability-conflict means that the stageIdempotencyKey, the clientOrderId or a proof is already used by another operation or route; nothing is written. settlement-capability-market-unavailable means the market does not accept the capability now. A submission failure alone does not authorize a refund. */
+            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists, for example because the capability expired unbound or the removed stage route bound it. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. settlement-capability-conflict means that the stageIdempotencyKey, the clientOrderId or a proof is already used by another operation or route; nothing is written. settlement-capability-market-unavailable means the market does not accept the capability now. A submission failure alone does not authorize a refund. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2824,7 +2729,16 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The body exceeds 400,000 bytes; the server refuses it before authentication, with no body. In the admission form, settlement-capability-request-too-large means that the artifact exceeds its limits. */
+            /** @description order-reference-form-removed. The body holds the removed reference form settlementCapability and no settlementCapabilityAdmission. Nothing is written and nothing is charged. */
+            410: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The body exceeds 400,000 bytes; the server refuses it before authentication, with no body. settlement-capability-request-too-large means that the artifact exceeds its limits. */
             413: {
                 headers: {
                     [name: string]: unknown;
@@ -2833,7 +2747,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description The order-submit rate limit, or in the admission form an admission capacity limit (settlement-capability-capacity-exhausted or settlement-capability-admission-limited). Nothing is written. */
+            /** @description The order-submit rate limit, or an admission capacity limit (settlement-capability-capacity-exhausted or settlement-capability-admission-limited). Nothing is written. */
             429: {
                 headers: {
                     [name: string]: unknown;
@@ -2842,7 +2756,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds and ends no later than the wait and expiry limits; preserve shorter caller limits. Start an attempt only while time remains before both limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, settlement-capability-admission-unavailable (admission form: mint authority or durable capability authority unavailable), generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds and ends no later than the wait and expiry limits; preserve shorter caller limits. Start an attempt only while time remains before both limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, settlement-capability-admission-unavailable (mint authority or durable capability authority unavailable), generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -3600,23 +3514,10 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateSettlementCapabilityRequest"];
-            };
-        };
+        requestBody?: never;
         responses: {
-            /** @description Capability validated, input-reserved, and durably bound. */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SettlementCapabilityResponse"];
-                };
-            };
-            /** @description Application rejection of a malformed, noncanonical, expired, or unsupported artifact. Framework input binding can return a different error body. */
-            400: {
+            /** @description settlement-capability-stage-route-removed. The route is removed. Nothing is written and nothing is charged. */
+            410: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -3624,57 +3525,12 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description Missing or invalid authentication. */
-            401: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description Participation Score is insufficient for capability preparation. */
-            402: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Idempotency conflict, reused input proof, mismatched order binding, or capability lifecycle conflict. */
-            409: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Application rejection of an artifact or request above the advertised byte/count limits. Framework request-size rejection can return a different error body. */
+            /** @description The body exceeds 400,000 bytes; the server refuses it before it reads the body, with no body. */
             413: {
                 headers: {
                     [name: string]: unknown;
                 };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Application capability admission or process capacity is saturated. Framework rate-limit rejection can return a different error body. */
-            429: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
-            };
-            /** @description Mint validation or durable capability authority is unavailable. */
-            503: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/problem+json": components["schemas"]["ProblemDetails"];
-                };
+                content?: never;
             };
         };
     };

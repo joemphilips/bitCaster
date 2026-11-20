@@ -50,23 +50,46 @@ Order admission checks that capability. Admission makes no mint network call.
 
 The wallet sends the capability in the order request itself:
 `POST /api/v1/{marketId}/orders` with `settlementCapabilityAdmission`. That
-value has the same fields as a capability request, and its `marketId` equals
-the route. One request binds the capability and accepts the order, or the
-engine writes nothing. A refusal is not charged. The response holds
-`settlementCapability`, the capability of the accepted order. The older
-two-step route, `POST /api/v1/settlement-capabilities` and then the
-`settlementCapability` reference, still works. A client uses one route for one
-order. A key or a capability of one route conflicts on the other route.
+value holds the capability artifact and the order intent, and its `marketId`
+equals the route. One request binds the capability and accepts the order, or
+the engine writes nothing. A refusal is not charged. The response holds
+`settlementCapability`, the capability of the accepted order.
 
 The authorization covers its permitted range for that attempt. Public FOK does
 not rest on the book or leave a residual order. If the complete quantity cannot
 fill, the engine cancels the complete request. This cancellation does not spend
 the capability or trigger a refund.
 
+### Removed two-step route
+
+The engine does not accept the older two-step route. That route sent
+`POST /api/v1/settlement-capabilities` and then an order request with the
+`settlementCapability` reference. Each request below gets `410` with its
+`code`. The engine writes nothing and charges nothing.
+
+| Request | Code |
+| --- | --- |
+| `POST /api/v1/settlement-capabilities` | `settlement-capability-stage-route-removed` |
+| `POST /api/v1/{marketId}/orders` with only `settlementCapability` | `order-reference-form-removed` |
+| `POST /api/v1/conditions/{conditionId}/orders/batch` | `order-reference-form-removed` |
+
+The batch route took only the `settlementCapability` reference, so it is
+removed too. The read routes of a capability and of its result stay. A
+`stageIdempotencyKey` that the two-step route used conflicts on the order
+request.
+
+A client that uses the two-step route cannot place orders. This includes the
+CLI releases `cli-v0.1.0-afaa6cc6aa6b` and `cli-v0.1.0-4fe7f6e6c08f`, and a
+browser tab that still runs an app of the same period. Download the latest CLI
+release, or reload the browser app. The current wallet reads the order records
+that an older client left in the same wallet profile. It sends no request that
+can create their orders. It refunds their locked funds after the authorization
+expires.
+
 ## Capability API errors
 
-The capability API and the admission form of the order request return these
-errors. Application errors use RFC 9457
+The capability read routes, the order request, and the removed stage route
+return these errors. Application errors use RFC 9457
 `application/problem+json`. Clients use the HTTP status and `code`.
 Do not classify errors from the wording of `title` or `detail`.
 Every code below starts with `settlement-capability-`.
@@ -81,6 +104,7 @@ The `type` is `/errors/` followed by the complete code.
 | 404 | `not-found` | Capability or result is unavailable to this caller. |
 | 409 | `conflict` | Capability identity or state conflicts. |
 | 409 | `market-unavailable` | Market does not accept this capability. |
+| 410 | `stage-route-removed` | The removed stage route. Nothing is written. |
 | 413 | `request-too-large` | Request exceeds a size or count limit. |
 | 429 | `admission-limited` | Outstanding admission work reached a limit. |
 | 429 | `capacity-exhausted` | A capability limit for this user, this market, or the service is reached. |
@@ -97,11 +121,10 @@ not authorize a refund or deletion of local records. Keep the original operation
 and capability when the response is uncertain. Retry the original request
 without changes.
 
-A successful capability retry does not mean that wallet recovery is complete.
-If no order was submitted, keep recovery active until the authorization reaches
-a terminal result. Do not submit an order only because capability recovery
-succeeded. An unspent authorization can refund after its original expiry, once
-the mint confirms the required recovery facts.
+A capability read does not mean that wallet recovery is complete. If no order
+was accepted, keep recovery active until the authorization reaches a terminal
+result. An unspent authorization can refund after its original expiry, once the
+mint confirms the required recovery facts.
 
 ## Order submission errors
 
@@ -120,11 +143,12 @@ is `/errors/` followed by the `code`. Use the code, not the message wording.
 | 409 | `order-book-conflict` | Retry the original request without changes. |
 | 409 | `order-processing-conflict` | Submission conflicts with the current order state. |
 | 409 | `order-market-closed` | The market closed during submission. |
+| 410 | `order-reference-form-removed` | The body holds only the removed `settlementCapability` reference. |
 | 503 | `order-admission-unavailable` | Order admission is temporarily unavailable. |
 | 503 | `order-processing-unavailable` | Order processing is temporarily unavailable. |
 | 503 | `order-quotes-refreshing` | Quotes are not ready. The order was refused before acceptance. |
 
-The admission form can also return the `settlement-capability-` codes of the
+The order request can also return the `settlement-capability-` codes of the
 capability API, for example `402` `settlement-capability-score-required` or
 `409` `settlement-capability-conflict`. A body above 400,000 bytes gets `413`
 before authentication. The `order-submit` rate limit and the admission limits
@@ -193,25 +217,17 @@ It never sends a request that can create the order:
 - At or after the authorization expiry, the wallet reads the mint (NUT-09 and
   NUT-07) and refunds unspent inputs.
 
-## Batch, cancellation, and read errors
+## Cancellation and read errors
 
 These order endpoints use the same application Problem Details format.
 
 | HTTP | Code | Meaning |
 | --- | --- | --- |
-| 400 | `order-invalid-request` | The route, condition, or batch request is invalid. |
-| 403 | `market-closed` | The market is closed before batch submission. |
-| 404 | `order-market-not-found` | The market for a batch request is not registered. |
+| 400 | `order-invalid-request` | The route, condition, or batch cancellation request is invalid. |
+| 404 | `order-market-not-found` | The market of a batch cancellation is not registered. |
 | 404 | `order-not-found` | The order is unavailable for this request. |
-| 409 | `order-batch-conflict` | The order book changed during batch submission. |
-| 409 | `order-market-closed` | The market closed during batch submission. |
 | 409 | `order-cancellation-conflict` | Order state changed during cancellation. |
-| 429 | `order-batch-limited` | The application batch rate limit was reached. |
-
-A whole-request batch error does not prove that no item was accepted.
-Reconcile the original item identities before retrying without changes.
-Successful batch responses retain their separate per-item results.
-Do not use the single-order submission error classifier for a batch.
+| 429 | `order-batch-limited` | The application batch cancellation rate limit was reached. |
 
 Cancellation returns the same `404` for missing, foreign, and wrong-route
 orders. An already-terminal cancellation succeeds. Batch cancellation remains

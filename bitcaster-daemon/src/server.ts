@@ -258,10 +258,6 @@ export interface EngineClientLike {
   ): Promise<DurableRecipientDeliveryStatus>
   getMarket?(conditionId: string): Promise<unknown | null>
   getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
-  /** Old two-step route. Only the recovery of a release 4 `capability-requested` record uses it. */
-  createSettlementCapability?(
-    request: CreateSettlementCapabilityRequest,
-  ): Promise<SettlementCapabilityResponse>
   /** Read-only recovery lookup of an `order-requested` record. It never creates an order. */
   lookupOrderByClientOrderId?(
     conditionId: string,

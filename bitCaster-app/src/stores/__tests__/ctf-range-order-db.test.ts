@@ -13,7 +13,6 @@ import {
   appendCtfRangePreparationConsolidation,
   appendCtfRangePreparationConsolidationInTransaction,
   bindCtfRangePreparationAdmission,
-  bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
   hasActiveCtfRangePreparation,
   readPreparedCtfRangeSells,
@@ -169,12 +168,6 @@ describe("browser CTF range order journal", () => {
       artifactDigest: "33".repeat(32),
       orderId: "44444444-4444-4444-8444-444444444444",
     };
-    await expect(
-      bindCtfRangePreparationCapability(
-        { ...requested, expectedRevision: 1, capability, updatedAtMs: 22 },
-        database,
-      ),
-    ).rejects.toThrow(/revision or lifecycle changed/);
     const submitted = await bindCtfRangePreparationAdmission(
       {
         scopeId: input.scopeId,
@@ -212,46 +205,43 @@ describe("browser CTF range order journal", () => {
     }
   });
 
-  it("binds a release 4 capability-requested record through the old route", async () => {
+  it("ends a release 4 record through its remaining transitions", async () => {
     const database = createDatabase();
-    const input = identity("range-release4", "client-release4", 20);
-    const inserted = await insertCtfRangePreparation(input, database);
-    // Only the release 4 writer produced capability-requested.
-    await database.ctfRangePreparations.put({
-      ...inserted,
-      lifecycleState: "capability-requested",
-      revision: 1,
-    });
-    const bound = await bindCtfRangePreparationCapability(
-      {
-        scopeId: input.scopeId,
-        rangeOperationId: input.rangeOperationId,
-        expectedRevision: 1,
-        capability: {
-          artifactId: "11111111-1111-4111-8111-111111111111",
-          bindingDigest: "22".repeat(32),
-          artifactDigest: "33".repeat(32),
-          orderId: "44444444-4444-4444-8444-444444444444",
+    const capability = {
+      artifactId: "11111111-1111-4111-8111-111111111111",
+      bindingDigest: "22".repeat(32),
+      artifactDigest: "33".repeat(32),
+      orderId: "44444444-4444-4444-8444-444444444444",
+    };
+    // Only the release 4 writer produced these states. Recovery finds the
+    // order of a capability-bound record, or it refunds the record.
+    for (const [lifecycleState, bound, to] of [
+      ["capability-bound", capability, "order-submitted"],
+      ["capability-bound", capability, "terminal"],
+      ["capability-requested", null, "terminal"],
+    ] as const) {
+      const input = identity(`range-${lifecycleState}-${to}`, `client-${lifecycleState}-${to}`, 20);
+      const inserted = await insertCtfRangePreparation(input, database);
+      await database.ctfRangePreparations.put({
+        ...inserted,
+        lifecycleState,
+        revision: 2,
+        capability: bound,
+      });
+      const next = await transitionCtfRangePreparation(
+        {
+          scopeId: input.scopeId,
+          rangeOperationId: input.rangeOperationId,
+          expectedRevision: 2,
+          from: lifecycleState,
+          to,
+          updatedAtMs: 23,
         },
-        updatedAtMs: 22,
-      },
-      database,
-    );
-    expect(bound.lifecycleState).toBe("capability-bound");
-    expect(bound.revision).toBe(2);
-    const submitted = await transitionCtfRangePreparation(
-      {
-        scopeId: input.scopeId,
-        rangeOperationId: input.rangeOperationId,
-        expectedRevision: 2,
-        from: "capability-bound",
-        to: "order-submitted",
-        updatedAtMs: 23,
-      },
-      database,
-    );
-    expect(submitted.lifecycleState).toBe("order-submitted");
-    expect(submitted.revision).toBe(3);
+        database,
+      );
+      expect(next.lifecycleState).toBe(to);
+      expect(next.revision).toBe(3);
+    }
   });
 
   it("finds a submitted order without being hidden by other states or scopes", async () => {

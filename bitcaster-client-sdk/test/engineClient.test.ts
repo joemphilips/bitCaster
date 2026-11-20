@@ -1302,76 +1302,7 @@ test('BitcasterEngineClient.listMyOrders preserves strict unit and lifecycle fie
   assert.deepEqual(response.orders[0]?.activeSettlementGroup, settlementGroup)
 })
 
-test('BitcasterEngineClient.batchSubmitOrders preserves accepted and rejected results', async () => {
-  const expectedBody = JSON.stringify({
-    orders: [
-      {
-        settlementCapability: {
-          artifactId: '11111111-1111-4111-8111-111111111111',
-          bindingDigest: 'a'.repeat(64),
-        },
-        walletId: DISPLAY_WALLET_ID,
-      },
-      {
-        settlementCapability: {
-          artifactId: '22222222-2222-4222-8222-222222222222',
-          bindingDigest: 'b'.repeat(64),
-        },
-      },
-    ],
-  })
-  let observedBody = ''
-  const client = new BitcasterEngineClient({
-    baseUrl: 'https://engine.example',
-    fetchImpl: async (_input, init) => {
-      observedBody = String(init?.body)
-      return new Response(
-        JSON.stringify({
-          accepted: [
-            {
-              requestIndex: 0,
-              clientOrderId: 'client-order-1',
-              marketId: 'condition-1-YES',
-              orderId: '33333333-3333-4333-8333-333333333333',
-              status: 'resting',
-              remainingAmountSubunits: 1_000,
-              fills: [],
-              baseAsset: 'sat',
-              divisibility: 1_000,
-              activeSettlementGroup: null,
-            },
-          ],
-          rejected: [{ requestIndex: 1, errorCode: 'capabilityNotCurrent' }],
-        }),
-        { status: 200, headers: { 'content-type': 'application/json' } },
-      )
-    },
-  })
-
-  const response = await client.batchSubmitOrders('condition-1', {
-    orders: [
-      {
-        settlementCapability: {
-          artifactId: '11111111-1111-4111-8111-111111111111',
-          bindingDigest: 'a'.repeat(64),
-        },
-        walletId: DISPLAY_WALLET_ID,
-      },
-      {
-        settlementCapability: {
-          artifactId: '22222222-2222-4222-8222-222222222222',
-          bindingDigest: 'b'.repeat(64),
-        },
-      },
-    ],
-  })
-
-  assert.equal(observedBody, expectedBody)
-  assert.equal(response.accepted[0]?.clientOrderId, 'client-order-1')
-  assert.equal(response.rejected[0]?.errorCode, 'capabilityNotCurrent')
-})
-
-test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', async () => {
+test('BitcasterEngineClient mirrors the settlement-capability read routes', async () => {
   const reference = {
     artifactId: '11111111-1111-4111-8111-111111111111',
     bindingDigest: 'a'.repeat(64),
@@ -1410,26 +1341,6 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
   const policy = {
     coordinatorPubkey: '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798',
   }
-  const createRequest: CreateSettlementCapabilityRequest = {
-    stageIdempotencyKey: 'stage-1',
-    clientOrderId: 'client-order-1',
-    marketId: capability.marketId,
-    orderIntent: {
-      outcomeId: 'YES',
-      tokenSide: 'Outcome' as const,
-      side: 'Buy' as const,
-      price: 400,
-      amountSubunits: 1_000,
-      minimumFillAmountSubunits: 1_000,
-      baseAsset: 'sat' as const,
-      collateralUnit: 'msat' as const,
-      timeInForce: 'FOK' as const,
-      expiresAt: null,
-      maxQuotePaymentSubunits: 400,
-      minQuotePaymentSubunits: null,
-    },
-    artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
-  }
   const requests: Array<{ url: string; method: string; body?: string }> = []
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
@@ -1455,7 +1366,6 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
   })
 
   assert.deepEqual(await client.getSettlementCapabilityAdmissionPolicy(), policy)
-  assert.deepEqual(await client.createSettlementCapability(createRequest), capability)
   assert.deepEqual(await client.getSettlementCapability(reference), capability)
   assert.deepEqual(await client.getSettlementCapabilityResult(result.resultId), result)
   assert.deepEqual(await client.getSettlementCapabilityResultByOperation('operation+1'), result)
@@ -1472,11 +1382,6 @@ test('BitcasterEngineClient mirrors settlement-capability lifecycle routes', asy
     {
       url: 'https://engine.example/api/v1/settlement-capabilities/policy',
       method: 'GET',
-    },
-    {
-      url: 'https://engine.example/api/v1/settlement-capabilities',
-      method: 'POST',
-      body: JSON.stringify(createRequest),
     },
     {
       url: `https://engine.example/api/v1/settlement-capabilities/${reference.artifactId}?bindingDigest=${reference.bindingDigest}`,
@@ -1971,7 +1876,7 @@ test('BitcasterEngineClient authenticates and strictly validates settlement poli
   ])
 })
 
-test('capability problems retain machine codes through HTTP parsing', async () => {
+test('capability problems of the order request retain machine codes through HTTP parsing', async () => {
   for (const [status, suffix] of [
     [400, 'invalid-request'],
     [400, 'invalid-artifact'],
@@ -2005,23 +1910,26 @@ test('capability problems retain machine codes through HTTP parsing', async () =
     })
     await assert.rejects(
       () =>
-        client.createSettlementCapability({
-          stageIdempotencyKey: 'stage-problem',
-          clientOrderId: 'order-problem',
-          marketId: `${'a'.repeat(64)}-Alpha`,
-          artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
-          orderIntent: {
-            outcomeId: 'Alpha',
-            tokenSide: 'Outcome',
-            side: 'Buy',
-            price: 400,
-            amountSubunits: 1_000,
-            minimumFillAmountSubunits: 1_000,
-            baseAsset: 'sat',
-            collateralUnit: 'msat',
-            timeInForce: 'FOK',
-            expiresAt: null,
+        client.submitOrder(`${'a'.repeat(64)}-Alpha`, {
+          settlementCapabilityAdmission: {
+            stageIdempotencyKey: 'stage-problem',
+            clientOrderId: 'order-problem',
+            marketId: `${'a'.repeat(64)}-Alpha`,
+            artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
+            orderIntent: {
+              outcomeId: 'Alpha',
+              tokenSide: 'Outcome',
+              side: 'Buy',
+              price: 400,
+              amountSubunits: 1_000,
+              minimumFillAmountSubunits: 1_000,
+              baseAsset: 'sat',
+              collateralUnit: 'msat',
+              timeInForce: 'FOK',
+              expiresAt: null,
+            },
           },
+          comment: null,
         }),
       (error) => {
         assert.ok(error instanceof EngineClientError)
@@ -2109,20 +2017,8 @@ test('submitOrder preserves error classification through coded Problem Details',
   }
 })
 
-test('batch, cancellation, and read methods parse coded application errors without retrying', async () => {
+test('batch cancellation and read methods parse coded application errors without retrying', async () => {
   const cases: Array<[number, string, (client: BitcasterEngineClient) => Promise<unknown>]> = [
-    [
-      400,
-      'order-invalid-request',
-      (client) => client.batchSubmitOrders('condition', { orders: [] }),
-    ],
-    [429, 'order-batch-limited', (client) => client.batchSubmitOrders('condition', { orders: [] })],
-    [
-      409,
-      'order-batch-conflict',
-      (client) => client.batchSubmitOrders('condition', { orders: [] }),
-    ],
-    [409, 'order-market-closed', (client) => client.batchSubmitOrders('condition', { orders: [] })],
     [
       404,
       'order-market-not-found',

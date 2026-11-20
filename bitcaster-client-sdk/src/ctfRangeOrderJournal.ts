@@ -56,8 +56,10 @@ const CAPABILITY_FIELDS = ['artifactId', 'bindingDigest', 'artifactDigest', 'ord
  * before the first send of the admission-form order request.
  *
  * The two-step path of release 4 (`capability-requested`, `capability-bound`,
- * `submission-rejected`) is never written for a new order. A stored record in
- * one of those states still recovers through the old route.
+ * `submission-rejected`) is never written for a new order, and the engine no
+ * longer serves its routes (amendment of 2026-11-20). A stored record in one of
+ * those states still reads. Its recovery makes only engine reads: it finds an
+ * accepted order, or it waits for authorization expiry and refunds.
  */
 export type CtfRangeOrderPreparationLifecycle =
   | 'prepared'
@@ -288,34 +290,19 @@ interface CapabilityBindingInput {
   readonly updatedAtMs: number
 }
 
-/** Old two-step path: the stage route bound the capability (`capability-requested` -> `capability-bound`). */
-export function bindCtfRangeOrderPreparationCapability(
-  input: CapabilityBindingInput,
-): CtfRangeOrderPreparationRecord {
-  return bindCapability(input, 'capability-requested', 'capability-bound')
-}
-
 /**
- * One-step path: the engine accepted the order request, and the response or the
- * order lookup gave its capability (`order-requested` -> `order-submitted`). The
- * caller checks the artifact digest before this call.
+ * The engine accepted the order request, and the response or the order lookup
+ * gave its capability (`order-requested` -> `order-submitted`). The caller
+ * checks the artifact digest before this call.
  */
 export function bindCtfRangeOrderPreparationAdmission(
   input: CapabilityBindingInput,
-): CtfRangeOrderPreparationRecord {
-  return bindCapability(input, 'order-requested', 'order-submitted')
-}
-
-function bindCapability(
-  input: CapabilityBindingInput,
-  from: 'capability-requested' | 'order-requested',
-  to: 'capability-bound' | 'order-submitted',
 ): CtfRangeOrderPreparationRecord {
   const current = decodeCtfRangeOrderPreparationRecord(input.current)
   const capability = decodeCtfRangeOrderPreparationCapability(input.capability)
   const expectedRevision = requireNonnegativeSafeInteger(input.expectedRevision, 'revision')
   const updatedAtMs = requireNonnegativeSafeInteger(input.updatedAtMs, 'updated time')
-  if (current.lifecycleState !== from || current.revision !== expectedRevision) {
+  if (current.lifecycleState !== 'order-requested' || current.revision !== expectedRevision) {
     if (
       current.capability !== null &&
       sameCtfRangeOrderPreparationCapability(current.capability, capability)
@@ -329,7 +316,7 @@ function bindCapability(
   }
   return {
     ...current,
-    lifecycleState: to,
+    lifecycleState: 'order-submitted',
     revision: current.revision + 1,
     capability,
     updatedAtMs: Math.max(updatedAtMs, current.updatedAtMs),

@@ -24,7 +24,6 @@ import {
   decodeCtfRangeOrderPreparationArtifact,
   decodeCtfRangeOrderPreparationRecord,
   encodeCtfRangeOrderPreparationArtifact,
-  type CtfRangeOrderPreparationCapability,
   type CtfRangeOrderPreparationRecord,
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
@@ -47,15 +46,12 @@ import type { TokenImportKeysetLookup } from './tokenImportValidation.ts'
 import {
   type CreateSettlementCapabilityRequest,
   type SettlementCapabilityAdmissionPolicyResponse,
-  type SettlementCapabilityResponse,
 } from './engineClient.ts'
 import { parseMarketDivisibility, type MarketDivisibility } from './marketUnits.ts'
 import type { SettlementCapabilityScoreWorkFacts } from './participationScore.ts'
 
 const RANGE_REFUND_SAFETY_MARGIN_SECONDS = 300
 const COORDINATOR_PUBLIC_KEY_PATTERN = /^[0-9a-f]{64}$/
-const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
-const SHA256_PATTERN = /^[0-9a-f]{64}$/
 const PREPARATION_FIELDS = [
   'version',
   'operationId',
@@ -521,48 +517,6 @@ export function ctfRangeOrderAdmissionIdentity(
       createPoolSettlementCapabilityArtifact(operation),
     ),
     authorizationExpiresAtUnixSeconds: operation.expiry,
-  }
-}
-
-/** Old two-step path only: the stage-route response of a capability-requested record. */
-export function validateAndProjectCtfRangeSettlementCapabilityResponse(input: {
-  readonly capability: SettlementCapabilityResponse
-  readonly preparation: PersistedCtfRangeOrderPreparation
-  readonly operation: DurableCtfRangeOperation
-  readonly recovering: boolean
-}): CtfRangeOrderPreparationCapability {
-  const preparation = decodePersistedCtfRangeOrderPreparation(input.preparation)
-  const request = preparation.request
-  assertOperationMatchesPreparation(input.operation, preparation)
-  const expectedDigest = deriveSettlementCapabilityArtifactDigest(
-    createPoolSettlementCapabilityArtifact(input.operation),
-  )
-  const validState =
-    input.capability.state === 'bound' ||
-    (input.recovering &&
-      (input.capability.state === 'selected' ||
-        input.capability.state === 'uncertain' ||
-        input.capability.state === 'terminal'))
-  if (
-    input.capability.clientOrderId !== request.clientOrderId ||
-    input.capability.marketId !== request.marketId ||
-    input.capability.artifactDigest !== expectedDigest ||
-    !validState ||
-    !UUID_PATTERN.test(input.capability.orderId) ||
-    !UUID_PATTERN.test(input.capability.reference?.artifactId ?? '') ||
-    !SHA256_PATTERN.test(input.capability.reference?.bindingDigest ?? '') ||
-    !Number.isSafeInteger(input.capability.version) ||
-    input.capability.version < 1 ||
-    !isIsoDateTime(input.capability.authorizationExpiresAt) ||
-    !isIsoDateTime(input.capability.stageExpiresAt)
-  ) {
-    throw new Error('engine returned a foreign settlement capability')
-  }
-  return {
-    artifactId: input.capability.reference.artifactId,
-    bindingDigest: input.capability.reference.bindingDigest,
-    artifactDigest: input.capability.artifactDigest,
-    orderId: input.capability.orderId,
   }
 }
 
@@ -1141,10 +1095,6 @@ function bytesToBase64(bytes: Uint8Array): string {
     binary += String.fromCharCode(...bytes.subarray(offset, offset + 32_768))
   }
   return btoa(binary)
-}
-
-function isIsoDateTime(value: unknown): value is string {
-  return typeof value === 'string' && Number.isFinite(Date.parse(value))
 }
 
 function requireRecord(value: unknown, label: string): Record<string, unknown> {

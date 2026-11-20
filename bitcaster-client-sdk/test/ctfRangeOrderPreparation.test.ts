@@ -38,7 +38,6 @@ import {
   planPersistedCtfRangeOrderAuthorization,
   previewCtfRangeSettlementCapabilityWorkFacts,
   settlementCapabilityWorkFacts,
-  validateAndProjectCtfRangeSettlementCapabilityResponse,
   ctfRangeOrderAdmissionIdentity,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
@@ -463,7 +462,7 @@ test('public capability preparation rejects non-FOK orders', () => {
   }
 })
 
-test('builds one capability request and validates its exact engine projection', () => {
+test('builds one capability request with its exact work facts', () => {
   const preparation = buildPersistedCtfRangeOrderPreparation({
     request: rangeOrderRequest(),
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
@@ -477,29 +476,11 @@ test('builds one capability request and validates its exact engine projection', 
     nowUnixSeconds: 20,
     randomId: sequentialId('range-operation-capability', 'authorization-capability'),
   })
-  const request = preparation.request
   const operation = completedOperation(preparation)
   const capabilityRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation)
   assert.equal(capabilityRequest.orderIntent.timeInForce, 'FOK')
   const artifact = createPoolSettlementCapabilityArtifact(operation)
-  const artifactDigest = deriveSettlementCapabilityArtifactDigest(artifact)
   const workFacts = settlementCapabilityWorkFacts(operation)
-  const capability = {
-    reference: {
-      artifactId: '11111111-1111-4111-8111-111111111111',
-      bindingDigest: '11'.repeat(32),
-    },
-    orderId: '22222222-2222-4222-8222-222222222222',
-    clientOrderId: request.clientOrderId,
-    marketId: request.marketId,
-    artifactDigest,
-    state: 'bound' as const,
-    version: 1,
-    authorizationExpiresAt: '2030-01-01T00:00:00.000Z',
-    stageExpiresAt: '2030-01-01T00:01:00.000Z',
-    settlementGroup: null,
-  }
-
   assert.equal(capabilityRequest.stageIdempotencyKey, operation.authorizationId)
   assert.equal(
     Buffer.from(capabilityRequest.artifact, 'base64').toString('base64'),
@@ -510,30 +491,6 @@ test('builds one capability request and validates its exact engine projection', 
     manifestCount: artifact.manifest.entries.length,
     artifactByteCount: Buffer.from(capabilityRequest.artifact, 'base64').byteLength,
   })
-  assert.deepEqual(
-    validateAndProjectCtfRangeSettlementCapabilityResponse({
-      capability,
-      preparation,
-      operation,
-      recovering: false,
-    }),
-    {
-      artifactId: capability.reference.artifactId,
-      bindingDigest: capability.reference.bindingDigest,
-      artifactDigest,
-      orderId: capability.orderId,
-    },
-  )
-  assert.throws(
-    () =>
-      validateAndProjectCtfRangeSettlementCapabilityResponse({
-        capability: { ...capability, marketId: `${CONDITION_ID}-NO` },
-        preparation,
-        operation,
-        recovering: false,
-      }),
-    /foreign settlement capability/,
-  )
   assert.throws(
     () =>
       createCtfRangeSettlementCapabilityRequest(preparation, {

@@ -155,7 +155,6 @@ import {
   decodeCtfRangeOrderPreparationFromRecord,
   planPersistedCtfRangeOrderAuthorization,
   settlementCapabilityWorkFacts,
-  validateAndProjectCtfRangeSettlementCapabilityResponse,
   type CtfRangeOrderRequest,
   type CtfRangeReviewedMintFacts,
   type PersistedCtfRangeOrderPreparation,
@@ -171,7 +170,6 @@ import {
   recoverCtfRangeOrderRequest,
 } from "@bitcaster/client-sdk/ctfRangeOrderAdmission";
 import {
-  EngineClientError,
   classifyOrderSubmissionFailure,
   type CreateSettlementCapabilityRequest,
   type OrderLookupResponse,
@@ -179,7 +177,6 @@ import {
   type OrderStatusResponse,
   type SettlementCapabilityResultResponse,
   type SettlementCapabilityAdmissionPolicyResponse,
-  type SettlementCapabilityResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
   type SubmitOrderOptions,
@@ -206,7 +203,6 @@ import {
   browserMixedSourcePredecessorProofRows,
   type BrowserRangeSourceResult,
   browserRangeJournalIdentity,
-  browserRangeCapabilityRequestFromSnapshot,
   browserRangeConsolidationOperationFromSnapshot,
   browserRangeConsolidationSuccessorProofRows,
   browserRangeOperationFromSnapshot,
@@ -228,7 +224,6 @@ import {
 } from "./browserCtfRangeOrderSource";
 import {
   bindCtfRangePreparationAdmission,
-  bindCtfRangePreparationCapability,
   appendCtfRangePreparationConsolidationInTransaction,
   readPreparedCtfRangeSells,
   insertCtfRangePreparationInTransaction,
@@ -277,10 +272,6 @@ type BrowserCtfRangeMintRecovery = Pick<
 >;
 
 export interface BrowserCtfRangeEngine {
-  /** The old stage route. Only the recovery of a release 4 `capability-requested` record uses it. */
-  createSettlementCapability(
-    request: CreateSettlementCapabilityRequest,
-  ): Promise<SettlementCapabilityResponse>;
   /** Read-only recovery lookup of an `order-requested` record. It never creates an order. */
   lookupOrderByClientOrderId(
     conditionId: string,
@@ -1114,23 +1105,10 @@ export class BrowserCtfRangeOrderCoordinator {
       // A definitive refusal committed nothing. The refund opens at expiry.
       case "order-request-rejected":
         break;
+      // A release 4 record whose stage response was lost. The engine no longer
+      // serves the stage route or the reference form, so no request can
+      // create its order. The mint check waits for expiry, then refunds.
       case "capability-requested":
-        if (
-          Math.floor(this.#now() / 1_000) >= decodeCtfRangeOrderPreparationFromRecord(record).expiry
-        ) {
-          break;
-        }
-        try {
-          await this.#recoverRequestedCapability(record, scope);
-        } catch (error) {
-          const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
-          if (
-            !(error instanceof BrowserCtfRangeOrderError) ||
-            Math.floor(this.#now() / 1_000) < preparation.expiry
-          ) {
-            throw error;
-          }
-        }
         break;
       case "capability-bound":
         await this.#discoverBoundOrder(record);
@@ -3218,86 +3196,6 @@ export class BrowserCtfRangeOrderCoordinator {
       default:
         return assertNever(recovery);
     }
-  }
-
-  async #recoverRequestedCapability(
-    record: Awaited<ReturnType<typeof pageActiveCtfRangePreparations>>["preparations"][number],
-    scope: DurableCustodyScope,
-  ): Promise<void> {
-    const preparation = decodeCtfRangeOrderPreparationFromRecord(record);
-    const snapshot = await this.#custody.readOperationSnapshot(
-      scope,
-      browserCustodyOperationId(scope, preparation.operationId),
-    );
-    if (snapshot === null) throw rangeError("recovery-pending");
-    const operation = browserRangeOperationFromSnapshot(snapshot.record, snapshot.artifacts);
-    const expectedRequest = createCtfRangeSettlementCapabilityRequest(preparation, operation);
-    const request = browserRangeCapabilityRequestFromSnapshot(
-      snapshot.record,
-      snapshot.artifacts,
-      expectedRequest,
-    );
-    let capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>;
-    try {
-      capability = await this.#createVerifiedCapability(preparation, operation, request, true);
-    } catch (error) {
-      if (
-        error instanceof BrowserCtfRangeOrderError &&
-        error.code === "capability-creation-failed"
-      ) {
-        throw rangeError("recovery-pending", error);
-      }
-      throw error;
-    }
-    try {
-      await bindCtfRangePreparationCapability(
-        {
-          scopeId: record.scopeId,
-          rangeOperationId: record.rangeOperationId,
-          expectedRevision: record.revision,
-          capability,
-          updatedAtMs: this.#now(),
-        },
-        this.#database,
-      );
-    } catch (error) {
-      throw rangeError("recovery-pending", error);
-    }
-  }
-
-  async #createVerifiedCapability(
-    preparation: PersistedCtfRangeOrderPreparation,
-    operation: DurableCtfRangeOperation,
-    request: CreateSettlementCapabilityRequest,
-    recovering = false,
-  ): Promise<ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>> {
-    if (Math.floor(this.#now() / 1_000) >= preparation.expiry) {
-      throw rangeError("order-attempt-ended");
-    }
-    let response: SettlementCapabilityResponse;
-    try {
-      response = await this.#engine.createSettlementCapability(request);
-    } catch (error) {
-      const code =
-        error instanceof EngineClientError && error.code !== undefined ? error.code : undefined;
-      throw rangeError(
-        code !== undefined && isSettlementCapabilityErrorCode(code)
-          ? code
-          : "capability-creation-failed",
-      );
-    }
-    let capability: ReturnType<typeof validateAndProjectCtfRangeSettlementCapabilityResponse>;
-    try {
-      capability = validateAndProjectCtfRangeSettlementCapabilityResponse({
-        capability: response,
-        preparation,
-        operation,
-        recovering,
-      });
-    } catch {
-      throw rangeError("capability-validation-failed");
-    }
-    return capability;
   }
 
   async #discoverBoundOrder(

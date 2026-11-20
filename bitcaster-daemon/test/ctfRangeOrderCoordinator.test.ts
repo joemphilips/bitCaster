@@ -241,7 +241,6 @@ test('fresh preparation refuses foreign returned binding authority and lost owne
               return value
             },
           )
-          let capabilityCalls = 0
           const ids = ['returned-operation', 'returned-authorization']
           const coordinator = new DaemonCtfRangeOrderCoordinator(
             directory,
@@ -257,16 +256,9 @@ test('fresh preparation refuses foreign returned binding authority and lost owne
             },
           )
           await assert.rejects(
-            coordinator.prepare(
-              orderRequest(),
-              fakeEngineClient((request) => {
-                capabilityCalls++
-                return boundCapability(request)
-              }),
-            ),
+            coordinator.prepare(orderRequest(), fakeEngineClient()),
             mode === 'owner' ? /owner-lost/ : /authority is missing or foreign/,
           )
-          assert.equal(capabilityCalls, 0)
         },
       )
     })
@@ -296,11 +288,7 @@ test('daemon fence takeover during an uncommitted preview prevents source counte
         notifyPreviewStarted()
         await previewGate
       }
-      let capabilityCalls = 0
-      const client = fakeEngineClient((request) => {
-        capabilityCalls += 1
-        return boundCapability(request)
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => wallet,
@@ -337,7 +325,6 @@ test('daemon fence takeover during an uncommitted preview prevents source counte
       releasePreview()
       await assert.rejects(preparing, /stale or expired authority/)
       assert.equal(wallet.completeCalls, 0)
-      assert.equal(capabilityCalls, 0)
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.state, 'available')
       assert.equal(
@@ -408,7 +395,6 @@ test('daemon discards a failed source draft without committing its counter trans
         countersAtPreview = await readCounters()
         throw new Error('source draft preview failed')
       }
-      let capabilityCalls = 0
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => wallet,
@@ -416,19 +402,12 @@ test('daemon discards a failed source draft without committing its counter trans
         randomId: randomIds('source-draft-failure'),
       })
       await assert.rejects(
-        coordinator.prepare(
-          orderRequest(),
-          fakeEngineClient((request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          }),
-        ),
+        coordinator.prepare(orderRequest(), fakeEngineClient()),
         /source draft preview failed/,
       )
       assert.ok(countersAtPreview)
       assert.deepEqual(await readCounters(), countersAtPreview)
       assert.equal(wallet.completeCalls, 0)
-      assert.equal(capabilityCalls, 0)
       const state = await readState()
       assert.equal(
         state?.proofOperations[(await counterRangeId(directory, 'client-order-1')) + ':source'],
@@ -485,7 +464,7 @@ test('daemon rebuilds a source draft after a counter conflict and commits after 
           { normalizedMint: MINT_URL, unit: 'msat' },
         )
       }
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const preview = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => {
@@ -600,11 +579,7 @@ test('daemon same-operation source race replays the exact committed journal once
         now: () => 10_000,
         randomId: () => repeatedIds[randomIdCall++ % repeatedIds.length]!,
       })
-      let capabilityCalls = 0
-      const client = fakeEngineClient((request) => {
-        capabilityCalls += 1
-        return boundCapability(request)
-      })
+      const client = fakeEngineClient()
       const databaseBefore = await openDaemonStateSqlite(directory)
       let counterBefore: number
       try {
@@ -643,7 +618,6 @@ test('daemon same-operation source race replays the exact committed journal once
         'the duplicate operation starts from the same snapshot and reconstructs the same draft',
       )
       assert.equal(wallet.completeCalls, 1)
-      assert.equal(capabilityCalls, 0)
 
       const source = (await readState())?.proofOperations[
         `${await counterRangeId(directory)}:source`
@@ -687,7 +661,7 @@ test('daemon same-operation source race replays the exact committed journal once
         randomId: () => repeatedIds[randomIdCall++ % repeatedIds.length]!,
       })
       await assert.rejects(
-        coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability), async () => {
+        coordinator.prepare(orderRequest(), fakeEngineClient(), async () => {
           throw new Error('stop after source commit')
         }),
         /stop after source commit/,
@@ -792,7 +766,7 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
             }
           },
         })
-        const client = fakeEngineClient(boundCapability)
+        const client = fakeEngineClient()
 
         if (faultPhase === 'before-commit') {
           await assert.rejects(coordinator.prepare(orderRequest(), client), /before-commit fault/)
@@ -913,14 +887,9 @@ test('daemon commits order-requested before the one request and never resends it
       const callOrder: string[] = []
       const requiredScores: number[] = []
       const phases: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
-      let createAttempts = 0
       let submitAttempts = 0
       const lookups: Array<[string, string]> = []
       const client = fakeEngineClient(
-        () => {
-          createAttempts += 1
-          throw new Error('the one-step path never stages a capability')
-        },
         async () => {
           submitAttempts += 1
           throw new Error('recovery never sends the order')
@@ -1093,7 +1062,6 @@ test('daemon commits order-requested before the one request and never resends it
         'pending recovery changed retained authority',
       )
       assert.equal(lookups.length, 1)
-      assert.equal(createAttempts, 0)
       assert.equal(submitAttempts, 0)
       await assertSeedAbsentFromArtifacts(directory)
     },
@@ -1116,14 +1084,9 @@ test(
         let nowMs = 10_000
         let orderCalls = 0
         let refundCalls = 0
-        const posted: CreateSettlementCapabilityRequest[] = []
         const lookupTimes: number[] = []
         const wallet = new FakeWallet([sourceProof])
         const client = fakeEngineClient(
-          (request) => {
-            posted.push(structuredClone(request))
-            return boundCapability(request)
-          },
           async () => {
             orderCalls += 1
             return submittedOrder()
@@ -1204,7 +1167,6 @@ test(
             (await counterRangeId(directory, 'client-order-1')) + ':source',
           ])
           assert.equal(timers.length, 0)
-          assert.equal(posted.length, 0)
           assert.equal(wallet.completeCalls, 1)
           assert.equal(orderCalls, 0)
           assert.equal(refundCalls, 1)
@@ -1288,7 +1250,7 @@ test('daemon keeps order-requested when the accepted response holds another arti
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const prepared = await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+      const prepared = await coordinator.prepare(orderRequest(), fakeEngineClient())
       const accepted = boundCapability(prepared.admission)
       for (const settlementCapability of [
         { ...accepted, artifactDigest: '00'.repeat(32) },
@@ -1317,11 +1279,7 @@ test('daemon caps a FOK authorization at 300 seconds by default, as the browser 
       asset: regularAsset(),
     },
     async ({ directory, fence }) => {
-      const posted: CreateSettlementCapabilityRequest[] = []
-      const client = fakeEngineClient((request) => {
-        posted.push(structuredClone(request))
-        return boundCapability(request)
-      })
+      const client = fakeEngineClient()
       const ids = ['range-default-lifetime-operation', 'range-default-lifetime-authorization']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
@@ -1334,7 +1292,6 @@ test('daemon caps a FOK authorization at 300 seconds by default, as the browser 
         Buffer.from(prepared.admission.artifact, 'base64'),
       )
       assert.equal(artifact.expiry, 10 + DAEMON_IMMEDIATE_ORDER_AUTHORIZATION_LIFETIME_SECONDS)
-      assert.equal(posted.length, 0)
     },
   )
 })
@@ -1350,16 +1307,8 @@ test('daemon retains a capped authorization after restart with a different cap',
     },
     async ({ directory, fence }) => {
       const wallet = new FakeWallet([sourceProof])
-      const posted: CreateSettlementCapabilityRequest[] = []
       let admission: CreateSettlementCapabilityRequest | undefined
-      const client = fakeEngineClient(
-        (request) => {
-          posted.push(structuredClone(request))
-          return boundCapability(request)
-        },
-        undefined,
-        async () => orderLookupFor(admission!),
-      )
+      const client = fakeEngineClient(undefined, async () => orderLookupFor(admission!))
       const ids = ['range-lifetime-operation', 'range-lifetime-authorization']
       const dependencies = {
         createMint: () => fakeMint(),
@@ -1386,7 +1335,6 @@ test('daemon retains a capped authorization after restart with a different cap',
       assert.deepEqual(recovery.recovered, [])
       assert.equal(recovery.pending.length, 1)
       assert.equal(await journalLifecycle(directory), 'order-submitted')
-      assert.equal(posted.length, 0)
       assert.equal(wallet.completeCalls, 1)
     },
   )
@@ -1405,17 +1353,13 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
     },
     async ({ directory, fence }) => {
       const wallet = new FakeWallet(sourceProofs)
-      let capabilityCalls = 0
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         createWallet: () => wallet,
         now: () => 10_000,
         randomId: () => 'range-operation-consolidation-off',
       })
-      const client = fakeEngineClient((request) => {
-        capabilityCalls += 1
-        return boundCapability(request)
-      })
+      const client = fakeEngineClient()
 
       await assert.rejects(
         coordinator.prepare(
@@ -1431,7 +1375,6 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
       )
 
       assert.equal(wallet.completeCalls, 0)
-      assert.equal(capabilityCalls, 0)
       const state = await readState()
       assert.deepEqual(state?.proofOperations, {})
       assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
@@ -1461,10 +1404,7 @@ test('daemon previews full-exit source fees without persisting or spending', asy
         now: () => 10_000,
         randomId: randomIds('range-fee-preview'),
       })
-      const facts = await coordinator.previewFeeFacts(
-        sellOneShareRequest(),
-        fakeEngineClient(boundCapability),
-      )
+      const facts = await coordinator.previewFeeFacts(sellOneShareRequest(), fakeEngineClient())
 
       assert.equal(facts.sourceMode, 'mixed-source-ctf-convert')
       assert.equal(facts.sourcePreparationFeeSubunits, '1')
@@ -1508,7 +1448,7 @@ test('daemon accepts exact fee consent and refuses changed source fees before mi
         now: () => 10_000,
         randomId: randomIds('range-fee-consent'),
       })
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const previewCoordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => {
@@ -1542,7 +1482,7 @@ test('daemon accepts exact fee consent and refuses changed source fees before mi
         now: () => 10_000,
         randomId: randomIds('range-fee-drift'),
       })
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const previewCoordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(),
         createWallet: () => {
@@ -1579,9 +1519,7 @@ test('daemon retains source-consolidation reservations after exact retry rejecti
     async ({ directory, fence }) => {
       const wallet = new FakeWallet(proofs, 'unspent')
       const ids = ['range-consolidation-rejected', 'authorization-consolidation-rejected']
-      const client = fakeEngineClient(() => {
-        throw new Error('failed preparation must not request a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         createWallet: () => wallet,
@@ -1701,9 +1639,7 @@ async function recoverLostRequestWithReading(
       const mint = readingMint(request === 'source' ? fakeMint(64, 1_000) : fakeMint(3), (Ys) =>
         lost ? read(Ys) : Ys.map((Y) => unspentEntry(Y)),
       )
-      const client = fakeEngineClient(() => {
-        throw new Error('an unresolved request must not request a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => wallet,
@@ -1800,9 +1736,7 @@ test('daemon consolidation replay does not restore successors consumed after com
         return prepare(...args)
       }
       const ids = ['range-consolidation-consumed', 'authorization-consolidation-consumed']
-      const client = fakeEngineClient(() => {
-        throw new Error('must not request a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         createWallet: () => wallet,
@@ -1887,7 +1821,7 @@ test('daemon resumes exact bounded consolidation without recreating its range ca
     },
     async ({ directory, fence }) => {
       const wallet = new FakeWallet(sourceProofs, true)
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const ids = ['range-operation-consolidated', 'range-authorization-consolidated']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => lostAcknowledgementMint(wallet, fakeMint(3)),
@@ -2000,7 +1934,7 @@ test('daemon refuses a higher cumulative fee after a committed consolidation bef
         price: 5,
         consolidateProofs: true,
       }
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const preview = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(3),
         now: () => 10_000,
@@ -2088,9 +2022,7 @@ test('daemon keeps both reservations when an expired source replay is uncertain'
       let nowMs = 10_000
       const wallet = new FakeWallet([proof], 'unspent')
       const ids = ['range-uncertain', 'authorization-uncertain']
-      const client = fakeEngineClient(() => {
-        throw new Error('must not submit a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(64, 320),
         createWallet: () => wallet,
@@ -2144,11 +2076,7 @@ test('daemon keeps source reservations after a definite exact replay rejection a
       let nowMs = 10_000
       const wallet = new FakeWallet([sourceProof], 'unspent')
       const sourcePreviewDigests: string[] = []
-      let capabilityCalls = 0
-      const client = fakeEngineClient(() => {
-        capabilityCalls += 1
-        throw new Error('capability creation must not run for an uncommitted source')
-      })
+      const client = fakeEngineClient()
       const ids = ['range-operation-expired-rejection', 'range-authorization-expired-rejection']
       wallet.completeSwap = async (preview) => {
         sourcePreviewDigests.push(swapPreviewDigest(preview))
@@ -2174,7 +2102,6 @@ test('daemon keeps source reservations after a definite exact replay rejection a
       assert.deepEqual(recovery.recovered, [])
       assert.equal(recovery.pending.length, 1)
       assert.match(recovery.pending[0]!.error, /replay rejection remains pending/)
-      assert.equal(capabilityCalls, 0)
       const state = await readState()
       assert.equal(state?.wallet.proofs[0]?.state, 'reserved')
       assert.equal(
@@ -2243,19 +2170,12 @@ test('daemon applies a late exact source result and refunds locally without capa
         }
         throw new MintOperationError(11001, 'exact retry lost race with original source request')
       }
-      let capabilityCalls = 0
       let orderCalls = 0
       let beforeCapabilityCalls = 0
-      const client = fakeEngineClient(
-        (request) => {
-          capabilityCalls += 1
-          return boundCapability(request)
-        },
-        async () => {
-          orderCalls += 1
-          return submittedOrder()
-        },
-      )
+      const client = fakeEngineClient(async () => {
+        orderCalls += 1
+        return submittedOrder()
+      })
       const ids = ['range-operation-late-source', 'range-authorization-late-source']
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => fakeMint(64, 1_000),
@@ -2308,7 +2228,6 @@ test('daemon applies a late exact source result and refunds locally without capa
       assert.ok(prepareError instanceof Error)
       assert.match(prepareError.message, /expired before the order request/)
       assert.equal(beforeCapabilityCalls, 0)
-      assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
 
       const state = await readState()
@@ -2353,18 +2272,11 @@ test('daemon routes an expired capability-requested journal to local refund with
       let nowMs = 10_000
       let crossExpiryDuringExactRequestRead = false
       let recoveryFenceReads = 0
-      let capabilityCalls = 0
       let orderCalls = 0
-      const client = fakeEngineClient(
-        () => {
-          capabilityCalls += 1
-          throw new Error('capability acknowledgement lost')
-        },
-        async () => {
-          orderCalls += 1
-          return submittedOrder()
-        },
-      )
+      const client = fakeEngineClient(async () => {
+        orderCalls += 1
+        return submittedOrder()
+      })
       const ids = ['range-operation-expired-capability', 'range-authorization-expired-capability']
       const coordinator = new DaemonCtfRangeOrderCoordinator(
         directory,
@@ -2399,7 +2311,6 @@ test('daemon routes an expired capability-requested journal to local refund with
         pending: [],
       })
       assert.ok(recoveryFenceReads >= 2)
-      assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
       const state = await readState()
       assert.ok(
@@ -2432,7 +2343,7 @@ test('daemon refuses a range authorization without five minutes of refund headro
       })
 
       await assert.rejects(
-        coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability)),
+        coordinator.prepare(orderRequest(), fakeEngineClient()),
         /authorization horizon is exhausted/,
       )
       assert.equal(wallet.completeCalls, 0)
@@ -2462,13 +2373,8 @@ for (const generation of ['one-step', 'release 4'] as const) {
       async ({ directory, fence }) => {
         let accepted = false
         let admission: CreateSettlementCapabilityRequest | undefined
-        let stageCalls = 0
         let submitAttempts = 0
         const baseClient = fakeEngineClient(
-          (request) => {
-            stageCalls += 1
-            return boundCapability(request, 'selected')
-          },
           async () => {
             submitAttempts += 1
             throw new Error('recovery never sends the order')
@@ -2504,7 +2410,6 @@ for (const generation of ['one-step', 'release 4'] as const) {
         assert.match(recovered.pending[0]!.error, /submitted range authorization remains unspent/)
         assert.equal(await journalLifecycle(directory), 'order-submitted')
         assert.equal(submitAttempts, 0)
-        assert.equal(stageCalls, 0)
         assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, 'client-order-1')
       },
     )
@@ -2533,7 +2438,7 @@ test('daemon refunds a definitively rejected order without requiring engine orde
         now: () => nowMs,
         randomId: () => ids.shift()!,
       })
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const prepared = await coordinator.prepare(orderRequest(), client)
       await prepared.recordRejected()
 
@@ -2616,7 +2521,7 @@ test('daemon leaves an unexpectedly active FOK pending without cancellation or r
         { ...restingOrderStatus()!, status: 'partially_filled' as const },
       ]
       let activeStatusIndex = 0
-      const baseClient = fakeEngineClient(boundCapability)
+      const baseClient = fakeEngineClient()
       const client: EngineClientLike = {
         ...baseClient,
         getOrderStatus: async () => activeStatuses[activeStatusIndex]!,
@@ -2711,9 +2616,7 @@ for (const [acknowledgementLost, resultDeleted] of [
         const observations: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
         const mint = fakeMint(64, 1_000, () => selectedOutputs)
         let admission: CreateSettlementCapabilityRequest | undefined
-        const baseClient = fakeEngineClient(boundCapability, undefined, async () =>
-          orderLookupFor(admission!),
-        )
+        const baseClient = fakeEngineClient(undefined, async () => orderLookupFor(admission!))
         const client: EngineClientLike = {
           ...baseClient,
           getSettlementCapabilityResultByOperation: async () => {
@@ -3071,7 +2974,7 @@ test('daemon applies a partial FOK result but keeps it pending and unacknowledge
     async ({ directory, fence }) => {
       let result: SettlementCapabilityResultResponse | null = null
       let acknowledgementCalls = 0
-      const baseClient = fakeEngineClient(boundCapability)
+      const baseClient = fakeEngineClient()
       const client: EngineClientLike = {
         ...baseClient,
         getSettlementCapabilityResultByOperation: async () => result,
@@ -3170,7 +3073,7 @@ for (const persistedStage of [false, true])
           }),
         }
         const client: EngineClientLike = {
-          ...fakeEngineClient(boundCapability),
+          ...fakeEngineClient(),
           getSettlementCapabilityResultByOperation: async () => {
             if (engineTransportFails) throw new Error('engine result unavailable')
             return engineResponse
@@ -3425,7 +3328,7 @@ for (const signatureKeyset of ['same', 'other'] as const)
           },
         }
         const client: EngineClientLike = {
-          ...fakeEngineClient(boundCapability),
+          ...fakeEngineClient(),
           getOrderStatus: async () => cancelledOrderStatus(),
         }
         const ids = ['range-operation-reused-output', 'range-authorization-reused-output']
@@ -3533,7 +3436,7 @@ for (const engineEnvelope of [false, true])
           }),
         }
         const client: EngineClientLike = {
-          ...fakeEngineClient(boundCapability),
+          ...fakeEngineClient(),
           getOrderStatus: async () => cancelledOrderStatus(),
           getSettlementCapabilityResultByOperation: async () =>
             engineEnvelope && settled && result !== null
@@ -3708,7 +3611,7 @@ test('daemon resumes the exact post-expiry refund after mint acknowledgement los
         }),
       }
       const client: EngineClientLike = {
-        ...fakeEngineClient(boundCapability),
+        ...fakeEngineClient(),
         getOrderStatus: async () => cancelledOrderStatus(),
       }
       const dependencies: DaemonCtfRangeOrderCoordinatorDependencies = {
@@ -4155,9 +4058,7 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
         const wallet = new FakeWallet([proof])
         const ids = ['range-staged', 'authorization-staged']
         const mint = fakeMint()
-        const client = fakeEngineClient(() => {
-          throw new Error('recovery must not request a capability')
-        })
+        const client = fakeEngineClient()
         const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mint,
           injectRangeBindFault: (phase) => {
@@ -4257,7 +4158,7 @@ test('daemon binds a conditional source to range custody without consolidation',
           amountSubunits: 10_000,
           minimumFillAmountSubunits: 10_000,
         },
-        fakeEngineClient(boundCapability),
+        fakeEngineClient(),
       )
       assert.equal(wallet.completeCalls, 1)
       await assertCounterAuthorityPairs(directory)
@@ -4299,7 +4200,7 @@ test('daemon consolidates conditional CTF inventory with the same bounded source
           minimumFillAmountSubunits: 10_000,
           consolidateProofs: true,
         },
-        fakeEngineClient(boundCapability),
+        fakeEngineClient(),
       )
 
       assert.deepEqual(prepared.consolidation, {
@@ -4348,13 +4249,7 @@ test('daemon prepares a real retained successor through a fresh range preparatio
         randomId: () => ids.shift()!,
       })
       let capabilityIndex = 0
-      const engine = fakeEngineClient((request) => {
-        capabilityIndex += 1
-        return {
-          ...boundCapability(request),
-          orderId: `00000000-0000-8000-8000-${String(capabilityIndex).padStart(12, '0')}`,
-        }
-      })
+      const engine = fakeEngineClient()
 
       await coordinator.prepare(
         {
@@ -4456,7 +4351,6 @@ test('daemon prepares a full held-share Sell from exact shares plus fee cash', a
     },
     async ({ directory, fence }) => {
       const mint = mixedSourceMint()
-      let capabilityCalls = 0
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => {
@@ -4466,18 +4360,11 @@ test('daemon prepares a full held-share Sell from exact shares plus fee cash', a
         randomId: randomIds('range-full-exit'),
       })
 
-      await coordinator.prepare(
-        sellOneShareRequest(),
-        fakeEngineClient((request) => {
-          capabilityCalls += 1
-          return boundCapability(request)
-        }),
-      )
+      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient())
 
       assert.equal(mint.convertRequests.length, 1)
       assert.deepEqual(convertInputTotals(mint.convertRequests[0]!), { YES: 1_000, '*': 64 })
       // The one-step path sends the capability with the order; it never stages it.
-      assert.equal(capabilityCalls, 0)
       assert.equal(await journalLifecycle(directory), 'order-requested')
       await assertCounterAuthorityPairs(directory)
       assert.deepEqual(await walletSummary(), {
@@ -4572,9 +4459,7 @@ for (const scenario of LOST_SOURCE_RESPONSE_CASES) {
           )
           throw new Error('mint convert response lost')
         }
-        const client = fakeEngineClient(() => {
-          throw new Error('a prepared journal must not request a capability')
-        })
+        const client = fakeEngineClient()
         const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mixedSourceMint({ convert, inputStates }),
           now: () => 10_000,
@@ -4650,7 +4535,6 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
           },
           signedOutputs,
         })
-        let capabilityCalls = 0
         const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mint,
           createWallet: () => {
@@ -4660,18 +4544,10 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
           randomId: randomIds(`range-refused-${code}`),
         })
 
-        const error = await coordinator
-          .prepare(
-            sellOneShareRequest(),
-            fakeEngineClient((request) => {
-              capabilityCalls += 1
-              return boundCapability(request)
-            }),
-          )
-          .then(
-            () => null,
-            (value: unknown) => value,
-          )
+        const error = await coordinator.prepare(sellOneShareRequest(), fakeEngineClient()).then(
+          () => null,
+          (value: unknown) => value,
+        )
 
         assert.ok(error instanceof CtfRangeOrderReleasedError)
         assert.deepEqual(error.mintError, { code, detail })
@@ -4680,7 +4556,6 @@ for (const [code, detail] of OUTPUT_REUSE_REFUSALS) {
           `The mint refused the order (mint code ${code}). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.`,
         )
         assert.equal(mint.convertRequests.length, 1)
-        assert.equal(capabilityCalls, 0)
         await assertReleasedPartialSell(directory, { cashSpent: false, mintCode: code })
         // The scan admits no proof. It only moves each output cursor past the
         // outputs that the other client signed.
@@ -4718,17 +4593,10 @@ test('daemon releases a refused buy source with 11008 at submit', async () => {
         randomId: randomIds('range-refused-buy'),
       })
 
-      const error = await coordinator
-        .prepare(
-          orderRequest(),
-          fakeEngineClient(() => {
-            throw new Error('a released preparation must not request a capability')
-          }),
-        )
-        .then(
-          () => null,
-          (value: unknown) => value,
-        )
+      const error = await coordinator.prepare(orderRequest(), fakeEngineClient()).then(
+        () => null,
+        (value: unknown) => value,
+      )
 
       assert.ok(error instanceof CtfRangeOrderReleasedError)
       assert.equal(error.mintError.code, 11008)
@@ -4818,9 +4686,7 @@ test('daemon releases a refused consolidation round and ends the order attempt',
             minimumFillAmountSubunits: 1_000,
             consolidateProofs: true,
           },
-          fakeEngineClient(() => {
-            throw new Error('a released preparation must not request a capability')
-          }),
+          fakeEngineClient(),
         )
         .then(
           () => null,
@@ -4919,9 +4785,7 @@ async function refusedConsolidationRound(
             minimumFillAmountSubunits: 1_000,
             consolidateProofs: true,
           },
-          fakeEngineClient(() => {
-            throw new Error('a refused consolidation must not request a capability')
-          }),
+          fakeEngineClient(),
         )
         .then(
           () => null,
@@ -5029,17 +4893,10 @@ test('daemon releases a partial sell after 11001 with a spent fee input and reti
         randomId: randomIds('range-refused-mixed'),
       })
 
-      const error = await coordinator
-        .prepare(
-          sellOneShareRequest(),
-          fakeEngineClient(() => {
-            throw new Error('a released preparation must not request a capability')
-          }),
-        )
-        .then(
-          () => null,
-          (value: unknown) => value,
-        )
+      const error = await coordinator.prepare(sellOneShareRequest(), fakeEngineClient()).then(
+        () => null,
+        (value: unknown) => value,
+      )
 
       assert.ok(error instanceof CtfRangeOrderReleasedError)
       assert.deepEqual(error.mintError, { code: 11001, detail: 'Token already spent' })
@@ -5102,12 +4959,7 @@ for (const scenario of WAITING_REFUSAL_CASES) {
         })
 
         await assert.rejects(
-          coordinator.prepare(
-            sellOneShareRequest(),
-            fakeEngineClient(() => {
-              throw new Error('a reserved preparation must not request a capability')
-            }),
-          ),
+          coordinator.prepare(sellOneShareRequest(), fakeEngineClient()),
           (error: unknown) =>
             isRangeSourceRefusalPending(error, { code: scenario.code, detail: scenario.detail }),
         )
@@ -5155,9 +5007,7 @@ test('daemon restores the exact outputs when a refused replay finds every input 
           throw new MintOperationError(11008, 'Duplicate outputs')
         },
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a prepared journal must not request a capability')
-      })
+      const client = fakeEngineClient()
       const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         now: () => 10_000,
@@ -5248,9 +5098,7 @@ for (const scenario of STUCK_PRODUCTION_CASES) {
             throw new MintOperationError(scenario.code, scenario.detail)
           },
         })
-        const client = fakeEngineClient(() => {
-          throw new Error('a stuck source must not request a capability')
-        })
+        const client = fakeEngineClient()
         const dependencies = {
           createMint: () => mint,
           createWallet: () => {
@@ -5331,9 +5179,7 @@ test('daemon re-enters a refused release after a crash before its commit', async
           throw new MintOperationError(11008, 'Duplicate outputs')
         },
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a refused source must not request a capability')
-      })
+      const client = fakeEngineClient()
       const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         now: () => 10_000,
@@ -5406,9 +5252,7 @@ test('daemon reports one release when a concurrent replay and the first request 
           throw new MintOperationError(11008, 'Duplicate outputs')
         },
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a refused source must not request a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         now: () => 10_000,
@@ -5456,9 +5300,7 @@ test('daemon stops replaying after five identical coded refusals and retries onc
           throw new MintOperationError(12002, 'Keyset is inactive')
         },
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a reserved source must not request a capability')
-      })
+      const client = fakeEngineClient()
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         now: () => 10_000,
@@ -5546,7 +5388,7 @@ test('daemon checks every output of a buy and skips the counters that another cl
       })
       const before = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
 
-      await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+      await coordinator.prepare(orderRequest(), fakeEngineClient())
 
       const preparation = await retainedCounterPreparation(directory, orderRequest().clientOrderId)
       assert.equal(preparation.receiveCounterStart, PAST_OTHER_CLIENT_COUNTER)
@@ -5574,7 +5416,7 @@ test('daemon checks every output of a sell and skips the counters that another c
         randomId: randomIds('range-sell-check'),
       })
 
-      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient(boundCapability))
+      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient())
 
       // A Sell offers shares (the conditional keyset) and receives cash.
       const preparation = await retainedCounterPreparation(
@@ -5625,7 +5467,7 @@ test('daemon checks the keep outputs of a buy source and skips the counters that
         randomId: randomIds('range-keep-check'),
       })
 
-      await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+      await coordinator.prepare(orderRequest(), fakeEngineClient())
 
       const preparation = await retainedCounterPreparation(directory, orderRequest().clientOrderId)
       // The order range itself was clean.
@@ -5669,7 +5511,6 @@ test('daemon ends the attempt with no source request when the mint cannot check 
           return base.restore(payload)
         },
       }
-      let capabilityCalls = 0
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => wallet,
@@ -5678,20 +5519,13 @@ test('daemon ends the attempt with no source request when the mint cannot check 
       })
 
       await assert.rejects(
-        coordinator.prepare(
-          orderRequest(),
-          fakeEngineClient((request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          }),
-        ),
+        coordinator.prepare(orderRequest(), fakeEngineClient()),
         (error: unknown) =>
           error instanceof CtfRangeOrderOutputCheckError && error.reason === 'mint-check-failed',
       )
 
       assert.equal(restores, 2)
       assert.equal(swaps, 0)
-      assert.equal(capabilityCalls, 0)
       // The attempt holds no funds, so it ends and leaves no recovery work.
       const database = await openDaemonStateSqlite(directory)
       try {
@@ -5710,10 +5544,7 @@ test('daemon ends the attempt with no source request when the mint cannot check 
         ),
         [],
       )
-      const recovered = await coordinator.recover(
-        WALLET_SEED_HEX,
-        fakeEngineClient(boundCapability),
-      )
+      const recovered = await coordinator.recover(WALLET_SEED_HEX, fakeEngineClient())
       assert.deepEqual(recovered.pending, [])
       assert.equal(swaps, 0)
     },
@@ -5737,7 +5568,7 @@ test('daemon sends one clean order check and one clean source check for a buy an
         now: () => 10_000,
         randomId: randomIds('range-buy-clean'),
       })
-      await coordinator.prepare(orderRequest(), fakeEngineClient(boundCapability))
+      await coordinator.prepare(orderRequest(), fakeEngineClient())
       // The order check, then the check of the keep outputs of the source.
       assert.equal(mint.calls.restore, 2)
     },
@@ -5757,7 +5588,7 @@ test('daemon sends one clean order check and one clean source check for a buy an
         now: () => 10_000,
         randomId: randomIds('range-sell-clean'),
       })
-      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient(boundCapability))
+      await coordinator.prepare(sellOneShareRequest(), fakeEngineClient())
       // The order check, then the check of the offered and collateral change.
       assert.equal(mint.calls.restore, 2)
     },
@@ -5786,7 +5617,6 @@ test('daemon submits nothing when the mint cannot answer the output check', asyn
           throw new TypeError('fetch failed')
         },
       }
-      let capabilityCalls = 0
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         createWallet: () => wallet,
@@ -5796,13 +5626,7 @@ test('daemon submits nothing when the mint cannot answer the output check', asyn
       const before = await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' })
 
       await assert.rejects(
-        coordinator.prepare(
-          orderRequest(),
-          fakeEngineClient((request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          }),
-        ),
+        coordinator.prepare(orderRequest(), fakeEngineClient()),
         (error: unknown) =>
           error instanceof CtfRangeOrderOutputCheckError &&
           error.message ===
@@ -5810,7 +5634,6 @@ test('daemon submits nothing when the mint cannot answer the output check', asyn
       )
 
       assert.equal(swaps, 0)
-      assert.equal(capabilityCalls, 0)
       assert.deepEqual(
         await readDaemonKeysetCounters({ normalizedMint: MINT_URL, unit: 'msat' }),
         before,
@@ -6204,9 +6027,7 @@ test('daemon reports a fixed message and the bounded mint detail when a recovery
       cashProofs: [cashProof(64)],
     },
     async ({ directory, fence }) => {
-      const client = fakeEngineClient(() => {
-        throw new Error('a prepared journal must not request a capability')
-      })
+      const client = fakeEngineClient()
       const consent = await new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mixedSourceMint(),
         now: () => 10_000,
@@ -6326,9 +6147,7 @@ test('daemon refuses a second sell of a market while an earlier sell holds reser
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a reserved sell must not request a capability')
-      })
+      const client = fakeEngineClient()
       await assert.rejects(coordinator.prepare(sellOneShareRequest(), client))
       const first = await rangeSourceOperation()
       const reserved = await walletSummary()
@@ -6424,9 +6243,7 @@ test('daemon refuses a racing second sell in the reservation transaction', async
         now: () => 10_000,
         randomId: () => ids.shift()!,
       })
-      const client = fakeEngineClient(() => {
-        throw new Error('a reserved sell must not request a capability')
-      })
+      const client = fakeEngineClient()
       const sell = (clientOrderId: string) =>
         coordinator
           .prepare(
@@ -6495,9 +6312,7 @@ for (const faultPhase of ['before-commit', 'after-commit'] as const) {
         cashProofs: [cashProof(64)],
       },
       async ({ directory, fence }) => {
-        const client = fakeEngineClient(() => {
-          throw new Error('recovery must not request a capability')
-        })
+        const client = fakeEngineClient()
         const mint = mixedSourceMint()
         const first = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mint,
@@ -6570,19 +6385,12 @@ test('daemon keeps both mixed reservations when a duplicate retry loses to the o
           return signConvertRequest(request)
         },
       })
-      let capabilityCalls = 0
       let scoreCalls = 0
       let orderCalls = 0
-      const client = fakeEngineClient(
-        (request) => {
-          capabilityCalls += 1
-          return boundCapability(request)
-        },
-        async () => {
-          orderCalls += 1
-          return submittedOrder()
-        },
-      )
+      const client = fakeEngineClient(async () => {
+        orderCalls += 1
+        return submittedOrder()
+      })
       const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
         createMint: () => mint,
         authorizationLifetimeSeconds: 20,
@@ -6627,7 +6435,6 @@ test('daemon keeps both mixed reservations when a duplicate retry loses to the o
       assert.ok(prepareError instanceof Error)
       assert.match(prepareError.message, /expired before the order request/)
       assert.equal(scoreCalls, 0)
-      assert.equal(capabilityCalls, 0)
       assert.equal(orderCalls, 0)
       assert.equal(conversions.length, 2)
       assert.equal(await completedRefundCount(), 1)
@@ -6643,7 +6450,6 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'one millisecond before expiry',
     recoveryAtMs: 29_999,
     expected: {
-      capabilityCalls: 0,
       recovered: false,
       pending: /unsubmitted range authorization remains unspent before expiry/,
       lifecycle: 'prepared',
@@ -6655,7 +6461,6 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'at the exact expiry',
     recoveryAtMs: 30_000,
     expected: {
-      capabilityCalls: 0,
       recovered: true,
       pending: null,
       lifecycle: 'terminal',
@@ -6667,7 +6472,6 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'one millisecond before expiry',
     recoveryAtMs: 29_999,
     expected: {
-      capabilityCalls: 0,
       recovered: false,
       pending: /requested order is not confirmed before authorization expiry/,
       lifecycle: 'order-requested',
@@ -6679,23 +6483,22 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'at the exact expiry',
     recoveryAtMs: 30_000,
     expected: {
-      capabilityCalls: 0,
       recovered: true,
       pending: null,
       lifecycle: 'terminal',
       refunds: 1,
     },
   },
-  // A release 4 record resends its stage request only before expiry.
+  // A release 4 record sends no stage request: the engine removed the stage
+  // route (ADR-037, amendment of 2026-11-20). It waits for expiry, then refunds.
   {
     journal: 'capability-requested',
     boundary: 'one millisecond before expiry',
     recoveryAtMs: 29_999,
     expected: {
-      capabilityCalls: 1,
       recovered: false,
-      pending: /recovered range capability requires custody reconciliation/,
-      lifecycle: 'capability-bound',
+      pending: /unsubmitted range authorization remains unspent before expiry/,
+      lifecycle: 'capability-requested',
       refunds: 0,
     },
   },
@@ -6704,7 +6507,6 @@ const EXPIRY_BOUNDARY_CASES = [
     boundary: 'at the exact expiry',
     recoveryAtMs: 30_000,
     expected: {
-      capabilityCalls: 0,
       recovered: true,
       pending: null,
       lifecycle: 'terminal',
@@ -6735,18 +6537,11 @@ for (const scenario of EXPIRY_BOUNDARY_CASES) {
             return signConvertRequest(request)
           },
         })
-        let capabilityCalls = 0
         let orderCalls = 0
-        const client = fakeEngineClient(
-          (request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          },
-          async () => {
-            orderCalls += 1
-            return submittedOrder()
-          },
-        )
+        const client = fakeEngineClient(async () => {
+          orderCalls += 1
+          return submittedOrder()
+        })
         const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mint,
           authorizationLifetimeSeconds: 20,
@@ -6774,7 +6569,6 @@ for (const scenario of EXPIRY_BOUNDARY_CASES) {
         else assert.match(result.pending[0]?.error ?? '', scenario.expected.pending)
         if (scenario.expected.lifecycle === 'capability-bound')
           assert.equal(result.pending[0]?.retryAtMs, scenario.recoveryAtMs)
-        assert.equal(capabilityCalls, scenario.expected.capabilityCalls)
         assert.equal(orderCalls, 0)
         assert.equal((await mixedSourceCustody(directory)).lifecycle, scenario.expected.lifecycle)
         assert.equal(await completedRefundCount(), scenario.expected.refunds)
@@ -6814,9 +6608,7 @@ for (const scenario of FRESH_SELECTION_RESTART_CASES) {
         asset: outcomeAsset(),
       },
       async ({ directory, fence }) => {
-        const client = fakeEngineClient(() => {
-          throw new Error('a prepared journal must not request a capability')
-        })
+        const client = fakeEngineClient()
         const previewCash = cashProof(64)
         await addAvailableProofs([previewCash], regularAsset())
         const preview = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
@@ -6978,7 +6770,6 @@ for (const scenario of SELECTION_BOUNDARY_CASES) {
       },
       async ({ directory, fence }) => {
         const mint = mixedSourceMint({ maxOutputs: scenario.maxOutputs })
-        let capabilityCalls = 0
         const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
           createMint: () => mint,
           createWallet: () => {
@@ -6990,10 +6781,7 @@ for (const scenario of SELECTION_BOUNDARY_CASES) {
         })
         const preparing = coordinator.prepare(
           { ...sellOneShareRequest(), consolidateProofs: true },
-          fakeEngineClient((request) => {
-            capabilityCalls += 1
-            return boundCapability(request)
-          }),
+          fakeEngineClient(),
         )
 
         if (scenario.expected.error === null) await preparing
@@ -7013,7 +6801,6 @@ for (const scenario of SELECTION_BOUNDARY_CASES) {
           scenario.expected.consolidationFees,
         )
         // The one-step path never stages a capability.
-        assert.equal(capabilityCalls, 0)
         assert.deepEqual(await walletSummary(), scenario.expected.wallet)
       },
     )
@@ -7802,13 +7589,10 @@ function fakeMint(
 }
 
 function fakeEngineClient(
-  create: (request: CreateSettlementCapabilityRequest) => SettlementCapabilityResponse,
   submit: () => Promise<ReturnType<typeof submittedOrder>> = async () => submittedOrder(),
   lookup: NonNullable<EngineClientLike['lookupOrderByClientOrderId']> = async () => null,
 ): EngineClientLike {
   return {
-    // The old stage route: only the recovery of a release 4 capability-requested record calls it.
-    createSettlementCapability: async (request) => create(request),
     lookupOrderByClientOrderId: lookup,
     getSettlementCapabilityAdmissionPolicy: async () => ({
       coordinatorPubkey: COORDINATOR_KEY,
@@ -7872,7 +7656,7 @@ async function journalLifecycle(directory: string): Promise<string> {
 
 /**
  * Rewrite a one-step journal record to a state that only the release 4 writer
- * produced, so the old-route recovery of such a record stays covered.
+ * produced, so the recovery of such a stored record stays covered.
  */
 async function rewriteAsRelease4Journal(
   directory: string,
@@ -9020,7 +8804,7 @@ async function withExpiredOrdinaryRefund(
         () => activeFence,
         dependencies,
       )
-      const client = fakeEngineClient(boundCapability)
+      const client = fakeEngineClient()
       const prepared = await coordinator.prepare(orderRequest(), client)
       if (options.markRejected !== false) await prepared.recordRejected()
       // Without the rejection, the journal is a release 4 capability-bound record.
