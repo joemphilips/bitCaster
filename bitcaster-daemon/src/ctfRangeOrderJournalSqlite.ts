@@ -2,7 +2,6 @@ import type { DatabaseSync } from 'node:sqlite'
 import {
   assertCtfRangeOrderPreparationTransition,
   bindCtfRangeOrderPreparationAdmission,
-  bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationArtifact,
   decodeCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationIdentity,
@@ -264,46 +263,18 @@ interface RangePreparationCapabilityBinding {
   readonly updatedAtMs: number
 }
 
-/** Old two-step path: `capability-requested` -> `capability-bound`. */
-export function bindRangePreparationCapability(
-  database: DatabaseSync,
-  input: RangePreparationCapabilityBinding,
-): RangePreparationRecord {
-  return bindCapability(
-    database,
-    input,
-    'capability-requested',
-    'capability-bound',
-    bindCtfRangeOrderPreparationCapability,
-  )
-}
-
-/** One-step path: `order-requested` -> `order-submitted` with the capability of the accepted order. */
+/** `order-requested` -> `order-submitted` with the capability of the accepted order. */
 export function bindRangePreparationAdmission(
   database: DatabaseSync,
   input: RangePreparationCapabilityBinding,
 ): RangePreparationRecord {
-  return bindCapability(
-    database,
-    input,
-    'order-requested',
-    'order-submitted',
-    bindCtfRangeOrderPreparationAdmission,
-  )
-}
-
-function bindCapability(
-  database: DatabaseSync,
-  input: RangePreparationCapabilityBinding,
-  from: 'capability-requested' | 'order-requested',
-  to: 'capability-bound' | 'order-submitted',
-  bind: typeof bindCtfRangeOrderPreparationCapability,
-): RangePreparationRecord {
+  const from = 'order-requested'
+  const to = 'order-submitted'
   decodeCtfRangeOrderPreparationCapability(input.capability)
   requireRevision(input.expectedRevision)
   requireTimestamp(input.updatedAtMs, 'updated time')
   const current = requirePreparation(database, input.scopeId, input.rangeOperationId)
-  const next = bind({
+  const next = bindCtfRangeOrderPreparationAdmission({
     current: toSdkRangePreparationRecord(current),
     ...input,
   })

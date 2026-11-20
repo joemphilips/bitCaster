@@ -3,7 +3,6 @@ import test from 'node:test'
 import {
   assertCtfRangeOrderPreparationTransition,
   bindCtfRangeOrderPreparationAdmission,
-  bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationArtifact,
   decodeCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationIdentity,
@@ -271,28 +270,28 @@ test('capability and lifecycle validation reject partial or illegal authority', 
   })
   const requested = decodeCtfRangeOrderPreparationRecord({
     ...prepared,
-    lifecycleState: 'capability-requested',
+    lifecycleState: 'order-requested',
     revision: 1,
     updatedAtMs: identity.createdAtMs + 1,
   })
-  const bound = bindCtfRangeOrderPreparationCapability({
+  const bound = bindCtfRangeOrderPreparationAdmission({
     current: requested,
     expectedRevision: 1,
     capability: CAPABILITY,
     updatedAtMs: identity.createdAtMs + 2,
   })
-  assert.equal(bound.lifecycleState, 'capability-bound')
-  const clockMovedBackward = bindCtfRangeOrderPreparationCapability({
+  assert.equal(bound.lifecycleState, 'order-submitted')
+  const clockMovedBackward = bindCtfRangeOrderPreparationAdmission({
     current: requested,
     expectedRevision: 1,
     capability: CAPABILITY,
     updatedAtMs: identity.createdAtMs,
   })
-  assert.equal(clockMovedBackward.lifecycleState, 'capability-bound')
+  assert.equal(clockMovedBackward.lifecycleState, 'order-submitted')
   assert.equal(clockMovedBackward.revision, 2)
   assert.equal(clockMovedBackward.updatedAtMs, requested.updatedAtMs)
   assert.deepEqual(
-    bindCtfRangeOrderPreparationCapability({
+    bindCtfRangeOrderPreparationAdmission({
       current: bound,
       expectedRevision: 1,
       capability: CAPABILITY,
@@ -300,6 +299,7 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     }),
     bound,
   )
+  // A release 4 record in capability-bound still reads.
   assert.equal(
     decodeCtfRangeOrderPreparationRecord({
       ...identity,
@@ -334,8 +334,8 @@ test('generic transitions and persisted capability pairing cover the complete li
     'submission-rejected',
     'terminal',
   ] as const
-  // The one-step path never writes capability-requested. Records of the old
-  // two-step path keep their own transitions until they end.
+  // The one-step path never writes capability-requested. Stored records of the
+  // old two-step path keep the transitions that end them.
   const genericTransitions = new Set([
     'prepared:terminal',
     'prepared:order-requested',
@@ -447,17 +447,6 @@ test('an accepted one-step request moves order-requested to order-submitted with
     () =>
       bindCtfRangeOrderPreparationAdmission({
         current: capabilityRequested,
-        expectedRevision: 1,
-        capability: CAPABILITY,
-        updatedAtMs: identity.createdAtMs + 3,
-      }),
-    /revision or lifecycle/,
-  )
-  // The old two-step bind cannot move a one-step record.
-  assert.throws(
-    () =>
-      bindCtfRangeOrderPreparationCapability({
-        current: requested,
         expectedRevision: 1,
         capability: CAPABILITY,
         updatedAtMs: identity.createdAtMs + 3,

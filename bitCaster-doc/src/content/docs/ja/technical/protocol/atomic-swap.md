@@ -45,17 +45,39 @@ Score ポイントと受領額は別の値です。
 
 ウォレットは capability を注文リクエストに含めて送信します。
 `POST /api/v1/{marketId}/orders` に `settlementCapabilityAdmission` を指定します。
-この値は capability リクエストと同じ項目を持ち、その `marketId` はルートと一致します。
+この値は capability artifact と注文内容を持ち、その `marketId` はルートと一致します。
 1 回のリクエストで capability を紐付けて注文を受け付けるか、エンジンは何も書き込みません。
 拒否は課金されません。応答の `settlementCapability` は受け付けた注文の capability です。
-従来の 2 段階のルート (`POST /api/v1/settlement-capabilities` の後に `settlementCapability` の参照を送る) も引き続き使用できます。
-クライアントは 1 件の注文に 1 つのルートだけを使います。一方のルートのキーや capability は、もう一方のルートで競合します。
 
 認可はその試行で許可された range を対象とします。公開 FOK は板に残らず、残余注文も残しません。要求数量全体を約定できない場合、エンジンは注文全体を取り消します。この取消では capability を使用せず、返金も開始しません。
 
+### 廃止した 2 段階のルート
+
+エンジンは従来の 2 段階のルートを受け付けません。
+このルートは `POST /api/v1/settlement-capabilities` を送り、その後に `settlementCapability` の参照を持つ注文リクエストを送りました。
+以下の各リクエストには、`410` とその `code` を返します。エンジンは何も書き込まず、課金もしません。
+
+| リクエスト | コード |
+| --- | --- |
+| `POST /api/v1/settlement-capabilities` | `settlement-capability-stage-route-removed` |
+| `settlementCapability` だけを持つ `POST /api/v1/{marketId}/orders` | `order-reference-form-removed` |
+| `POST /api/v1/conditions/{conditionId}/orders/batch` | `order-reference-form-removed` |
+
+バッチのルートは `settlementCapability` の参照だけを受け付けていたため、これも廃止しました。
+capability とその結果を読み取るルートは引き続き使用できます。
+2 段階のルートで使った `stageIdempotencyKey` は、注文リクエストで競合します。
+
+2 段階のルートを使うクライアントは注文できません。
+これには CLI リリース `cli-v0.1.0-afaa6cc6aa6b` と `cli-v0.1.0-4fe7f6e6c08f`、
+および同じ時期のアプリをまだ実行しているブラウザのタブが含まれます。
+最新の CLI リリースをダウンロードするか、ブラウザのアプリを再読み込みしてください。
+現在のウォレットは、古いクライアントが同じウォレットプロファイルに残した注文記録を読み取ります。
+その注文を作成できるリクエストは送信しません。
+認可の有効期限の後に、ロックされた資金を返金します。
+
 ## Capability API のエラー
 
-capability API と注文リクエストの admission 形式は、以下のエラーを返します。
+capability を読み取るルート、注文リクエスト、および廃止したステージのルートは、以下のエラーを返します。
 
 capability API のアプリケーションエラーは、RFC 9457 の
 `application/problem+json` で返ります。クライアントは HTTP ステータスと
@@ -72,6 +94,7 @@ capability API のアプリケーションエラーは、RFC 9457 の
 | 404 | `not-found` | この呼び出し元は capability または結果を取得できません。 |
 | 409 | `conflict` | capability の識別情報または状態が競合しています。 |
 | 409 | `market-unavailable` | 市場はこの capability を受け付けません。 |
+| 410 | `stage-route-removed` | 廃止したステージのルートです。何も書き込みません。 |
 | 413 | `request-too-large` | リクエストがサイズまたは件数の上限を超えています。 |
 | 429 | `admission-limited` | 処理中の受付が上限に達しています。 |
 | 429 | `capacity-exhausted` | このユーザー、この市場、またはサービス全体の capability の上限に達しています。 |
@@ -88,9 +111,8 @@ capability API のアプリケーションエラーは、RFC 9457 の
 応答が不確かな場合は、元の操作と capability を保持してください。
 再試行では元のリクエストを変更しないでください。
 
-capability の再試行が成功しても、ウォレットの復旧が完了したとは限りません。
-注文を送信していない場合も、認可が終端状態になるまで復旧を継続してください。
-capability の復旧が成功したという理由だけで注文を送信しないでください。
+capability を読み取れても、ウォレットの復旧が完了したとは限りません。
+注文が受け付けられていない場合も、認可が終端状態になるまで復旧を継続してください。
 未使用の認可は、元の有効期限を過ぎ、mint が必要な復旧情報を確認した後に返金できます。
 
 ## 注文送信エラー
@@ -110,11 +132,12 @@ capability の復旧が成功したという理由だけで注文を送信しな
 | 409 | `order-book-conflict` | 元のリクエストを変更せずに再試行してください。 |
 | 409 | `order-processing-conflict` | 送信内容が現在の注文状態と競合しています。 |
 | 409 | `order-market-closed` | 送信中に市場が閉鎖されました。 |
+| 410 | `order-reference-form-removed` | 本文が廃止した `settlementCapability` の参照だけを持ちます。 |
 | 503 | `order-admission-unavailable` | 注文受付を一時的に利用できません。 |
 | 503 | `order-processing-unavailable` | 注文処理を一時的に利用できません。 |
 | 503 | `order-quotes-refreshing` | 提示価格の準備ができていません。注文は受け付け前に拒否されました。 |
 
-admission 形式では、capability API の `settlement-capability-` のコードも返ることがあります。
+注文リクエストでは、capability API の `settlement-capability-` のコードも返ることがあります。
 たとえば `402` の `settlement-capability-score-required` や `409` の `settlement-capability-conflict` です。
 400,000 バイトを超える本文は、認証の前に `413` になります。
 `order-submit` のレート制限と受付の上限は `429` を返します。
@@ -169,25 +192,17 @@ CLI はこの応答の後に注文を自動で再送しません。
   照会への `429` は読み取りとして数えません。次の読み取りは少なくとも `Retry-After` まで待ちます。
 - 認可の有効期限の時刻以降は、ウォレットはミントを照会し (NUT-09 と NUT-07)、未使用の入力を返金します。
 
-## バッチ、取消し、読み取りのエラー
+## 取消しと読み取りのエラー
 
 これらの注文エンドポイントも同じアプリケーション Problem Details 形式を使用します。
 
 | HTTP | コード | 意味 |
 | --- | --- | --- |
-| 400 | `order-invalid-request` | ルート、条件、またはバッチリクエストが無効です。 |
-| 403 | `market-closed` | バッチ送信前に市場が閉鎖されています。 |
-| 404 | `order-market-not-found` | バッチリクエストの市場が登録されていません。 |
+| 400 | `order-invalid-request` | ルート、条件、またはバッチ取消しのリクエストが無効です。 |
+| 404 | `order-market-not-found` | バッチ取消しの市場が登録されていません。 |
 | 404 | `order-not-found` | このリクエストでは注文を利用できません。 |
-| 409 | `order-batch-conflict` | バッチ送信中に板の状態が変化しました。 |
-| 409 | `order-market-closed` | バッチ送信中に市場が閉鎖されました。 |
 | 409 | `order-cancellation-conflict` | 取消し中に注文状態が変化しました。 |
-| 429 | `order-batch-limited` | アプリケーションのバッチレート制限に達しました。 |
-
-リクエスト全体のバッチエラーは、すべての項目が未受付である証拠ではありません。
-元の項目識別子で結果を確認してから、内容を変更せずに再試行してください。
-成功したバッチ応答では、項目ごとの結果が保持されます。
-バッチには単一注文送信のエラー分類関数を使用しないでください。
+| 429 | `order-batch-limited` | アプリケーションのバッチ取消しのレート制限に達しました。 |
 
 取消しでは、存在しない注文、他のユーザーの注文、ルートが違う注文に同じ `404` を返します。
 すでに終了した注文の取消しは成功します。市場閉鎖後もバッチ取消しを利用できます。

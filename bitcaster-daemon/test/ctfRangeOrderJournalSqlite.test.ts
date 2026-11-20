@@ -4,7 +4,6 @@ import { test } from 'node:test'
 import {
   appendRangePreparationConsolidation,
   bindRangePreparationAdmission,
-  bindRangePreparationCapability,
   decodeCanonicalRangePreparation,
   encodeCanonicalRangePreparation,
   insertRangePreparation,
@@ -408,18 +407,6 @@ test('one-step lifecycle transitions and the admission binding use revision CAS'
   })
   assert.equal(requested.updatedAtMs, input.createdAtMs)
   assert.equal(requested.capability, null)
-  // The old two-step bind cannot move a one-step record.
-  assert.throws(
-    () =>
-      bindRangePreparationCapability(database, {
-        scopeId: SCOPE_ID,
-        rangeOperationId: input.rangeOperationId,
-        expectedRevision: 1,
-        capability: CAPABILITY,
-        updatedAtMs: 6,
-      }),
-    /revision or lifecycle changed/,
-  )
   const submitted = bindRangePreparationAdmission(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
@@ -473,26 +460,28 @@ test('one-step lifecycle transitions and the admission binding use revision CAS'
   assert.equal(terminal.lifecycleState, 'terminal')
 })
 
-test('a release 4 record keeps its old-route transitions', (t) => {
+test('a release 4 record keeps the transitions that end it', (t) => {
   const database = createDatabase()
   t.after(() => database.close())
   const input = preparationInput('range-release4', 'source-release4', 'client-release4', 5)
   insertRangePreparation(database, input)
-  // Only the release 4 writer produced capability-requested.
+  // Only the release 4 writer produced capability-bound. Recovery finds its
+  // order or refunds it.
   database
     .prepare(
-      `UPDATE daemon_ctf_range_preparations SET lifecycle_state = 'capability-requested', revision = 1
+      `UPDATE daemon_ctf_range_preparations
+       SET lifecycle_state = 'capability-bound', revision = 2,
+           capability_artifact_id = ?, capability_binding_digest = ?,
+           capability_artifact_digest = ?, engine_order_id = ?
        WHERE range_operation_id = ?`,
     )
-    .run(input.rangeOperationId)
-  const bound = bindRangePreparationCapability(database, {
-    scopeId: SCOPE_ID,
-    rangeOperationId: input.rangeOperationId,
-    expectedRevision: 1,
-    capability: CAPABILITY,
-    updatedAtMs: 6,
-  })
-  assert.equal(bound.lifecycleState, 'capability-bound')
+    .run(
+      CAPABILITY.artifactId,
+      CAPABILITY.bindingDigest,
+      CAPABILITY.artifactDigest,
+      CAPABILITY.orderId,
+      input.rangeOperationId,
+    )
   assert.throws(
     () =>
       bindRangePreparationAdmission(database, {

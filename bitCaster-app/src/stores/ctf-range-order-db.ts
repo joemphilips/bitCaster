@@ -1,7 +1,6 @@
 import {
   assertCtfRangeOrderPreparationTransition,
   bindCtfRangeOrderPreparationAdmission,
-  bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationIdentity,
   decodeCtfRangeOrderPreparationPageCursor,
   decodeCtfRangeOrderPreparationPageLimit,
@@ -289,48 +288,6 @@ export async function bindCtfRangePreparationAdmission(
         return decodeCtfRangeOrderPreparationRecord(next);
       },
     ),
-  );
-}
-
-/** Old two-step path: only the recovery of a release 4 `capability-requested` record binds. */
-export async function bindCtfRangePreparationCapability(
-  input: {
-    scopeId: string;
-    rangeOperationId: string;
-    expectedRevision: number;
-    capability: CtfRangeOrderPreparationCapability;
-    updatedAtMs: number;
-  },
-  database: BitcasterDB = db,
-): Promise<CtfRangeOrderPreparationRecord> {
-  return database.transaction("rw", database.ctfRangePreparations, async (transaction) =>
-    bindCtfRangePreparationCapabilityInTransaction(transaction, input, database),
-  );
-}
-
-export async function bindCtfRangePreparationCapabilityInTransaction(
-  transaction: Transaction,
-  input: {
-    scopeId: string;
-    rangeOperationId: string;
-    expectedRevision: number;
-    capability: CtfRangeOrderPreparationCapability;
-    updatedAtMs: number;
-  },
-  database: BitcasterDB = db,
-): Promise<CtfRangeOrderPreparationRecord> {
-  return runInCurrentWriteTransaction(
-    transaction,
-    database,
-    [database.ctfRangePreparations],
-    async () => {
-      const current = await requirePreparation(input.scopeId, input.rangeOperationId, database);
-      const next = bindCtfRangeOrderPreparationCapability({ current, ...input });
-      if (next.revision !== current.revision) {
-        await database.ctfRangePreparations.put(next);
-      }
-      return decodeCtfRangeOrderPreparationRecord(next);
-    },
   );
 }
 

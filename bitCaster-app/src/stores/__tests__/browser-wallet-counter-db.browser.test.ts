@@ -528,7 +528,6 @@ it("native source consolidation commits counters and exact custody only together
       },
     },
     engine: {
-      createSettlementCapability: unexpected,
       lookupOrderByClientOrderId: unexpected,
       submitOrder: unexpected,
       getOrderStatus: unexpected,

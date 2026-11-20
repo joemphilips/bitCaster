@@ -198,10 +198,10 @@ export interface AcknowledgeSettlementCapabilityResultRequest {
 }
 
 /**
- * The admission form of the order request (ADR-037 amendment of 2026-11-13).
- * One request carries the capability artifact; the engine binds it and accepts
- * the order in one commit, or writes nothing. The client never sends the
- * reference form, which serves only the old two-step route until release 6.
+ * The order request (ADR-037 amendment of 2026-11-13). One request carries the
+ * capability artifact; the engine binds it and accepts the order in one commit,
+ * or writes nothing. The engine no longer accepts the reference form of the
+ * old two-step route (amendment of 2026-11-20).
  */
 export interface SubmitOrderRequest {
   settlementCapabilityAdmission: CreateSettlementCapabilityRequest
@@ -300,51 +300,11 @@ export interface SubmitOrderResponse {
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
   /**
-   * Admission form only: the capability of the accepted order. A stored result
-   * whose capability the engine no longer keeps has none.
+   * The capability of the accepted order. A stored result whose capability the
+   * engine no longer keeps has none.
    */
   settlementCapability?: SettlementCapabilityResponse
 }
-
-export interface BatchSubmitOrdersRequest {
-  orders: BatchSubmitOrderRequestItem[]
-}
-
-export interface BatchSubmitOrderRequestItem {
-  settlementCapability: SettlementCapabilityReference
-  walletId?: WalletId
-}
-
-export interface BatchSubmitOrdersResponse {
-  accepted: BatchSubmitOrderSuccess[]
-  rejected: BatchSubmitOrderFailure[]
-}
-
-export interface BatchSubmitOrderSuccess {
-  requestIndex: number
-  clientOrderId: string
-  marketId: string
-  orderId: string
-  status: OrderLifecycleStatus
-  remainingAmountSubunits: number
-  fills: Fill[]
-  baseAsset: MarketBaseAsset
-  divisibility: MarketDivisibility
-  activeSettlementGroup: SettlementGroupSummary | null
-}
-
-export interface BatchSubmitOrderFailure {
-  requestIndex: number
-  errorCode: BatchSubmitOrderErrorCode
-}
-
-export type BatchSubmitOrderErrorCode =
-  | 'capabilityNotFound'
-  | 'capabilityNotCurrent'
-  | 'routeMismatch'
-  | 'authorityUnavailable'
-  | 'marketClosed'
-  | 'bookRejected'
 
 export interface BatchCancelOrdersRequest {
   orderIds: string[]
@@ -612,22 +572,6 @@ export class BitcasterEngineClient {
     return decodeAssetMonitoringPortfolioResponse(body)
   }
 
-  async createSettlementCapability(
-    request: CreateSettlementCapabilityRequest,
-  ): Promise<SettlementCapabilityResponse> {
-    const bodyText = JSON.stringify(request)
-    const response = await this.request(
-      '/api/v1/settlement-capabilities',
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
-    )
-    return (await response.json()) as SettlementCapabilityResponse
-  }
-
   async getSettlementCapabilityAdmissionPolicy(): Promise<SettlementCapabilityAdmissionPolicyResponse> {
     const response = await this.request('/api/v1/settlement-capabilities/policy')
     return decodeSettlementCapabilityAdmissionPolicy(await response.json())
@@ -853,23 +797,6 @@ export class BitcasterEngineClient {
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
     return listMyOrders(this.baseUrl, conditionId, cursor, this.fetchImpl, this.authorization)
-  }
-
-  async batchSubmitOrders(
-    conditionId: string,
-    request: BatchSubmitOrdersRequest,
-  ): Promise<BatchSubmitOrdersResponse> {
-    const bodyText = JSON.stringify(request)
-    const response = await this.request(
-      `/api/v1/conditions/${encodePathSegment(conditionId)}/orders/batch`,
-      {
-        method: 'POST',
-        body: bodyText,
-        headers: { 'content-type': 'application/json' },
-      },
-      bodyText,
-    )
-    return (await response.json()) as BatchSubmitOrdersResponse
   }
 
   async batchCancelOrders(

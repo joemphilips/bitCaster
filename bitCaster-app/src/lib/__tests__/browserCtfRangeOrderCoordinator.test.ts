@@ -458,7 +458,6 @@ describe("browser CTF range order coordinator", () => {
       ) {
         await expect(submitting).rejects.toMatchObject({ code: "source-preparation-failed" });
         expect(conversions).toBe(0);
-        expect(engine.createCalls).toBe(0);
         expect(engine.submitCalls).toBe(0);
         expect(await database.custodyOperations.count()).toBe(0);
         expect(
@@ -485,7 +484,6 @@ describe("browser CTF range order coordinator", () => {
         ]);
       }
       expect(conversions).toBe(1);
-      expect(engine.createCalls).toBe(0);
       expect(engine.submitCalls).toBe(outcome === "confirmed" ? 1 : 0);
       const rows = await database.proofs.toArray();
       expect(
@@ -562,7 +560,6 @@ describe("browser CTF range order coordinator", () => {
     ).resolves.toMatchObject(submitResponse());
 
     expect(mintCalls).toBe(1);
-    expect(engine.createCalls).toBe(0);
     expect(await database.custodyOperations.count()).toBeGreaterThan(0);
   });
 
@@ -1004,20 +1001,6 @@ describe("browser CTF range order coordinator", () => {
       },
     });
     const engine = engineMock({
-      onCreate: async () => {
-        calls.push("capability");
-        expect(
-          (
-            await custody.readOperation(
-              walletScope(),
-              sourceCustodyOperationId(preparation.sourceOperationId),
-            )
-          )?.operation.state,
-        ).toBe("reconciled");
-        expect(
-          await custody.readOperation(walletScope(), custodyOperationId(preparation.operationId)),
-        ).not.toBeNull();
-      },
       onSubmit: async (request) => {
         calls.push("submit");
         expect(request.walletId).toBe(walletScope().walletId);
@@ -1159,7 +1142,6 @@ describe("browser CTF range order coordinator", () => {
 
     expect(fundedScore).toBe(expectedScore);
     expect(calls).toEqual(["score", "order-request"]);
-    expect(engine.createCalls).toBe(0);
   });
 
   it("reserves the order source before Score funding reads the regular balance", async () => {
@@ -1344,7 +1326,6 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("prepared");
 
     await coordinator.recoverPage({ seed: SEED, limit: 8 }).catch(() => undefined);
-    expect(engine.createCalls).toBe(0);
   });
 
   it("rolls back the composed source journal, custody, and legacy reservation", async () => {
@@ -1502,7 +1483,6 @@ describe("browser CTF range order coordinator", () => {
         await expect(submit).rejects.toMatchObject({ code: "source-preparation-failed" });
         expect(mintCalls).toEqual([]);
         expect(prepareConditionalSwap).not.toHaveBeenCalled();
-        expect(engine.createCalls).toBe(0);
         expect(engine.submitCalls).toBe(0);
         expect(await database.custodyReservations.count()).toBe(0);
         expect(await database.custodyOperations.count()).toBe(0);
@@ -1533,7 +1513,6 @@ describe("browser CTF range order coordinator", () => {
       expect(await counterSource.snapshot()).toEqual({
         [preparation.offerKeyset.id]: 5,
       });
-      expect(engine.createCalls).toBe(0);
       expect(engine.submitCalls).toBe(1);
     },
   );
@@ -1646,7 +1625,6 @@ describe("browser CTF range order coordinator", () => {
     expect(await database.custodyOperations.count()).toBeGreaterThan(0);
     expect(await database.custodyProofs.count()).toBeGreaterThan(0);
     expect((await database.proofs.toArray()).length).toBeGreaterThan(0);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
   });
 
@@ -1674,7 +1652,6 @@ describe("browser CTF range order coordinator", () => {
         ({ reservedBy }) => reservedBy !== "stale-legacy-operation",
       ),
     ).toBe(true);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
   });
 
@@ -1714,7 +1691,6 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("prepared");
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
   });
 
@@ -1744,7 +1720,6 @@ describe("browser CTF range order coordinator", () => {
         candidates: [candidate],
       }),
     ).rejects.toMatchObject({ code: "mint-source-uncertain" });
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
     expect(reservations).toBe(1);
 
@@ -1755,7 +1730,6 @@ describe("browser CTF range order coordinator", () => {
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
     expect(completeCalls).toBe(2);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
     expect(reservations).toBe(1);
     const custody = new BrowserDurableCustodyAdapter(database);
@@ -1794,7 +1768,6 @@ describe("browser CTF range order coordinator", () => {
 
     expect(await database.ctfRangePreparations.count()).toBe(0);
     expect(await database.custodyOperations.count()).toBe(0);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
   });
 
@@ -1829,7 +1802,6 @@ describe("browser CTF range order coordinator", () => {
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
     expect(completeCalls).toBe(1);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
     const custody = new BrowserDurableCustodyAdapter(database);
     expect(
@@ -1897,7 +1869,6 @@ describe("browser CTF range order coordinator", () => {
         ?.lifecycleState,
     ).toBe("terminal");
     expect((await database.proofs.get("source-proof"))?.reservedBy).toBeUndefined();
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
   });
 
@@ -1958,7 +1929,6 @@ describe("browser CTF range order coordinator", () => {
     expect(await database.proofs.get("source-proof")).toMatchObject({
       reservedBy: sourceCustodyOperationId(preparation.sourceOperationId),
     });
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
   });
 
@@ -2030,7 +2000,6 @@ describe("browser CTF range order coordinator", () => {
         deriveDurableCtfRangeRefundOperationId(preparation.operationId),
       ),
     ).toMatchObject({ state: "completed" });
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(0);
     expect(await resumed.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
       recoveredOperationIds: [],
@@ -2081,7 +2050,6 @@ describe("browser CTF range order coordinator", () => {
     ]);
     expect(engine.lookupCalls).toBe(1);
     expect(engine.submitCalls).toBe(1);
-    expect(engine.createCalls).toBe(0);
   });
 
   it.each([
@@ -2138,7 +2106,6 @@ describe("browser CTF range order coordinator", () => {
         candidates: [sourceProof(preparation.offerKeyset.id)],
       }),
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
     expect(engine.lookupCalls).toBe(0);
     expect(
@@ -2151,7 +2118,6 @@ describe("browser CTF range order coordinator", () => {
     expect(recovery.pending).toMatchObject([
       { operationId: preparation.operationId, code: "recovery-pending" },
     ]);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
     expect(engine.lookupCalls).toBe(1);
     expect(
@@ -2198,55 +2164,63 @@ describe("browser CTF range order coordinator", () => {
     expect(journal?.capability).toBeNull();
     expect(engine.lookupCalls).toBe(1);
     expect(engine.submitCalls).toBe(1);
-    expect(engine.createCalls).toBe(0);
   });
 
-  it("a release 4 capability-requested record resends only its exact stage request", async () => {
-    const database = createDatabase();
-    const preparation = persistedPreparation("range-capability-lost");
-    const requests: CreateSettlementCapabilityRequest[] = [];
-    let sent: CreateSettlementCapabilityRequest | undefined;
-    let fundingCalls = 0;
-    const engine = engineMock({
-      onCreate: async (request) => {
-        requests.push(structuredClone(request));
-      },
-      onSubmit: async (request) => {
-        sent = structuredClone(request.settlementCapabilityAdmission);
-      },
-      submitFailure: true,
-    });
-    const coordinator = createCoordinator(database, sourceWallet(), engine, {
-      beforeCreateCapability: async () => {
-        fundingCalls += 1;
-      },
-    });
+  // The engine no longer serves the stage route or the reference form of the
+  // order request (ADR-037, amendment of 2026-11-20). A stored release 4 record
+  // still reads, makes only engine reads, waits for authorization expiry, and
+  // then refunds (ADR-049 rule 2).
+  it.each([
+    ["capability-requested", null],
+    ["capability-bound", RELEASE4_BOUND_CAPABILITY],
+  ] as const)(
+    "a release 4 %s record sends no creating request, waits for expiry, then refunds",
+    async (lifecycleState, capability) => {
+      const database = createRefundDatabase();
+      const preparation = persistedPreparation(`range-release4-${lifecycleState}`);
+      let now = 20_000;
+      const engine = recordedEngine(engineMock({ submitFailure: true }));
+      const coordinator = createCoordinator(database, sourceWallet(), engine.engine, {
+        now: () => now,
+        createMintRecovery: refundableRecovery(preparation),
+        executeRefundSwap: async (_mintUrl, request) => ({
+          signatures: request.outputs.map(signBlindedMessage),
+        }),
+      });
+      await expect(
+        coordinator.prepareAndSubmit({
+          seed: SEED,
+          preparation,
+          candidates: [sourceProof(preparation.offerKeyset.id)],
+        }),
+      ).rejects.toMatchObject({ code: "order-submission-uncertain" });
+      await rewriteAsRelease4Journal(database, preparation.operationId, lifecycleState, capability);
+      engine.calls.length = 0;
 
-    await expect(
-      coordinator.prepareAndSubmit({
-        seed: SEED,
-        preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
-      }),
-    ).rejects.toMatchObject({ code: "order-submission-uncertain" });
-    await rewriteAsRelease4Journal(database, preparation.operationId, "capability-requested", null);
+      // Before expiry the mint reports every authorization input UNSPENT.
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [],
+        pending: [{ operationId: preparation.operationId, code: "awaiting-authorization-expiry" }],
+      });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe(lifecycleState);
 
-    const recovery = await coordinator.recoverPage({ seed: SEED, limit: 8 });
-
-    expect(recovery.pending).toMatchObject([
-      { operationId: preparation.operationId, code: "recovery-pending" },
-    ]);
-    expect(requests).toHaveLength(1);
-    expect(requests[0]).toEqual(sent);
-    expect(fundingCalls).toBe(1);
-    expect(engine.createCalls).toBe(1);
-    expect(engine.submitCalls).toBe(1);
-    expect(engine.lookupCalls).toBe(0);
-    expect(
-      (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
-        ?.lifecycleState,
-    ).toBe("capability-bound");
-  });
+      now = preparation.expiry * 1_000 + BROWSER_RANGE_REFUND_CLOCK_MARGIN_MS;
+      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+        recoveredOperationIds: [preparation.operationId],
+        pending: [],
+      });
+      expect(
+        (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
+          ?.lifecycleState,
+      ).toBe("terminal");
+      expect(await database.custodyReservations.count()).toBe(0);
+      // Recovery read the engine only: no stage request and no order request.
+      expect(engine.calls.filter((name) => !ENGINE_READS.has(name))).toEqual([]);
+    },
+  );
 
   it.each(["source-completion", "order-requested", "capability-requested"] as const)(
     "refunds expired %s without a creating request",
@@ -2286,8 +2260,7 @@ describe("browser CTF range order coordinator", () => {
         recoveredOperationIds: [preparation.operationId],
         pending: [],
       });
-      // At expiry, recovery reads neither the lookup nor the stage route.
-      expect(engine.createCalls).toBe(0);
+      // At expiry, recovery does not read the lookup.
       expect(engine.lookupCalls).toBe(0);
       expect(beforeCreateCapability).toHaveBeenCalledTimes(stage === "source-completion" ? 0 : 1);
       expect(engine.submitCalls).toBe(stage === "source-completion" ? 0 : 1);
@@ -2332,14 +2305,12 @@ describe("browser CTF range order coordinator", () => {
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
     ).toBe("order-request-rejected");
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
 
     const beforeExpiry = await coordinator.recoverPage({ seed: SEED, limit: 8 });
     expect(beforeExpiry.pending).toMatchObject([
       { operationId: preparation.operationId, code: "awaiting-authorization-expiry" },
     ]);
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
     expect(engine.lookupCalls).toBe(0);
     expect(
@@ -2362,7 +2333,6 @@ describe("browser CTF range order coordinator", () => {
       refused: [],
       nextCursor: null,
     });
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
     expect(await database.custodyReservations.count()).toBe(0);
 
@@ -2548,7 +2518,6 @@ describe("browser CTF range order coordinator", () => {
       }),
     ).rejects.toMatchObject({ code: "order-submission-uncertain" });
 
-    expect(engine.createCalls).toBe(0);
     expect(engine.submitCalls).toBe(1);
     const journal = await readCtfRangePreparation(
       walletScopeId(),
@@ -2605,7 +2574,6 @@ describe("browser CTF range order coordinator", () => {
     expect(String(rejection)).not.toContain("secret");
     expect((rejection as { cause?: unknown }).cause).toBeUndefined();
     expect(engine.submitCalls).toBe(1);
-    expect(engine.createCalls).toBe(0);
     expect(
       (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
         ?.lifecycleState,
@@ -3270,9 +3238,7 @@ describe("browser CTF range order coordinator", () => {
       code: "order-attempt-ended",
       message: "The prepared order attempt ended before the order request. No order was submitted.",
     });
-    expect(engineA.createCalls).toBe(0);
     expect(engineA.submitCalls).toBe(0);
-    expect(engineB.createCalls).toBe(0);
     expect(engineB.submitCalls).toBe(0);
     expect(refundCalls).toBe(1);
     expect(await database.custodyReservations.count()).toBe(0);
@@ -5863,7 +5829,6 @@ async function expectStuckPartialSell(fixture: ReturnType<typeof partialSellFixt
   expect((await fixture.database.proofs.get(fixture.held.secret))?.reservedBy).toBe(
     sourceCustodyOperationId(fixture.preparation.sourceOperationId),
   );
-  expect(fixture.engine.createCalls).toBe(0);
 }
 
 async function expectReleasedPartialSell(
@@ -5897,7 +5862,6 @@ async function expectReleasedPartialSell(
       fixture.database,
     ),
   ).toMatchObject({ lifecycleState: "terminal", revision: 1 });
-  expect(fixture.engine.createCalls).toBe(0);
   expect(fixture.engine.submitCalls).toBe(0);
 }
 
@@ -6391,7 +6355,6 @@ const restoreSignedRefundOutputs: typeof restoreDurableCtfRangeRefundOutputs = a
 
 function engineMock(
   input: {
-    onCreate?: (request: CreateSettlementCapabilityRequest) => Promise<void>;
     onSubmit?: (request: SubmitOrderRequest, options?: SubmitOrderOptions) => Promise<void>;
     submitFailure?: boolean;
     orderStatus?: OrderStatusResponse | null;
@@ -6405,7 +6368,6 @@ function engineMock(
     lookup?: () => OrderLookupResponse | null;
   } = {},
 ): BrowserCtfRangeEngine & {
-  createCalls: number;
   submitCalls: number;
   lookupCalls: number;
   statusCalls: number;
@@ -6413,21 +6375,10 @@ function engineMock(
 } {
   let acknowledgeFailurePending = input.acknowledgeFailureOnce === true;
   return {
-    createCalls: 0,
     submitCalls: 0,
     lookupCalls: 0,
     statusCalls: 0,
     acknowledgeCalls: 0,
-    async createSettlementCapability(request) {
-      this.createCalls += 1;
-      await input.onCreate?.(request);
-      const artifact = decodeSettlementCapabilityArtifactBytes(base64Bytes(request.artifact));
-      const digest = deriveSettlementCapabilityArtifactDigest(artifact);
-      return capabilityResponse(
-        request,
-        input.foreignCapability === true ? "ff".repeat(32) : digest,
-      );
-    },
     async submitOrder(_marketId, request, options) {
       this.submitCalls += 1;
       await input.onSubmit?.(request, options);
@@ -6501,6 +6452,39 @@ function orderLookup(
     settlementCapability: capability.reference,
     artifactDigest,
   };
+}
+
+/** The capability of a release 4 `capability-bound` record that the stage route bound. */
+const RELEASE4_BOUND_CAPABILITY = {
+  artifactId: "11111111-1111-4111-8111-111111111111",
+  bindingDigest: "22".repeat(32),
+  artifactDigest: "33".repeat(32),
+  orderId: "44444444-4444-4444-8444-444444444444",
+} as const;
+
+/** The engine methods that only read. Recovery of a stored record may call only these. */
+const ENGINE_READS: ReadonlySet<string> = new Set([
+  "lookupOrderByClientOrderId",
+  "getOrderStatus",
+  "getSettlementCapabilityResultByOperation",
+]);
+
+/** Records the name of each engine method call. */
+function recordedEngine<Engine extends object>(
+  engine: Engine,
+): { engine: Engine; calls: string[] } {
+  const calls: string[] = [];
+  const recorded = new Proxy(engine, {
+    get(target, property, receiver) {
+      const value = Reflect.get(target, property, receiver);
+      if (typeof value !== "function" || typeof property !== "string") return value;
+      return (...args: unknown[]) => {
+        calls.push(property);
+        return value.apply(target, args);
+      };
+    },
+  });
+  return { engine: recorded, calls };
 }
 
 /**

@@ -2058,34 +2058,26 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Order submission. The body holds exactly one of settlementCapability (reference form) and settlementCapabilityAdmission (admission form). A body with both forms or with neither form gets 400 order-invalid-request. In the reference form the server loads all immutable order identity and economic terms from the current durable DCB binding. In the admission form the server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. A reference is not bearer authority.
+    /// Order submission. The server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. The server no longer accepts the reference form settlementCapability: a body with only that form gets 410 order-reference-form-removed, and a body with both forms gets 400 order-invalid-request.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference? @settlementCapability, CreateSettlementCapabilityRequest? @settlementCapabilityAdmission, string? @walletId)
+        public SubmitOrderRequest(NostrKind1Event? @comment, CreateSettlementCapabilityRequest @settlementCapabilityAdmission, string? @walletId)
         {
-            this.SettlementCapability = @settlementCapability;
             this.SettlementCapabilityAdmission = @settlementCapabilityAdmission;
             this.Comment = @comment;
             this.WalletId = @walletId;
         }
 
         /// <summary>
-        /// Reference form. A current capability binding from POST /api/v1/settlement-capabilities. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
-        public SettlementCapabilityReference? SettlementCapability { get; }
-
-        /// <summary>
-        /// Admission form. The capability artifact and order intent, with the same fields and limits as POST /api/v1/settlement-capabilities. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. A stageIdempotencyKey that the stage route used conflicts here, and the reverse. A capability that the stage route bound is accepted only through the reference form.
+        /// The capability artifact and order intent. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. The artifact is a sensitive bearer capability: it holds conditioned proof secrets and public blinded outputs, but never refund private keys, output secrets, or blinding factors. A stageIdempotencyKey that the removed stage route used conflicts here.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("settlementCapabilityAdmission")]
-        public CreateSettlementCapabilityRequest? SettlementCapabilityAdmission { get; }
+        public CreateSettlementCapabilityRequest SettlementCapabilityAdmission { get; }
 
         /// <summary>
         /// Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL.
@@ -2603,182 +2595,6 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("artifactDigest")]
         public string ArtifactDigest { get; }
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class BatchSubmitOrdersRequest
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrdersRequest(System.Collections.Generic.List<BatchSubmitOrderRequestItem> @orders)
-        {
-            this.Orders = @orders;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("orders")]
-        public System.Collections.Generic.List<BatchSubmitOrderRequestItem> Orders { get; }
-
-    }
-
-    /// <summary>
-    /// Reference-only batch item. The server loads every immutable order fact from the current durable DCB binding. Possession of the reference is not bearer authority; ownership, route condition, and current authorization are verified.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class BatchSubmitOrderRequestItem
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderRequestItem(SettlementCapabilityReference @settlementCapability, string? @walletId)
-        {
-            this.SettlementCapability = @settlementCapability;
-            this.WalletId = @walletId;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
-        public SettlementCapabilityReference SettlementCapability { get; }
-
-        /// <summary>
-        /// Display-only wallet attribution. It does not authorize custody or settlement.
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("walletId")]
-        public string? WalletId { get; }
-
-    }
-
-    /// <summary>
-    /// Every request item appears exactly once in either `accepted` or `rejected`. Consumers may reconstruct request order by sorting both arrays by `requestIndex`.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class BatchSubmitOrdersResponse
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrdersResponse(System.Collections.Generic.List<BatchSubmitOrderSuccess> @accepted, System.Collections.Generic.List<BatchSubmitOrderFailure> @rejected)
-        {
-            this.Accepted = @accepted;
-            this.Rejected = @rejected;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("accepted")]
-        public System.Collections.Generic.List<BatchSubmitOrderSuccess> Accepted { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("rejected")]
-        public System.Collections.Generic.List<BatchSubmitOrderFailure> Rejected { get; }
-
-    }
-
-    /// <summary>
-    /// Accepted admission result with binding-owned order and execution facts.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class BatchSubmitOrderSuccess
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderSuccess(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, string @clientOrderId, BatchSubmitOrderSuccessDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, string @marketId, System.Guid @orderId, long @remainingAmountSubunits, int @requestIndex, OrderLifecycleStatus @status)
-        {
-            this.RequestIndex = @requestIndex;
-            this.ClientOrderId = @clientOrderId;
-            this.MarketId = @marketId;
-            this.OrderId = @orderId;
-            this.Status = @status;
-            this.RemainingAmountSubunits = @remainingAmountSubunits;
-            this.Fills = @fills;
-            this.BaseAsset = @baseAsset;
-            this.Divisibility = @divisibility;
-            this.ActiveSettlementGroup = @activeSettlementGroup;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("requestIndex")]
-        public int RequestIndex { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("clientOrderId")]
-        public string ClientOrderId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
-        public string MarketId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
-        public System.Guid OrderId { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("status")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderLifecycleStatus>))]
-        public OrderLifecycleStatus Status { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("remainingAmountSubunits")]
-        public long RemainingAmountSubunits { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("fills")]
-        public System.Collections.Generic.List<Fill> Fills { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("baseAsset")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BaseAsset>))]
-        public BaseAsset BaseAsset { get; }
-
-        /// <summary>
-        /// Immutable price denominator `D`, server-determined.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("divisibility")]
-        public BatchSubmitOrderSuccessDivisibility Divisibility { get; }
-
-        /// <summary>
-        /// Current nonterminal settlement group for this order, or null.
-        /// <br/>
-        /// </summary>
-        [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
-        public SettlementGroupSummary? ActiveSettlementGroup { get; }
-
-    }
-
-    /// <summary>
-    /// Per-item admission failure. This variant exposes no binding-owned identity, market, order, amount, fill, asset, divisibility, or free-form dependency details.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public partial class BatchSubmitOrderFailure
-    {
-        [System.Text.Json.Serialization.JsonConstructor]
-        public BatchSubmitOrderFailure(BatchSubmitOrderErrorCode @errorCode, int @requestIndex)
-        {
-            this.RequestIndex = @requestIndex;
-            this.ErrorCode = @errorCode;
-        }
-
-        [System.Text.Json.Serialization.JsonPropertyName("requestIndex")]
-        public int RequestIndex { get; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("errorCode")]
-        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<BatchSubmitOrderErrorCode>))]
-        public BatchSubmitOrderErrorCode ErrorCode { get; }
-
-    }
-
-    /// <summary>
-    /// `capabilityNotFound` covers absent, foreign, or digest-mismatched references. `capabilityNotCurrent` covers stale, expired, selected, or otherwise non-current capabilities only when no matching accepted admission exists. An exact authenticated owner, order, reference, and fingerprint replay returns its prior accepted admission result even if the capability later became selected or terminal.
-    /// <br/>
-    /// </summary>
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum BatchSubmitOrderErrorCode
-    {
-
-        [System.Runtime.Serialization.EnumMember(Value = @"capabilityNotFound")]
-        CapabilityNotFound = 0,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"capabilityNotCurrent")]
-        CapabilityNotCurrent = 1,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"routeMismatch")]
-        RouteMismatch = 2,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"authorityUnavailable")]
-        AuthorityUnavailable = 3,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"marketClosed")]
-        MarketClosed = 4,
-
-        [System.Runtime.Serialization.EnumMember(Value = @"bookRejected")]
-        BookRejected = 5,
 
     }
 
@@ -4623,16 +4439,6 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"processed")]
         Processed = 1,
-
-    }
-
-    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
-    public enum BatchSubmitOrderSuccessDivisibility
-    {
-
-        _1000 = 1000,
-
-        _1000000 = 1000000,
 
     }
 
