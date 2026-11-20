@@ -19,6 +19,13 @@ import type { Writable } from 'node:stream'
 import { awaitAbortable } from '@bitcaster-market/client-sdk/engineClient'
 import { readLiveRpcToken, rpcSocketPath } from '@bitcaster-market/daemon/rpcAuth'
 import { dataDir } from '@bitcaster-market/daemon/dataDir'
+import {
+  DAEMON_SETTINGS_MISMATCH_CODE,
+  NATIVE_SETTING_DIGEST_HEADER,
+  nativeSettingLaunchArguments,
+  nativeSettingOverridesDigest,
+  type NativeSettingOverrides,
+} from '@bitcaster-market/daemon/nativeConfigLayers'
 import { execFile, spawn } from 'node:child_process'
 import { closeSync, constants, openSync } from 'node:fs'
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
@@ -43,6 +50,29 @@ interface DaemonPidFile {
 
 // Daemon startup resumes unfinished custody work, so a dry run must not start it.
 let daemonAutoStartPrevented = false
+let daemonLaunchSettings: NativeSettingOverrides = {}
+
+/**
+ * The settings of this CLI from its environment and options. A daemon that
+ * this CLI starts uses them, and a running daemon refuses a CLI with others.
+ */
+export function configureDaemonLaunchSettings(overrides: NativeSettingOverrides): void {
+  daemonLaunchSettings = overrides
+}
+
+export function daemonRunArguments(daemonMain: string): string[] {
+  return [
+    '--experimental-strip-types',
+    daemonMain,
+    `--datadir=${dataDir()}`,
+    'run',
+    ...nativeSettingLaunchArguments(daemonLaunchSettings),
+  ]
+}
+
+export function daemonLaunchSettingsHeaders(): Record<string, string> {
+  return { [NATIVE_SETTING_DIGEST_HEADER]: nativeSettingOverridesDigest(daemonLaunchSettings) }
+}
 
 export function preventDaemonAutoStart(): void {
   daemonAutoStartPrevented = true
@@ -213,6 +243,7 @@ async function openDaemonWatch(
     'content-type': 'application/json',
     accept: mediaType,
     ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...daemonLaunchSettingsHeaders(),
   }
   if (socketPath !== null)
     return openDaemonWatchOverSocket(body, socketPath, headers, signal, mediaType)
@@ -383,7 +414,7 @@ export async function submitOrderWithProgress(
   try {
     // Only a read-only health request may trigger daemon startup/reconnection.
     const ready = await callDaemon({ method: 'health' }, { signal })
-    if (!ready.ok) throw new Error('Daemon is not ready for order submission')
+    if (!ready.ok) throw new Error(ready.error ?? 'Daemon is not ready for order submission')
     signal.throwIfAborted()
     try {
       stream = await openDaemonWatch(body, signal, DAEMON_ORDER_SUBMISSION_MEDIA_TYPE)
@@ -446,6 +477,7 @@ async function sendAuthenticatedDaemonCommand<T = unknown>(
     headers: {
       'content-type': 'application/json',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...daemonLaunchSettingsHeaders(),
     },
     body: JSON.stringify(command),
     ...(signal === undefined ? {} : { signal }),
@@ -482,6 +514,7 @@ function sendDaemonCommandOverSocket<T = unknown>(
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(body),
           ...(token ? { authorization: `Bearer ${token}` } : {}),
+          ...daemonLaunchSettingsHeaders(),
         },
         ...(signal === undefined ? {} : { signal }),
       },
@@ -560,15 +593,11 @@ export async function startDaemonProcess(): Promise<void> {
     0o600,
   )
   const daemonMain = fileURLToPath(import.meta.resolve('@bitcaster-market/daemon'))
-  const child = spawn(
-    process.execPath,
-    ['--experimental-strip-types', daemonMain, `--datadir=${dataDir()}`, 'run'],
-    {
-      detached: true,
-      env: process.env,
-      stdio: ['ignore', logFd, logFd],
-    },
-  )
+  const child = spawn(process.execPath, daemonRunArguments(daemonMain), {
+    detached: true,
+    env: process.env,
+    stdio: ['ignore', logFd, logFd],
+  })
   closeSync(logFd)
   if (child.pid) {
     const startedAt = await readProcessStartTime(child.pid)
@@ -602,25 +631,37 @@ export function daemonLogPath(): string {
   return join(cliHomeDir(), 'daemon.log')
 }
 
-export async function waitForDaemon(signal?: AbortSignal): Promise<void> {
-  const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS
+/**
+ * Wait until the daemon answers with the settings of this CLI. A daemon with
+ * other environment or option settings is not ready: it can be an older
+ * daemon that still holds the socket. The wait makes at least one request.
+ */
+export async function waitForDaemon(
+  signal?: AbortSignal,
+  timeoutMs = DAEMON_STARTUP_TIMEOUT_MS,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
   signal?.throwIfAborted()
   const token = await readDaemonRpcToken()
   signal?.throwIfAborted()
   let lastErr: unknown
-  while (Date.now() < deadline) {
+  for (;;) {
     signal?.throwIfAborted()
     try {
-      await sendAuthenticatedDaemonCommand({ method: 'health' }, token, signal)
-      return
+      const response = await sendAuthenticatedDaemonCommand({ method: 'health' }, token, signal)
+      if (response.ok || response.code !== DAEMON_SETTINGS_MISMATCH_CODE) return
+      lastErr = new Error(
+        `a bitcaster-daemon with other environment or option settings answers at ${daemonAttemptAddress()}; stop it, then start it with the settings of this command`,
+      )
     } catch (err) {
       if (signal?.aborted) throw signal.reason ?? err
       lastErr = err
-      await sleepWithSignal(
-        Math.min(DAEMON_STARTUP_POLL_MS, Math.max(0, deadline - Date.now())),
-        signal,
-      )
     }
+    if (Date.now() >= deadline) break
+    await sleepWithSignal(
+      Math.min(DAEMON_STARTUP_POLL_MS, Math.max(0, deadline - Date.now())),
+      signal,
+    )
   }
   throw lastErr instanceof Error
     ? lastErr

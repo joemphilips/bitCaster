@@ -333,7 +333,7 @@ The command-line wallet keeps complete wallet state in its local durable store.
 The daemon of the CLI writes the same wallet backup as the web app. A new
 browser with the recovery phrase then restores the markets that only the CLI
 used. The backup is on by default. Asset-monitoring privacy mode does not
-change it. With a disconnected signer, the daemon does not write the backup.
+change it. To turn the backup off, set its environment to `disabled`. With a disconnected signer, the daemon does not write the backup.
 The next start with a connected signer writes the keysets that the backup does
 not list.
 
@@ -365,15 +365,20 @@ writer as JSON:
   full. `undecodable` or `unsupported-version` means that the daemon cannot
   read the stored backup. Trading continues.
 - `starting`: the first write after the start has not finished.
+- `disabled`: the environment of the backup is `disabled`. The daemon does not
+  write the backup. This status has no `realm`.
 
 With a disconnected signer, the command returns the error code
 `recovery-index-unavailable`.
 
 Set the environment of the backup with
 `config set --recovery-index-realm <realm>`: `bitcaster-production` by
-default, `bitcaster-staging`, or `bitcaster-local` for a local development
-engine. The command restarts a daemon that the CLI started. Restart another
-daemon yourself. When the environment does not match the matching engine, the
+default, `bitcaster-staging`, `bitcaster-local` for a local development
+engine, or `disabled`. With `disabled`, the daemon does not start the writer
+and sends no backup request. The command restarts a daemon that the CLI
+started. Restart another daemon yourself. For one command, use
+`BITCASTER_RECOVERY_INDEX_REALM` or the global `--recovery-index-realm`
+option. See [CLI settings](/technical/#cli-settings). When the environment does not match the matching engine, the
 engine refuses the backup. Then `wallet backup status` shows `pending` with
 `unauthenticated`.
 
@@ -385,13 +390,16 @@ matching engine can link the request key to your account of the CLI. This
 applies also when asset monitoring is off, although the CLI then sends no
 wallet ID. The request key is the same for the CLI and for a browser with the
 same phrase. So the matching engine can also link your account of the CLI to
-the account and the network address of that browser. The CLI has no setting
-that turns the backup off. The backup holds no ecash, no amounts, and no
-spending keys.
+the account and the network address of that browser. To stop these requests,
+set the environment of the backup to `disabled`. The backup holds no ecash, no
+amounts, and no spending keys.
 
 `wallet backup delete` deletes the wallet backup at the matching engine. Supply
 `--wallet-seed-hex-file` or `--recovery-phrase-file`. `--realm` selects the
-environment. Without it, the command uses the configured environment. A daemon
+environment. Without it, the command uses the configured environment. When the
+configured environment is `disabled`, the command needs `--realm`. Before the
+request, the command asks you to trust a new engine URL. Add
+`--trust-engine-url` to trust it without the question. A daemon
 or a browser that still holds the phrase writes the backup again at its next
 start or its next new keyset.
 

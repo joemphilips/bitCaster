@@ -53,6 +53,8 @@ const rpcSource = `
   export class DaemonNotReachableError extends Error {}
   // A dry run only sets this flag. It does no daemon I/O.
   export function preventDaemonAutoStart() {}
+  // The CLI only records the settings that a daemon start would use.
+  export function configureDaemonLaunchSettings() {}
   export async function isCliSpawnedDaemonRunning() {
     record({ action: 'running-check' })
     return process.env.BITCASTER_TEST_SETTINGS_RUNNING === '1'

@@ -20,6 +20,7 @@ import {
   subscribeToDaemonWalletHoldingsCommits,
   type DaemonStateSqliteSession,
 } from './stateSqlite.ts'
+import { RECOVERY_INDEX_DISABLED, type RecoveryIndexSetting } from './nativeConfig.ts'
 
 /**
  * The daemon writer of the recovery index (ADR-051, ADR-034 amendment of
@@ -41,18 +42,21 @@ import {
 /** Each engine request of the writer ends after this time. */
 export const DAEMON_RECOVERY_INDEX_REQUEST_TIMEOUT_MS = 30_000
 
-export type DaemonRecoveryIndexStatus = { readonly realm: RecoveryIndexRealm } & (
-  | { readonly status: 'starting' }
-  | { readonly status: 'current' }
-  | {
-      readonly status: 'pending'
-      readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'pending' }>['reason']
-    }
-  | {
-      readonly status: 'blocked'
-      readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'blocked' }>['reason']
-    }
-)
+export type DaemonRecoveryIndexStatus =
+  | ({ readonly realm: RecoveryIndexRealm } & (
+      | { readonly status: 'starting' }
+      | { readonly status: 'current' }
+      | {
+          readonly status: 'pending'
+          readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'pending' }>['reason']
+        }
+      | {
+          readonly status: 'blocked'
+          readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'blocked' }>['reason']
+        }
+    ))
+  /** The realm setting is `disabled`, so no writer runs. */
+  | { readonly status: typeof RECOVERY_INDEX_DISABLED }
 
 export interface DaemonRecoveryIndexOptions {
   readonly directory: string
@@ -82,6 +86,30 @@ export interface DaemonRecoveryIndex {
   status(): DaemonRecoveryIndexStatus
   /** Wait until no upload runs. */
   settled(): Promise<void>
+}
+
+/**
+ * Start the writer of the running daemon. The `disabled` realm setting starts
+ * no writer, so the daemon sends no index request. The seed derives the
+ * request key of the index, not the application signer, but a daemon with a
+ * disconnected signer starts no background engine traffic, so it starts no
+ * writer either. Without a writer, the status is unavailable.
+ */
+export function startDaemonRecoveryIndexWriter(input: {
+  readonly setting: RecoveryIndexSetting
+  readonly signerEnabled: boolean
+  readonly create: (realm: RecoveryIndexRealm) => DaemonRecoveryIndex
+}): {
+  readonly writer?: DaemonRecoveryIndex
+  readonly readStatus?: () => DaemonRecoveryIndexStatus
+} {
+  if (input.setting === RECOVERY_INDEX_DISABLED) {
+    return { readStatus: () => ({ status: RECOVERY_INDEX_DISABLED }) }
+  }
+  if (!input.signerEnabled) return {}
+  const writer = input.create(input.setting)
+  writer.start()
+  return { writer, readStatus: () => writer.status() }
 }
 
 export function createDaemonRecoveryIndex(

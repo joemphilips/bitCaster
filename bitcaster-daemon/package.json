@@ -42,6 +42,10 @@
       "types": "./dist/nativeConfig.d.ts",
       "import": "./dist/nativeConfig.js"
     },
+    "./nativeConfigLayers": {
+      "types": "./dist/nativeConfigLayers.d.ts",
+      "import": "./dist/nativeConfigLayers.js"
+    },
     "./secrets": {
       "types": "./dist/secrets.d.ts",
       "import": "./dist/secrets.js"

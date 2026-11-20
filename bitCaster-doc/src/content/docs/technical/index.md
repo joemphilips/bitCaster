@@ -52,6 +52,7 @@ Use the CLI as an application interface for a custom GUI or TUI, scripts,
 and trading AI agents. Commands provide JSON results for programs to consume.
 For example, `bitcaster-cli order book <market-id>` reads the public order book.
 Set the engine URL with `bitcaster-cli config set --engine-url <url>`.
+See [CLI settings](#cli-settings) for the environment variables and options.
 The daemon writes the wallet backup of its profile. Set the backup environment with
 `bitcaster-cli config set --recovery-index-realm <realm>`.
 `bitcaster-cli wallet backup status` returns the state of the daemon writer as JSON:
@@ -98,6 +99,44 @@ The CLI provides the operations of the web app.
 Full application capability parity is the design goal.
 It does not require the CLI to reproduce browser rendering or browser storage.
 CLI clients use the same public authorization and settlement rules.
+
+### CLI settings
+
+Each CLI setting has a key in `config.json`, an environment variable, and a
+global option:
+
+| Key                                    | Environment variable                                 | Option                                       | Value                                                                         | Default                 |
+| -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------- |
+| `engineUrl`                            | `BITCASTER_ENGINE_URL`                               | `--engine-url`                               | https or loopback http URL                                                    | `http://localhost:5000` |
+| `mintUrl`                              | `BITCASTER_MINT_URL`                                 | `--mint-url`                                 | https or loopback http URL                                                    | `http://localhost:8085` |
+| `assetMonitoringEnabled`               | `BITCASTER_ASSET_MONITORING_ENABLED`                 | `--asset-monitoring-enabled`                 | `true` or `false`                                                             | `false`                 |
+| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` or `false`                                                             | `false`                 |
+| `recoveryIndexRealm`                   | `BITCASTER_RECOVERY_INDEX_REALM`                     | `--recovery-index-realm`                     | `bitcaster-production`, `bitcaster-staging`, `bitcaster-local`, or `disabled` | `bitcaster-production`  |
+
+The CLI uses the value of the highest layer that sets it. The layers, from
+lowest to highest, are the built-in default, `config.json`, the environment
+variable, and the option. For example, `BITCASTER_ENGINE_URL` replaces
+`engineUrl` of `config.json`, and `--engine-url` replaces both.
+An invalid value in a layer stops the command. The error names the setting and
+the layer. The engine URL checks apply to the URL of each layer. For example,
+market creation needs an https or loopback engine URL that you trust.
+
+`bitcaster-cli config set` writes only `config.json`. Give it the setting
+options, for example `bitcaster-cli config set --engine-url <url>`.
+`config set --asset-monitoring enabled` or `disabled` also sets
+`assetMonitoringEnabled`. `bitcaster-cli config get <key>` shows the effective
+value and its source: `default`, `file`, `environment`, or `option`.
+`bitcaster-cli config list` shows all settings.
+
+Only `--datadir` or `BITCASTER_DATADIR` selects the data directory, because the
+directory holds `config.json`. The option replaces the environment variable.
+The default is `~/.bitcaster`.
+`daemon init` and `wallet recover-seed` use only `config.json` and the defaults.
+
+A daemon that the CLI starts uses the environment and option settings of that
+CLI. A running daemon refuses each command of a CLI that has other environment
+or option settings. The error code is `daemon-settings-mismatch`. Then run
+`bitcaster-cli daemon restart` with the settings that you want.
 
 ### Select and import a native wallet profile
 

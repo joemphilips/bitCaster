@@ -1,69 +1,81 @@
 import {
-  DEFAULT_RECOVERY_INDEX_REALM,
   nativeConfigPath,
   parseNativeConfig,
   readNativeConfig,
   updateNativeConfig,
   type NativeConfig,
+  type NativeConfigSnapshot,
+  type RecoveryIndexSetting,
 } from '@bitcaster-market/daemon/nativeConfig'
-import { normalizeEndpointUrl } from '@bitcaster-market/client-sdk/engineUrlSecurity'
-import type { RecoveryIndexRealm } from '@bitcaster-market/client-sdk/recoveryIndexEngine'
+import {
+  applyNativeSettingOverrides,
+  resolveNativeSettings,
+  type NativeSettingOverrides,
+  type ResolvedNativeSettings,
+} from '@bitcaster-market/daemon/nativeConfigLayers'
 
+/** The values that `config.json` holds, as `config set` reports them. */
 export interface CliConfig {
-  engineUrl?: string
-  mintUrl?: string
+  engineUrl: string
+  mintUrl: string
   assetMonitoringEnabled: boolean
   trustedEngineUrls: string[]
   /** Present only after a user sets it. An absent value is the production realm. */
-  recoveryIndexRealm?: RecoveryIndexRealm
-}
-
-/** The realm that the daemon writer and `wallet backup delete` use. */
-export function effectiveRecoveryIndexRealm(config: CliConfig): RecoveryIndexRealm {
-  return config.recoveryIndexRealm ?? DEFAULT_RECOVERY_INDEX_REALM
+  recoveryIndexRealm?: RecoveryIndexSetting
 }
 
 export function configFilePath(): string {
   return nativeConfigPath()
 }
 
+/** The file view. A missing file with `allowMissing` gives the defaults. */
 export function readConfig(allowMissing = false): CliConfig {
-  return toCliConfig(readNativeConfig(allowMissing).config)
+  return toCliConfig(readConfigSnapshot(allowMissing).config)
+}
+
+/** The effective settings: default, then file, then environment, then option. */
+export function resolveCliSettings(layers: {
+  readonly allowMissing: boolean
+  readonly environment: NativeSettingOverrides
+  readonly options: NativeSettingOverrides
+}): ResolvedNativeSettings {
+  const snapshot = readConfigSnapshot(layers.allowMissing)
+  return resolveNativeSettings({
+    file: snapshot.revision === null ? null : snapshot.config,
+    environment: layers.environment,
+    options: layers.options,
+  })
 }
 
 export function updateConfig(update: (current: CliConfig) => CliConfig): CliConfig {
-  const snapshot = updateNativeConfig((current) =>
-    toNativeConfig(current, update(toCliConfig(current))),
-  )
+  const snapshot = updateNativeConfig((current) => ({
+    ...current,
+    cli: { trustedEngineUrls: update(toCliConfig(current)).trustedEngineUrls },
+  }))
   return toCliConfig(snapshot.config)
 }
 
-/** Validate an update like `updateConfig` without writing it. */
-export function validateConfigUpdate(update: (current: CliConfig) => CliConfig): void {
-  const current = readNativeConfig(true).config
-  parseNativeConfig(JSON.stringify(toNativeConfig(current, update(toCliConfig(current)))))
+/** `config set` writes the values to the file only. The other layers stay as they are. */
+export function writeConfigSettings(values: NativeSettingOverrides): CliConfig {
+  return toCliConfig(
+    updateNativeConfig((current) => applyNativeSettingOverrides(current, values)).config,
+  )
 }
 
-function toNativeConfig(current: NativeConfig, update: CliConfig): NativeConfig {
-  const mintUrl =
-    update.mintUrl === undefined ? undefined : normalizeEndpointUrl(update.mintUrl, 'mint URL')
-  return {
-    ...current,
-    daemon: {
-      ...current.daemon,
-      ...(update.engineUrl === undefined ? {} : { engineUrl: update.engineUrl }),
-      ...(mintUrl === undefined
-        ? {}
-        : {
-            mintUrl,
-            mintUrls: [...new Set([...current.daemon.mintUrls, mintUrl])],
-          }),
-      assetMonitoringEnabled: update.assetMonitoringEnabled,
-      ...(update.recoveryIndexRealm === undefined
-        ? {}
-        : { recoveryIndexRealm: update.recoveryIndexRealm }),
-    },
-    cli: { trustedEngineUrls: update.trustedEngineUrls },
+/** Validate a write like `writeConfigSettings` without writing it. */
+export function validateConfigSettingsWrite(values: NativeSettingOverrides): void {
+  const current = readNativeConfig(true).config
+  parseNativeConfig(JSON.stringify(applyNativeSettingOverrides(current, values)))
+}
+
+function readConfigSnapshot(allowMissing: boolean): NativeConfigSnapshot {
+  try {
+    return readNativeConfig(allowMissing)
+  } catch (error) {
+    // Name the layer of an invalid value. The file errors name the key.
+    throw new Error(
+      `config file ${nativeConfigPath()}: ${error instanceof Error ? error.message : String(error)}`,
+    )
   }
 }
 
