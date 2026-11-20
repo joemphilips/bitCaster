@@ -1,0 +1,337 @@
+import type { DatabaseSync } from 'node:sqlite'
+import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
+import {
+  deriveRecoveryIndexKeys,
+  recoveryIndexEntryKey,
+  type RecoveryIndexEntry,
+} from '@bitcaster-market/client-sdk/recoveryIndexDocument'
+import {
+  createRecoveryIndexEngineStore,
+  type RecoveryIndexRealm,
+} from '@bitcaster-market/client-sdk/recoveryIndexEngine'
+import { RecoveryIndexSync } from '@bitcaster-market/client-sdk/recoveryIndexSync'
+import {
+  RecoveryIndexUploader,
+  type RecoveryIndexUploaderStatus,
+} from '@bitcaster-market/client-sdk/recoveryIndexUploader'
+import { canonicalizeMintIdentityUrl } from '@bitcaster-market/client-sdk/tokenImportValidation'
+import {
+  createDaemonStateSqliteSession,
+  subscribeToDaemonWalletHoldingsCommits,
+  type DaemonStateSqliteSession,
+} from './stateSqlite.ts'
+
+/**
+ * The daemon writer of the recovery index (ADR-051, ADR-034 amendment of
+ * 2026-11-20). The CLI delegates trading to the daemon, so the daemon writes
+ * the keysets that the CLI uses. The SDK uploader owns the upload rules. This
+ * module supplies the local keysets and the events:
+ *
+ * - The start of the daemon is the wallet open. The first upload reads the
+ *   index and writes the pending keysets.
+ * - After each committed custody transaction, the daemon asks for an upload.
+ *   The upload makes an engine request only when a local keyset is pending.
+ * - The only timer is a wait that the SDK asks for: the retry after a failure,
+ *   or the end of the minimum write interval of one key.
+ *
+ * The daemon does not scan from the index, so it reads the index only for an
+ * upload. It never makes a mint request for the index.
+ */
+
+/** Each engine request of the writer ends after this time. */
+export const DAEMON_RECOVERY_INDEX_REQUEST_TIMEOUT_MS = 30_000
+
+export type DaemonRecoveryIndexStatus = { readonly realm: RecoveryIndexRealm } & (
+  | { readonly status: 'starting' }
+  | { readonly status: 'current' }
+  | {
+      readonly status: 'pending'
+      readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'pending' }>['reason']
+    }
+  | {
+      readonly status: 'blocked'
+      readonly reason: Extract<RecoveryIndexUploaderStatus, { kind: 'blocked' }>['reason']
+    }
+)
+
+export interface DaemonRecoveryIndexOptions {
+  readonly directory: string
+  readonly scopeId: string
+  /** The 64-byte BIP-39 seed of the profile wallet. */
+  readonly walletSeed: Uint8Array
+  readonly realm: RecoveryIndexRealm
+  readonly engineBaseUrl: string
+  /** The configured mint URLs of the daemon. */
+  readonly walletMints: readonly string[]
+  readonly fetchImpl?: typeof fetch
+  readonly nowMs?: () => number
+  readonly random?: () => number
+  readonly setTimer?: (callback: () => void, delayMs: number) => unknown
+  readonly clearTimer?: (timer: unknown) => void
+  /** Test seam. Production uses the profile-scoped SQLite session. */
+  readonly storage?: DaemonStateSqliteSession
+  /** Test seam. Production observes the commits of this profile database. */
+  readonly subscribeToCommits?: (callback: () => void) => () => void
+  /** One line for each change to a persistent error. It never holds a key or a document. */
+  readonly log?: (line: string) => void
+}
+
+export interface DaemonRecoveryIndex {
+  start(): void
+  stop(): void
+  status(): DaemonRecoveryIndexStatus
+  /** Wait until no upload runs. */
+  settled(): Promise<void>
+}
+
+export function createDaemonRecoveryIndex(
+  options: DaemonRecoveryIndexOptions,
+): DaemonRecoveryIndex {
+  const storage = options.storage ?? createDaemonStateSqliteSession(options.directory)
+  const nowMs = options.nowMs ?? Date.now
+  const keys = deriveRecoveryIndexKeys(options.walletSeed, options.realm)
+  const fetchImpl = options.fetchImpl ?? fetch
+  const walletMints = options.walletMints.flatMap((url) => {
+    try {
+      return [canonicalizeMintIdentityUrl(url)]
+    } catch {
+      return []
+    }
+  })
+  const sync = new RecoveryIndexSync({
+    store: createRecoveryIndexEngineStore({
+      engineBaseUrl: options.engineBaseUrl,
+      realm: options.realm,
+      keys,
+      fetchImpl: (input, init) =>
+        fetchImpl(input, {
+          ...init,
+          signal: init?.signal ?? AbortSignal.timeout(DAEMON_RECOVERY_INDEX_REQUEST_TIMEOUT_MS),
+        }),
+      nowMs,
+    }),
+    keys,
+    localEntries: () =>
+      storage.read((database) => readDaemonRecoveryIndexLocalEntries(database, options.scopeId)),
+    // The daemon holds no mint keys for the index. A form conflict that the
+    // daemon cannot check keeps the stored value (ADR-051 "Merge").
+    verifyEntry: async () => {
+      throw new Error('the daemon holds no keyset authority for the recovery index')
+    },
+    walletMints: () => walletMints,
+    nowMs,
+    ...(options.random === undefined ? {} : { random: options.random }),
+  })
+  const uploader = new RecoveryIndexUploader({
+    sync,
+    nowMs,
+    ...(options.random === undefined ? {} : { random: options.random }),
+    setTimer:
+      options.setTimer ??
+      ((callback, delayMs) => {
+        const timer = setTimeout(callback, delayMs)
+        // A retry must not keep a stopping daemon alive.
+        timer.unref()
+        return timer
+      }),
+    ...(options.clearTimer === undefined ? {} : { clearTimer: options.clearTimer }),
+  })
+  const log = options.log ?? (() => {})
+  let reported = ''
+  uploader.subscribe(() => {
+    const status = uploader.status
+    const line =
+      status.kind === 'blocked'
+        ? `Recovery index upload stopped: ${status.reason}`
+        : status.kind !== 'pending'
+          ? ''
+          : status.reason === 'unauthenticated'
+            ? `Recovery index upload refused: check the recovery index realm ${options.realm}`
+            : status.reason === 'local-failure'
+              ? 'Recovery index upload waits: the daemon cannot read its local keysets'
+              : ''
+    if (line !== '' && line !== reported) log(line)
+    reported = line
+  })
+  let unsubscribe: (() => void) | undefined
+  let stopped = false
+  return {
+    start() {
+      if (stopped || unsubscribe !== undefined) return
+      const subscribe =
+        options.subscribeToCommits ??
+        ((callback: () => void) =>
+          subscribeToDaemonWalletHoldingsCommits(options.directory, callback))
+      unsubscribe = subscribe(() => uploader.requestUpload())
+      uploader.requestUpload()
+    },
+    stop() {
+      if (stopped) return
+      stopped = true
+      uploader.stop()
+      unsubscribe?.()
+      unsubscribe = undefined
+    },
+    status() {
+      return daemonStatus(options.realm, uploader.status)
+    },
+    settled() {
+      return uploader.settled()
+    },
+  }
+}
+
+function daemonStatus(
+  realm: RecoveryIndexRealm,
+  status: RecoveryIndexUploaderStatus,
+): DaemonRecoveryIndexStatus {
+  switch (status.kind) {
+    case 'starting':
+    case 'current':
+      return { realm, status: status.kind }
+    case 'pending':
+      return { realm, status: 'pending', reason: status.reason }
+    case 'blocked':
+      return { realm, status: 'blocked', reason: status.reason }
+    default:
+      return assertNever(status)
+  }
+}
+
+interface CounterKeysetRow {
+  readonly normalizedMint: unknown
+  readonly unit: unknown
+  readonly keysetId: unknown
+}
+
+interface ProofFormRow extends CounterKeysetRow {
+  readonly conditionId: unknown
+  readonly outcomeSetId: unknown
+}
+
+/**
+ * The local keysets of the daemon (ADR-051 "Upload"): each keyset with a
+ * counter cursor, in the form of its index entry. The counter tables do not
+ * record the form, so a proof row of that keyset gives it: a regular proof
+ * gives the regular form, and a conditional proof gives the condition and its
+ * root outcome collection. Any proof row counts, also a spent one. A keyset
+ * with no proof row yet, for example the receive keyset of a failed order,
+ * has no signed output to restore. It is listed after its first proof row.
+ */
+export function readDaemonRecoveryIndexLocalEntries(
+  database: DatabaseSync,
+  scopeId: string,
+): RecoveryIndexEntry[] {
+  const counters = database
+    .prepare(
+      `SELECT normalized_mint AS normalizedMint, unit, keyset_id AS keysetId
+       FROM custody_keyset_counters WHERE scope_id = ?
+       UNION
+       SELECT normalized_mint AS normalizedMint, unit, keyset_id AS keysetId
+       FROM target_keyset_counters WHERE scope_id = ?`,
+    )
+    .all(scopeId, scopeId) as unknown as CounterKeysetRow[]
+  if (counters.length === 0) return []
+  const forms = new Map<string, ProofFormRow>()
+  // The live proofs of the old store, in one scan of its covering index.
+  for (const row of database
+    .prepare(
+      `SELECT DISTINCT normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
+         condition_id AS conditionId, outcome_set_id AS outcomeSetId
+       FROM target_wallet_proofs WHERE scope_id = ?`,
+    )
+    .all(scopeId) as unknown as ProofFormRow[]) {
+    addForm(forms, row)
+  }
+  // The custody store keeps every admitted proof. Read one row of each keyset
+  // that the old store does not show, through the unique keyset index.
+  const custodyForm = database.prepare(
+    `SELECT normalized_mint AS normalizedMint, unit, keyset_id AS keysetId,
+       condition_id AS conditionId, outcome_set_id AS outcomeSetId
+     FROM custody_proofs
+     WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?
+     LIMIT 1`,
+  )
+  const entries = new Map<string, RecoveryIndexEntry>()
+  for (const row of counters) {
+    const counter = decodeKeysetRow(row)
+    let form = forms.get(counter.key)
+    if (form === undefined) {
+      form = custodyForm.get(scopeId, counter.normalizedMint, counter.unit, counter.keysetId) as
+        | ProofFormRow
+        | undefined
+    }
+    if (form === undefined) continue
+    const entry = indexEntry(form)
+    const entryKey = recoveryIndexEntryKey(entry)
+    const existing = entries.get(entryKey)
+    if (existing !== undefined && !sameForm(existing, entry)) {
+      throw new Error('daemon recovery index keyset has two forms')
+    }
+    entries.set(entryKey, entry)
+  }
+  return [...entries.values()]
+}
+
+function decodeKeysetRow(row: CounterKeysetRow): {
+  readonly normalizedMint: string
+  readonly unit: string
+  readonly keysetId: string
+  readonly key: string
+} {
+  const { normalizedMint, unit, keysetId } = row
+  if (
+    typeof normalizedMint !== 'string' ||
+    typeof unit !== 'string' ||
+    typeof keysetId !== 'string'
+  ) {
+    throw new Error('daemon recovery index keyset row is invalid')
+  }
+  return { normalizedMint, unit, keysetId, key: `${normalizedMint}\u0000${unit}\u0000${keysetId}` }
+}
+
+function addForm(forms: Map<string, ProofFormRow>, row: ProofFormRow): void {
+  const { key } = decodeKeysetRow(row)
+  const existing = forms.get(key)
+  if (
+    existing !== undefined &&
+    (existing.conditionId !== row.conditionId || existing.outcomeSetId !== row.outcomeSetId)
+  ) {
+    throw new Error('daemon recovery index keyset has two forms')
+  }
+  forms.set(key, row)
+}
+
+function indexEntry(row: ProofFormRow): RecoveryIndexEntry {
+  const mintUrl = canonicalizeMintIdentityUrl(String(row.normalizedMint))
+  const keysetId = String(row.keysetId)
+  if (row.conditionId === null && row.outcomeSetId === null) {
+    return { kind: 'regular', mintUrl, keysetId }
+  }
+  if (typeof row.conditionId !== 'string' || typeof row.outcomeSetId !== 'string') {
+    throw new Error('daemon recovery index conditional proof row is invalid')
+  }
+  // bitCaster markets are root conditions. The outcome set is the outcome
+  // collection of the mint keyset.
+  return {
+    kind: 'conditional',
+    mintUrl,
+    keysetId,
+    conditionId: row.conditionId,
+    outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
+      conditionId: row.conditionId,
+      outcomeCollection: row.outcomeSetId,
+    }),
+  }
+}
+
+function sameForm(left: RecoveryIndexEntry, right: RecoveryIndexEntry): boolean {
+  if (left.kind === 'regular' || right.kind === 'regular') return left.kind === right.kind
+  return (
+    left.conditionId === right.conditionId && left.outcomeCollectionId === right.outcomeCollectionId
+  )
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled daemon recovery index value: ${JSON.stringify(value)}`)
+}

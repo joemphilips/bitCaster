@@ -16,7 +16,6 @@ import {
 } from "@bitcaster/client-sdk/recoveryIndexEngine";
 import {
   listedRecoveryIndexEntriesWithoutCursor,
-  planRecoveryIndexRetryDelayMs,
   RECOVERY_INDEX_READ_MINT_REFUSAL_CODES,
   RecoveryIndexSync,
   type RecoveryIndexKnownDocument,
@@ -24,6 +23,10 @@ import {
   type RecoveryIndexReadTrigger,
   type RecoveryIndexUploadOutcome,
 } from "@bitcaster/client-sdk/recoveryIndexSync";
+import {
+  RecoveryIndexUploader,
+  type RecoveryIndexUploaderStatus,
+} from "@bitcaster/client-sdk/recoveryIndexUploader";
 import { canonicalizeMintIdentityUrl } from "@bitcaster/client-sdk/tokenImportValidation";
 import { BROWSER_WALLET_COUNTER_SNAPSHOT_MAX } from "../stores/browser-wallet-counter-db";
 import { decodeBrowserCustodyConditionalKeysetRow } from "../stores/durable-custody-types";
@@ -33,21 +36,12 @@ import type { BitcasterDB } from "../stores/proof-db";
  * The browser client of the recovery index (ADR-051, ADR-034 recovery index
  * amendment). The backup is always on. A funded operation never waits for
  * an upload: a counter write only asks for an upload, and the local counter
- * cursors are the retry queue. The only timer is the retry that the SDK asks
- * for with `retryAtMs`.
+ * cursors are the retry queue. The SDK uploader, which the daemon also uses,
+ * owns the coalesced uploads, the status, and the one timer for the waits that
+ * the SDK asks for.
  */
 
-export type BrowserRecoveryIndexStatus =
-  | { readonly kind: "starting" }
-  /** The engine acknowledged an index that lists every local keyset. */
-  | { readonly kind: "current" }
-  /** An upload waits for its retry. Trading continues. */
-  | { readonly kind: "pending" }
-  /** A persistent error. The client writes nothing until a later read changes the document. */
-  | {
-      readonly kind: "blocked";
-      readonly reason: "undecodable" | "unsupported-version" | "over-cap";
-    };
+export type BrowserRecoveryIndexStatus = RecoveryIndexUploaderStatus;
 
 /** The state of the index for a seed handoff (ADR-034 recovery index amendment, "Seed handoff"). */
 export type BrowserRecoveryIndexHandoff =
@@ -209,13 +203,8 @@ type BrowserRecoveryIndexConditionalAuthority =
 export class BrowserRecoveryIndex {
   readonly #input: BrowserRecoveryIndexInput;
   readonly #sync: RecoveryIndexSync;
+  readonly #uploader: RecoveryIndexUploader;
   readonly #nowMs: () => number;
-  readonly #listeners = new Set<() => void>();
-  #status: BrowserRecoveryIndexStatus = { kind: "starting" };
-  #uploading: Promise<void> | null = null;
-  #uploadRequested = false;
-  #retryTimer: unknown = undefined;
-  #localFailureStreak = 0;
   #stopped = false;
   #lastRead: Promise<RecoveryIndexReadOutcome> | null = null;
 
@@ -242,17 +231,23 @@ export class BrowserRecoveryIndex {
       nowMs: this.#nowMs,
       ...(input.random === undefined ? {} : { random: input.random }),
     });
+    this.#uploader = new RecoveryIndexUploader({
+      sync: this.#sync,
+      nowMs: this.#nowMs,
+      ...(input.random === undefined ? {} : { random: input.random }),
+      ...(input.setTimer === undefined ? {} : { setTimer: input.setTimer }),
+      ...(input.clearTimer === undefined ? {} : { clearTimer: input.clearTimer }),
+      withSeedLock: (work) => this.#withSeedLock(work),
+      afterCurrent: () => this.#reportDocument(),
+    });
   }
 
   get status(): BrowserRecoveryIndexStatus {
-    return this.#status;
+    return this.#uploader.status;
   }
 
   subscribe(listener: () => void): () => void {
-    this.#listeners.add(listener);
-    return () => {
-      this.#listeners.delete(listener);
-    };
+    return this.#uploader.subscribe(listener);
   }
 
   /**
@@ -313,21 +308,12 @@ export class BrowserRecoveryIndex {
    * upload: a funded operation continues while the engine is unreachable.
    */
   requestUpload(): void {
-    if (this.#stopped) return;
-    if (this.#uploading !== null) {
-      this.#uploadRequested = true;
-      return;
-    }
-    const running = this.#runUploads();
-    this.#uploading = running;
-    void running.finally(() => {
-      if (this.#uploading === running) this.#uploading = null;
-    });
+    this.#uploader.requestUpload();
   }
 
   /** Wait for the running upload, for a test or a seed handoff. */
-  async settled(): Promise<void> {
-    while (this.#uploading !== null) await this.#uploading;
+  settled(): Promise<void> {
+    return this.#uploader.settled();
   }
 
   /** Read the index again, upload the pending keysets, and report the handoff gate. */
@@ -337,11 +323,10 @@ export class BrowserRecoveryIndex {
     await this.settled();
     let outcome: RecoveryIndexUploadOutcome;
     try {
-      outcome = await this.#withSeedLock(() => this.#sync.upload());
+      outcome = await this.#uploader.uploadOnce();
     } catch {
       return { kind: "unavailable" };
     }
-    this.#apply(outcome);
     switch (outcome.status) {
       case "current":
       case "written": {
@@ -366,90 +351,7 @@ export class BrowserRecoveryIndex {
 
   stop(): void {
     this.#stopped = true;
-    this.#clearRetry();
-    this.#listeners.clear();
-  }
-
-  async #runUploads(): Promise<void> {
-    do {
-      this.#uploadRequested = false;
-      this.#clearRetry();
-      let outcome: RecoveryIndexUploadOutcome | null;
-      try {
-        outcome = await this.#withSeedLock(() => this.#sync.upload());
-        this.#localFailureStreak = 0;
-      } catch {
-        // A local read failed. The next event or the retry below tries again.
-        outcome = null;
-      }
-      if (this.#stopped) return;
-      this.#apply(outcome);
-      if (outcome?.status === "written" || outcome?.status === "current") {
-        await this.#reportDocument();
-      }
-    } while (this.#uploadRequested && !this.#stopped);
-  }
-
-  #apply(outcome: RecoveryIndexUploadOutcome | null): void {
-    if (this.#stopped) return;
-    if (outcome === null) {
-      this.#localFailureStreak += 1;
-      this.#setStatus({ kind: "pending" });
-      this.#scheduleRetry(
-        this.#nowMs() +
-          planRecoveryIndexRetryDelayMs({
-            streak: this.#localFailureStreak,
-            minimumDelayMs: 0,
-            random: this.#input.random ?? Math.random,
-          }),
-      );
-      return;
-    }
-    switch (outcome.status) {
-      case "current":
-      case "written":
-        this.#setStatus({ kind: "current" });
-        return;
-      case "retry":
-        this.#setStatus({ kind: "pending" });
-        this.#scheduleRetry(outcome.retryAtMs);
-        return;
-      case "blocked":
-        this.#setStatus({ kind: "blocked", reason: outcome.reason });
-        return;
-      default:
-        assertNever(outcome);
-    }
-  }
-
-  /** The one timer: the retry that the SDK asks for. */
-  #scheduleRetry(atMs: number): void {
-    this.#clearRetry();
-    const setTimer = this.#input.setTimer ?? ((callback, delayMs) => setTimeout(callback, delayMs));
-    this.#retryTimer = setTimer(
-      () => {
-        this.#retryTimer = undefined;
-        this.requestUpload();
-      },
-      Math.max(0, atMs - this.#nowMs()),
-    );
-  }
-
-  #clearRetry(): void {
-    if (this.#retryTimer === undefined) return;
-    const clearTimer =
-      this.#input.clearTimer ?? ((timer) => clearTimeout(timer as ReturnType<typeof setTimeout>));
-    clearTimer(this.#retryTimer);
-    this.#retryTimer = undefined;
-  }
-
-  #setStatus(status: BrowserRecoveryIndexStatus): void {
-    const unchanged =
-      status.kind === this.#status.kind &&
-      (status.kind !== "blocked" ||
-        (this.#status.kind === "blocked" && status.reason === this.#status.reason));
-    this.#status = status;
-    if (!unchanged) for (const listener of this.#listeners) listener();
+    this.#uploader.stop();
   }
 
   /** At most one upload of a seed runs at a time, also across tabs of this browser. */

@@ -22,6 +22,11 @@ import {
   DEFAULT_PUBLIC_NOSTR_RELAYS,
   normalizeNostrRelayUrls,
 } from '@bitcaster-market/client-sdk/nostrRelays'
+import {
+  isRecoveryIndexRealm,
+  RECOVERY_INDEX_REALMS,
+  type RecoveryIndexRealm,
+} from '@bitcaster-market/client-sdk/recoveryIndexEngine'
 
 export const NATIVE_CONFIG_VERSION = 2
 export const DEFAULT_ENGINE_URL = 'http://localhost:5000'
@@ -38,6 +43,11 @@ export interface NativeConfig {
     readonly autoRetireResolvedConditionInventory: boolean
     readonly assetMonitoringEnabled: boolean
     readonly nostrRelays: readonly string[]
+    /**
+     * The recovery index realm of the engine. It is absent until a user sets
+     * it, and an absent value is the production realm.
+     */
+    readonly recoveryIndexRealm?: RecoveryIndexRealm
   }
   readonly cli: {
     readonly trustedEngineUrls: readonly string[]
@@ -56,6 +66,14 @@ export interface NativeConfigCreation {
 
 export function nativeConfigPath(directory = dataDir()): string {
   return join(directory, 'config.json')
+}
+
+/** The realm of a config with no recovery index realm. */
+export const DEFAULT_RECOVERY_INDEX_REALM: RecoveryIndexRealm = RECOVERY_INDEX_REALMS.production
+
+/** The realm that the daemon writer of the recovery index uses. */
+export function nativeRecoveryIndexRealm(config: NativeConfig): RecoveryIndexRealm {
+  return config.daemon.recoveryIndexRealm ?? DEFAULT_RECOVERY_INDEX_REALM
 }
 
 export function assertNativeConfigSourceAdmissible(directory = dataDir()): void {
@@ -169,6 +187,7 @@ export function parseNativeConfig(raw: string): NativeConfig {
       'nostrRelays',
     ],
     'config.daemon',
+    ['recoveryIndexRealm'],
   )
   const cli = strictObject(root.cli, ['trustedEngineUrls'], 'config.cli')
   if (typeof daemon.autoRetireResolvedConditionInventory !== 'boolean') {
@@ -176,6 +195,11 @@ export function parseNativeConfig(raw: string): NativeConfig {
   }
   if (typeof daemon.assetMonitoringEnabled !== 'boolean') {
     throw new Error('config.daemon.assetMonitoringEnabled must be boolean')
+  }
+  if (daemon.recoveryIndexRealm !== undefined && !isRecoveryIndexRealm(daemon.recoveryIndexRealm)) {
+    throw new Error(
+      `config.daemon.recoveryIndexRealm must be one of ${Object.values(RECOVERY_INDEX_REALMS).join(', ')}`,
+    )
   }
   if (
     !Array.isArray(daemon.nostrRelays) ||
@@ -212,6 +236,9 @@ export function parseNativeConfig(raw: string): NativeConfig {
       autoRetireResolvedConditionInventory: daemon.autoRetireResolvedConditionInventory,
       assetMonitoringEnabled: daemon.assetMonitoringEnabled,
       nostrRelays: normalizeNostrRelayUrls(daemon.nostrRelays),
+      ...(daemon.recoveryIndexRealm === undefined
+        ? {}
+        : { recoveryIndexRealm: daemon.recoveryIndexRealm }),
     },
     cli: { trustedEngineUrls },
   }
@@ -359,17 +386,22 @@ function isFileSystemError(error: unknown, code: string): boolean {
   return error instanceof Error && 'code' in error && error.code === code
 }
 
+/** An object with exactly the required keys and any of the optional keys. */
 function strictObject(
   value: unknown,
   keys: readonly string[],
   name: string,
+  optionalKeys: readonly string[] = [],
 ): Record<string, unknown> {
   if (value === null || typeof value !== 'object' || Array.isArray(value)) {
     throw new Error(`${name} must be an object`)
   }
   const object = value as Record<string, unknown>
   const actual = Object.keys(object)
-  if (actual.length !== keys.length || actual.some((key) => !keys.includes(key))) {
+  if (
+    keys.some((key) => !actual.includes(key)) ||
+    actual.some((key) => !keys.includes(key) && !optionalKeys.includes(key))
+  ) {
     throw new Error(`${name} has missing or unknown keys`)
   }
   return object

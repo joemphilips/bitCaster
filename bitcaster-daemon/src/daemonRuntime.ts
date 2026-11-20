@@ -13,7 +13,8 @@ import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
 import type { NativeWalletPaymentApproval } from './nativeWalletPaymentOps.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
-import { freezeNativeConfigAtStartup } from './nativeConfig.ts'
+import { freezeNativeConfigAtStartup, nativeRecoveryIndexRealm } from './nativeConfig.ts'
+import type { DaemonRecoveryIndex } from './daemonRecoveryIndex.ts'
 
 export interface DaemonRuntimeOptions {
   readonly authorizationLifetimeSeconds?: number
@@ -120,6 +121,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   let rangeRecoveryLoop: CtfRangeRecoveryLoop | undefined
   let nonRetirementRecoveryLoop: NonRetirementCustodyRecoveryLoop | undefined
   let assetMonitoring: { start(): void; stop(): void } | undefined
+  let recoveryIndex: DaemonRecoveryIndex | undefined
   let assetMonitoringStarting = false
   let nativePaymentRequests: NativePaymentRequestService | undefined
   const liveViewLifetime = new AbortController()
@@ -167,6 +169,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     rangeRecoveryLoop?.stop()
     nonRetirementRecoveryLoop?.stop()
     assetMonitoring?.stop()
+    recoveryIndex?.stop()
     await nativePaymentRequests?.stop().catch(() => {
       process.stderr.write('native payment request shutdown failed\n')
     })
@@ -289,6 +292,26 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       subscribeToDaemonWalletHoldingsCommits(profileDir(), callback),
   })
   try {
+    // The seed derives the request key of the recovery index, not the
+    // application signer. A daemon with a disconnected signer starts no
+    // background engine traffic, so the writer runs only with a connected
+    // signer. The start is the wallet open: it reads the index once and writes
+    // the pending keysets. Later commits ask for an upload. The startup
+    // recovery below commits through the same signal.
+    if (signerEnabled) {
+      const { createDaemonRecoveryIndex } = await import('./daemonRecoveryIndex.ts')
+      recoveryIndex = createDaemonRecoveryIndex({
+        directory: profileDir(),
+        scopeId,
+        walletSeed: Buffer.from(secrets.walletSeedHex, 'hex'),
+        realm: nativeRecoveryIndexRealm(nativeConfig),
+        engineBaseUrl: profile.engineBaseUrl,
+        walletMints: nativeConfig.daemon.mintUrls,
+        log: (line) => process.stderr.write(`${line}\n`),
+      })
+      recoveryIndex.start()
+    }
+    const runningRecoveryIndex = recoveryIndex
     const rangeOrderCoordinator = new DaemonCtfRangeOrderCoordinator(profileDir(), currentFence, {
       observeOrderTimeline,
       ...(options.authorizationLifetimeSeconds === undefined
@@ -692,6 +715,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       nativeLightningOps,
       nativeWalletPaymentOps,
       nativePaymentRequests,
+      readRecoveryIndexStatus:
+        runningRecoveryIndex === undefined ? undefined : () => runningRecoveryIndex.status(),
       trackOwnedOrder: async (marketId, orderId) => {
         await orderHub.trackOrder(marketId, orderId)
         await startOrderHubWhenReady()

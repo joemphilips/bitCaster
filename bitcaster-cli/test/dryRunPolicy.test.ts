@@ -52,6 +52,7 @@ const READ_ONLY_COMMANDS = [
   'score status',
   'signer show',
   'wallet assets',
+  'wallet backup status',
   'wallet balance',
   'wallet invoice show',
   'wallet operations',

@@ -6,6 +6,7 @@ import { deriveRecoveryIndexKeys } from '@bitcaster-market/client-sdk/recoveryIn
 import {
   RECOVERY_INDEX_REALMS,
   createRecoveryIndexEngineStore,
+  isRecoveryIndexRealm,
   type RecoveryIndexRealm,
 } from '@bitcaster-market/client-sdk/recoveryIndexEngine'
 import { deleteRecoveryIndexDocument } from '@bitcaster-market/client-sdk/recoveryIndexSync'
@@ -79,6 +80,7 @@ import {
 } from './dryRunPolicy.ts'
 import {
   configFilePath,
+  effectiveRecoveryIndexRealm,
   validateConfigUpdate,
   readConfig,
   updateConfig,
@@ -1744,6 +1746,15 @@ function registerWalletCommand(program: Command): void {
     .command('backup')
     .description('Manage the encrypted recovery index of a seed at the engine.')
   backup
+    .command('status')
+    .description(
+      'Show the recovery index writer of the daemon: the realm and whether the engine lists every keyset that this wallet used. The daemon writes the index when it starts and when the wallet first uses a keyset.',
+    )
+    .addHelpText('after', '\nExample:\n  bitcaster-cli wallet backup status')
+    .action(async () => {
+      await printDaemonResult(callDaemon({ method: 'wallet.backup.status' }))
+    })
+  backup
     .command('delete')
     .description(
       'Delete the engine recovery index of one seed. The engine keeps a tombstone. A browser that holds the seed writes the index again at its next upload. Supply exactly one owner-only seed or phrase file.',
@@ -1754,9 +1765,10 @@ function registerWalletCommand(program: Command): void {
     )
     .option('--recovery-phrase-file <path>', 'Owner-only file containing an English BIP-39 phrase')
     .addOption(
-      new Option('--realm <realm>', 'Recovery index realm of the engine')
-        .choices(Object.values(RECOVERY_INDEX_REALMS))
-        .default(RECOVERY_INDEX_REALMS.production),
+      new Option(
+        '--realm <realm>',
+        'Recovery index realm of the engine. The default is the configured realm.',
+      ).choices(Object.values(RECOVERY_INDEX_REALMS)),
     )
     .allowExcessArguments(false)
     .addHelpText(
@@ -1767,7 +1779,7 @@ function registerWalletCommand(program: Command): void {
       async (options: {
         walletSeedHexFile?: string
         recoveryPhraseFile?: string
-        realm: RecoveryIndexRealm
+        realm?: RecoveryIndexRealm
       }) => {
         if (
           (options.walletSeedHexFile === undefined) ===
@@ -1785,11 +1797,12 @@ function registerWalletCommand(program: Command): void {
             : seedRecoveryMnemonicBytes(
                 await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
               )
-        const keys = deriveRecoveryIndexKeys(seed, options.realm)
+        const realm = options.realm ?? effectiveRecoveryIndexRealm(readConfig(true))
+        const keys = deriveRecoveryIndexKeys(seed, realm)
         if (globalDryRun) {
           // The request key is public. Never print the seed.
           printDryRun('wallet.backup.delete', {
-            realm: options.realm,
+            realm,
             requestPublicKey: keys.locatorPublicKey,
           })
           return
@@ -1798,7 +1811,7 @@ function registerWalletCommand(program: Command): void {
         const result = await deleteRecoveryIndexDocument(
           createRecoveryIndexEngineStore({
             engineBaseUrl: globalEngineUrl,
-            realm: options.realm,
+            realm,
             keys,
             fetchImpl: (input, init) =>
               fetch(input, {
@@ -3142,10 +3155,21 @@ Examples:
     .option('--engine-url <url>', 'Engine URL')
     .option('--mint-url <url>', 'Mint URL')
     .option('--asset-monitoring <enabled|disabled>', 'Asset monitoring. Disabled is privacy mode.')
+    .option(
+      '--recovery-index-realm <realm>',
+      `Recovery index realm of the engine (${Object.values(RECOVERY_INDEX_REALMS).join(', ')}). The default is ${RECOVERY_INDEX_REALMS.production}.`,
+    )
     .addHelpText('after', '\nExample:\n  bitcaster-cli config set --engine-url <url>')
-    .action(async (options: { engineUrl?: string; mintUrl?: string; assetMonitoring?: string }) => {
-      await setCliConfig(options)
-    })
+    .action(
+      async (options: {
+        engineUrl?: string
+        mintUrl?: string
+        assetMonitoring?: string
+        recoveryIndexRealm?: string
+      }) => {
+        await setCliConfig(options)
+      },
+    )
 
   config
     .command('path')
@@ -3168,6 +3192,7 @@ function daemonConfigParams(options: {
   engineUrl?: string
   mintUrl?: string
   assetMonitoring?: string
+  recoveryIndexRealm?: string
 }): {
   engineUrl?: string
   mintUrl?: string
@@ -3177,7 +3202,12 @@ function daemonConfigParams(options: {
   const mintUrl = options.mintUrl
   if (engineUrl !== undefined) params.engineUrl = engineUrl
   if (mintUrl !== undefined) params.mintUrl = mintUrl
-  if (!params.engineUrl && !params.mintUrl && options.assetMonitoring === undefined) {
+  if (
+    !params.engineUrl &&
+    !params.mintUrl &&
+    options.assetMonitoring === undefined &&
+    options.recoveryIndexRealm === undefined
+  ) {
     throwUsage('Usage: bitcaster-cli daemon config [--engine-url <url>] [--mint-url <url>]')
   }
   return params
@@ -3187,6 +3217,10 @@ function printConfigValue(key?: string): void {
   const config = readConfig()
   if (key === undefined) {
     process.stdout.write(`${JSON.stringify(config, null, 2)}\n`)
+    return
+  }
+  if (key === 'recoveryIndexRealm') {
+    process.stdout.write(`${JSON.stringify(effectiveRecoveryIndexRealm(config))}\n`)
     return
   }
   if (key !== 'engineUrl' && key !== 'mintUrl' && key !== 'assetMonitoringEnabled') {
@@ -3200,26 +3234,38 @@ async function setCliConfig(options: {
   engineUrl?: string
   mintUrl?: string
   assetMonitoring?: string
+  recoveryIndexRealm?: string
 }): Promise<void> {
   const params = daemonConfigParams(options)
   const assetMonitoringEnabled = parseAssetMonitoringOption(options.assetMonitoring)
+  const recoveryIndexRealm = parseRecoveryIndexRealmOption(options.recoveryIndexRealm)
   const update = (current: CliConfig): CliConfig => ({
     ...current,
     ...(params.engineUrl === undefined ? {} : { engineUrl: params.engineUrl }),
     ...(params.mintUrl === undefined ? {} : { mintUrl: params.mintUrl }),
     ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
+    ...(recoveryIndexRealm === undefined ? {} : { recoveryIndexRealm }),
   })
   if (globalDryRun) {
     validateConfigUpdate(update)
     printDryRun('config.set', {
       ...params,
       ...(assetMonitoringEnabled === undefined ? {} : { assetMonitoringEnabled }),
+      ...(recoveryIndexRealm === undefined ? {} : { recoveryIndexRealm }),
     })
     return
   }
   const config = updateConfig(update)
   await applySavedSettings()
   process.stdout.write(`${JSON.stringify({ ok: true, result: { config } }, null, 2)}\n`)
+}
+
+function parseRecoveryIndexRealmOption(value: string | undefined): RecoveryIndexRealm | undefined {
+  if (value === undefined) return undefined
+  if (isRecoveryIndexRealm(value)) return value
+  throwUsage(
+    `recovery index realm must be one of ${Object.values(RECOVERY_INDEX_REALMS).join(', ')}`,
+  )
 }
 
 function parseAssetMonitoringOption(value: string | undefined): boolean | undefined {

@@ -303,6 +303,7 @@ export type DaemonCommand =
   | { method: 'wallet.activity'; params?: WalletActivityParams }
   | { method: 'wallet.activity-sync'; params?: WalletActivitySyncParams }
   | { method: 'wallet.recover'; params?: undefined }
+  | { method: 'wallet.backup.status'; params?: undefined }
   | { method: 'order.submit'; params: SubmitOrderParams }
   | { method: 'order.fee-preview'; params: OrderDraftParams }
   | { method: 'order.status'; params: { marketId: string; orderId: string } }

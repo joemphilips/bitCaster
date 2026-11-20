@@ -10,6 +10,7 @@ import {
   defaultNativeConfig,
   ensureNativeConfig,
   freezeNativeConfigAtStartup,
+  nativeRecoveryIndexRealm,
   parseNativeConfig,
   readNativeConfig,
   updateNativeConfig,
@@ -160,6 +161,40 @@ test('strict native config rejects malformed, duplicate, missing, and unknown fi
   assert.throws(
     () =>
       parseNativeConfig(valid.replace('"autoRetireResolvedConditionInventory":false', '"x":false')),
+    /missing or unknown keys/,
+  )
+})
+
+test('the recovery index realm is optional, defaults to production, and refuses an unknown realm', () => {
+  const config = defaultNativeConfig()
+  // A config without the key keeps its form, and the writer uses production.
+  const absent = parseNativeConfig(JSON.stringify(config))
+  assert.equal('recoveryIndexRealm' in absent.daemon, false)
+  assert.equal(nativeRecoveryIndexRealm(absent), 'bitcaster-production')
+
+  const staging = parseNativeConfig(
+    JSON.stringify({
+      ...config,
+      daemon: { ...config.daemon, recoveryIndexRealm: 'bitcaster-staging' },
+    }),
+  )
+  assert.equal(staging.daemon.recoveryIndexRealm, 'bitcaster-staging')
+  assert.equal(nativeRecoveryIndexRealm(staging), 'bitcaster-staging')
+
+  assert.throws(
+    () =>
+      parseNativeConfig(
+        JSON.stringify({
+          ...config,
+          daemon: { ...config.daemon, recoveryIndexRealm: 'bitcaster.local' },
+        }),
+      ),
+    /recoveryIndexRealm must be one of/,
+  )
+  // Another unknown key stays refused.
+  assert.throws(
+    () =>
+      parseNativeConfig(JSON.stringify({ ...config, daemon: { ...config.daemon, realm: 'x' } })),
     /missing or unknown keys/,
   )
 })
