@@ -121,6 +121,7 @@ import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetC
 import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { NativeLightningOps } from './nativeLightningOps.ts'
+import type { DaemonRecoveryIndexStatus } from './daemonRecoveryIndex.ts'
 import {
   NativeMintPaymentAmountError,
   nativeMintPaymentAmountFailure,
@@ -228,6 +229,7 @@ export interface DaemonServerOptions {
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
   nativeLightningOps?: NativeLightningOps
   nativeWalletPaymentOps?: DispatchDependencies['nativeWalletPaymentOps']
+  readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
 }
 
 export interface EngineClientLike {
@@ -389,6 +391,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   onOutcomeProofsReceived?: (conditionId: string, outcomeSetId: string) => Promise<void>
   nativeLightningOps?: NativeLightningOps
   waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
+  /** The recovery index writer of the running daemon. */
+  readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
 }
 
 const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
@@ -424,6 +428,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       onOutcomeProofsReceived: options.onOutcomeProofsReceived,
       nativeLightningOps: options.nativeLightningOps,
       nativeWalletPaymentOps: options.nativeWalletPaymentOps,
+      readRecoveryIndexStatus: options.readRecoveryIndexStatus,
     })
   })
   if (socketPath) {
@@ -875,6 +880,15 @@ export async function dispatch(
         ok: true,
         result: await readDaemonWalletBalance(profileDir()),
       }
+    case 'wallet.backup.status':
+      // The writer runs in the daemon process and reads no engine data here.
+      return deps.readRecoveryIndexStatus === undefined
+        ? {
+            ok: false,
+            code: 'recovery-index-unavailable',
+            error: 'the recovery index writer is not running',
+          }
+        : { ok: true, result: deps.readRecoveryIndexStatus() }
     case 'wallet.positions': {
       if (!(await readProfile())) {
         return { ok: false, error: 'daemon profile is not initialized' }
@@ -3670,6 +3684,7 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'wallet.activity':
     case 'wallet.activity-sync':
     case 'wallet.recover':
+    case 'wallet.backup.status':
     case 'order.list':
     case 'order.book':
     case 'order.recovery':

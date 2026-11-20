@@ -52,6 +52,11 @@ Use the CLI as an application interface for a custom GUI or TUI, scripts,
 and trading AI agents. Commands provide JSON results for programs to consume.
 For example, `bitcaster-cli order book <market-id>` reads the public order book.
 Set the engine URL with `bitcaster-cli config set --engine-url <url>`.
+The daemon writes the wallet backup of its profile. Set the backup environment with
+`bitcaster-cli config set --recovery-index-realm <realm>`.
+`bitcaster-cli wallet backup status` returns the state of the daemon writer as JSON:
+`realm`, `status`, and a `reason` for `pending` or `blocked`.
+See [Wallet backup](/user-guide/getting-started/wallet-backup/#wallet-backup-of-the-cli).
 Use `bitcaster-cli market comments <condition-id>` to read public comments as JSON.
 This read does not need a wallet.
 

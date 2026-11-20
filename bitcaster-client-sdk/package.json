@@ -423,6 +423,10 @@
       "types": "./dist/recoveryIndexSync.d.ts",
       "import": "./dist/recoveryIndexSync.js"
     },
+    "./recoveryIndexUploader": {
+      "types": "./dist/recoveryIndexUploader.d.ts",
+      "import": "./dist/recoveryIndexUploader.js"
+    },
     "./recoveryIndexRestore": {
       "types": "./dist/recoveryIndexRestore.d.ts",
       "import": "./dist/recoveryIndexRestore.js"

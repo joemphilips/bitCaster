@@ -97,6 +97,68 @@ test('wallet backup delete needs exactly one seed source and previews only the p
   }
 })
 
+test('config set keeps the recovery index realm of the daemon writer and refuses an unknown realm', async () => {
+  const home = await profile()
+  try {
+    const configPath = join(home, 'config.json')
+    // Without a setting, the writer uses the production realm.
+    const initial = await runCli(home, ['config', 'get', 'recoveryIndexRealm'])
+    assert.equal(initial.code, 0, initial.stderr)
+    assert.equal(initial.stdout, '"bitcaster-production"\n')
+
+    const set = await runCli(home, ['config', 'set', '--recovery-index-realm', 'bitcaster-staging'])
+    assert.equal(set.code, 0, set.stderr)
+    const saved = JSON.parse(await readFile(configPath, 'utf8')) as {
+      daemon: { recoveryIndexRealm?: string }
+    }
+    assert.equal(saved.daemon.recoveryIndexRealm, 'bitcaster-staging')
+    const shown = await runCli(home, ['config', 'get', 'recoveryIndexRealm'])
+    assert.equal(shown.stdout, '"bitcaster-staging"\n')
+
+    const before = await readFile(configPath, 'utf8')
+    const unknown = await runCli(home, [
+      'config',
+      'set',
+      '--recovery-index-realm',
+      'bitcaster.local',
+    ])
+    assert.notEqual(unknown.code, 0)
+    assert.match(unknown.stderr, /recovery index realm must be one of/)
+    assert.equal(await readFile(configPath, 'utf8'), before)
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+test('wallet backup delete uses the configured realm when no --realm is given', async () => {
+  const home = await profile()
+  try {
+    const set = await runCli(home, ['config', 'set', '--recovery-index-realm', 'bitcaster-local'])
+    assert.equal(set.code, 0, set.stderr)
+    const seedPath = join(home, 'wallet-seed.hex')
+    await writeFile(seedPath, `${SEED_HEX}\n`, { mode: 0o600 })
+
+    const preview = await runCli(home, [
+      '--dry-run',
+      'wallet',
+      'backup',
+      'delete',
+      '--wallet-seed-hex-file',
+      seedPath,
+    ])
+
+    assert.equal(preview.code, 0, preview.stderr)
+    const shown = JSON.parse(preview.stdout)
+    assert.equal(shown.params.realm, 'bitcaster-local')
+    assert.equal(
+      shown.params.requestPublicKey,
+      deriveRecoveryIndexKeys(Buffer.from(SEED_HEX, 'hex'), 'bitcaster-local').locatorPublicKey,
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 async function profile(): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-backup-'))
   await writeFile(

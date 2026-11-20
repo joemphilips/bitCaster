@@ -327,13 +327,75 @@ invalid permissions, or an invalid schema still causes refusal. This does not
 retry a command or repair the profile.
 
 The command-line wallet keeps complete wallet state in its local durable store.
-It does not write the wallet backup yet. Markets that only the CLI used are
-not in the backup.
+
+### Wallet backup of the CLI
+
+The daemon of the CLI writes the same wallet backup as the web app. A new
+browser with the recovery phrase then restores the markets that only the CLI
+used. The backup is on by default. Asset-monitoring privacy mode does not
+change it. With a disconnected signer, the daemon does not write the backup.
+The next start with a connected signer writes the keysets that the backup does
+not list.
+
+- When the daemon starts, it reads the backup once and writes the keysets that
+  the backup does not list.
+- After a deposit, trade, or other wallet change, the daemon writes the backup
+  only when the wallet has a keyset that the backup does not list. A trade in a
+  listed market writes nothing.
+- A market keyset appears in the backup after the wallet receives its first
+  output in that keyset. An order that fails before any output writes
+  nothing.
+- When the matching engine is unavailable, the daemon tries again later. A
+  trade never waits for the backup. The daemon does not read the backup on a
+  schedule.
+
+The backup of the CLI and the backup of a browser with the same recovery phrase
+are one backup. Each writer adds its keysets to the current backup, so no
+writer removes the keysets of another writer.
+
+`wallet backup status` shows the environment and the state of the daemon
+writer as JSON:
+
+- `current`: the matching engine stores a backup that lists every keyset of
+  the wallet.
+- `pending`: a write waits. `reason` names the failure, or `write-interval`
+  for the short wait between two writes. While the daemon waits to try again
+  after a failure, `reason` keeps naming that failure.
+- `blocked`: the daemon stops writing. `over-cap` means that the backup is
+  full. `undecodable` or `unsupported-version` means that the daemon cannot
+  read the stored backup. Trading continues.
+- `starting`: the first write after the start has not finished.
+
+With a disconnected signer, the command returns the error code
+`recovery-index-unavailable`.
+
+Set the environment of the backup with
+`config set --recovery-index-realm <realm>`: `bitcaster-production` by
+default, `bitcaster-staging`, or `bitcaster-local` for a local development
+engine. The command restarts a daemon that the CLI started. Restart another
+daemon yourself. When the environment does not match the matching engine, the
+engine refuses the backup. Then `wallet backup status` shows `pending` with
+`unauthenticated`.
+
+At each read and each write, the matching engine sees the request key of your
+recovery phrase, the time, and network metadata such as the IP address of the
+computer that runs the daemon. The daemon sends these requests from the same
+computer as its signed order requests, a few seconds after them. So the
+matching engine can link the request key to your account of the CLI. This
+applies also when asset monitoring is off, although the CLI then sends no
+wallet ID. The request key is the same for the CLI and for a browser with the
+same phrase. So the matching engine can also link your account of the CLI to
+the account and the network address of that browser. The CLI has no setting
+that turns the backup off. The backup holds no ecash, no amounts, and no
+spending keys.
 
 `wallet backup delete` deletes the wallet backup at the matching engine. Supply
 `--wallet-seed-hex-file` or `--recovery-phrase-file`. `--realm` selects the
-environment: `bitcaster-production` by default, `bitcaster-staging`, or
-`bitcaster-local` for a local development engine.
+environment. Without it, the command uses the configured environment. A daemon
+or a browser that still holds the phrase writes the backup again at its next
+start or its next new keyset.
+
+### Emergency recovery
 
 Use `wallet recover-seed` for emergency NUT-09/NUT-13 recovery when a browser
 restore is incomplete. Without an option, the command scans regular `msat`

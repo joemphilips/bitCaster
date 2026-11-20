@@ -50,6 +50,11 @@ OrderHub の Bearer またはクエリトークン認証では、`/negotiate` �
 CLI を利用できます。コマンドは、プログラムが読み取れる JSON の結果を返します。
 例えば、`bitcaster-cli order book <market-id>` は公開注文板を取得します。
 `bitcaster-cli config set --engine-url <url>` でエンジンの URL を設定します。
+デーモンは、そのプロファイルのウォレットのバックアップを書き込みます。バックアップの環境は
+`bitcaster-cli config set --recovery-index-realm <realm>` で設定します。
+`bitcaster-cli wallet backup status` は、デーモンの書き込みの状態を JSON で返します。
+`realm`、`status`、および `pending` または `blocked` の場合の `reason` を含みます。
+[CLI のウォレットのバックアップ](/ja/user-guide/getting-started/wallet-backup/#cli-のウォレットのバックアップ)を参照してください。
 `bitcaster-cli market comments <condition-id>` は公開コメントを JSON で取得します。
 この読み取りにウォレットは不要です。
 
