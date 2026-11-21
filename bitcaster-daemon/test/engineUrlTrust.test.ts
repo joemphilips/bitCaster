@@ -43,6 +43,17 @@ test('the default engine URL and a URL in trustedEngineUrls are trusted, and no 
   )
 })
 
+test('the config file refuses an engine URL or a trusted URL whose text can show another host', () => {
+  assert.throws(
+    () => config(`${TRUSTED}@evil.example`, []),
+    /^Error: Invalid config\.daemon\.engineUrl: the URL must not contain a user name or password$/,
+  )
+  assert.throws(
+    () => config(TRUSTED, [`https://evil.example/\x1b[2K${TRUSTED}`]),
+    /^Error: Invalid trusted engine URL: the URL must contain only printable ASCII characters, with no space or control character$/,
+  )
+})
+
 test('the daemon runtime refuses an untrusted engine URL before it opens the profile or sends a request', async () => {
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-engine-trust-'))
   const home = join(root, 'profile')

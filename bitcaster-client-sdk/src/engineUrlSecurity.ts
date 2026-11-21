@@ -30,7 +30,19 @@ export function isLoopbackHttpUrl(value: string): boolean {
   return url.protocol === 'http:' && isLoopbackHostname(url.hostname)
 }
 
+/**
+ * Validate an endpoint URL and return its text without trailing slashes. The
+ * text is what a prompt and the config file show. So the text must show the
+ * host that the URL reaches: no control character, no space, no non-ASCII
+ * character, and no user name before the host.
+ */
 export function normalizeEndpointUrl(value: string, name: string): string {
+  // Check the text before an error message can repeat it.
+  if (!/^[\x21-\x7e]+$/.test(value)) {
+    throw new Error(
+      `Invalid ${name}: the URL must contain only printable ASCII characters, with no space or control character`,
+    )
+  }
   let url: URL
   try {
     url = new URL(value)
@@ -39,6 +51,10 @@ export function normalizeEndpointUrl(value: string, name: string): string {
   }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') {
     throw new Error(`Invalid ${name}: expected http or https URL`)
+  }
+  // `https://@host` parses to an empty user name, but its text still has the at sign.
+  if (url.username !== '' || url.password !== '' || /^[^:]+:\/\/[^/?#]*@/.test(value)) {
+    throw new Error(`Invalid ${name}: the URL must not contain a user name or password`)
   }
   if (url.protocol === 'http:' && !isLoopbackHttpUrl(url.toString())) {
     throw new Error(`Invalid ${name}: expected https or loopback http URL`)

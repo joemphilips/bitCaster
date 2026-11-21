@@ -39,3 +39,54 @@ test('endpoint URL normalization trims trailing slashes and preserves base paths
     /expected http or https URL/,
   )
 })
+
+test('endpoint URL normalization refuses a URL whose text can show another host', () => {
+  // The terminal shows the text, not the parsed host. Each URL parses, so the
+  // check must read the text itself.
+  const spoofed = [
+    'https://evil.example/\x1b[1A\x1b[2Khttps://good.example',
+    ...Array.from(
+      { length: 0x21 },
+      (_, code) => `https://engine.example/a${String.fromCharCode(code)}b`,
+    ),
+    'https://engine.example/a\x7fb',
+    '\x00https://engine.example',
+    'https://engine.example/ ',
+    'https://engine.example/a\u009bb',
+    'https://engine.example/‮good',
+    'https://bücher.example',
+  ]
+  for (const value of spoofed) {
+    assert.throws(
+      () => normalizeEndpointUrl(value, 'engine URL'),
+      (error: Error) =>
+        error.message ===
+        'Invalid engine URL: the URL must contain only printable ASCII characters, with no space or control character',
+      JSON.stringify(value),
+    )
+  }
+  for (const value of [
+    'https://good.example@evil.example',
+    'https://good.example:@evil.example',
+    'https://user:secret@engine.example',
+    'https://:secret@engine.example',
+    'https://@engine.example',
+    'http://good.example@localhost:5000',
+  ]) {
+    assert.throws(
+      () => normalizeEndpointUrl(value, 'mint URL'),
+      (error: Error) =>
+        error.message === 'Invalid mint URL: the URL must not contain a user name or password',
+      value,
+    )
+  }
+  // A path may still hold an at sign, and a punycode host is printable ASCII.
+  assert.equal(
+    normalizeEndpointUrl('https://engine.example/@team/', 'engine URL'),
+    'https://engine.example/@team',
+  )
+  assert.equal(
+    normalizeEndpointUrl('https://xn--bcher-kva.example', 'engine URL'),
+    'https://xn--bcher-kva.example',
+  )
+})

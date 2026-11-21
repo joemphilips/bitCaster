@@ -98,9 +98,8 @@ import {
 } from './config.ts'
 import {
   configureEngineUrlTrust,
-  ensureDaemonEngineUrlTrusted,
   ensureListedEngineUrlTrusted,
-  engineUrlTrustRequested,
+  trustWrittenEngineUrl,
 } from './engineUrlTrust.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
@@ -138,7 +137,8 @@ let globalMintUrl: string | undefined
 let globalSettings: ResolvedNativeSettings | undefined
 // The option values of `config set` and `daemon config` are values to write, not a layer.
 let globalConfigWrite: NativeSettingOverrides = {}
-let globalLaunchSettings: NativeSettingOverrides = {}
+// On `config set`, `--trust-engine-url` trusts only the engine URL that it writes.
+let globalTrustWrittenEngineUrl = false
 let globalDryRun = false
 let globalJson = false
 
@@ -207,11 +207,16 @@ async function main(): Promise<void> {
     const writesConfig = commandWritesConfig(actionCommand)
     globalConfigWrite = writesConfig ? options : {}
     const layerOptions = writesConfig ? {} : options
-    globalLaunchSettings = { ...environment, ...layerOptions }
-    configureDaemonLaunchSettings(globalLaunchSettings)
+    configureDaemonLaunchSettings({ ...environment, ...layerOptions })
     globalDryRun = opts.dryRun === true
     globalJson = opts.json === true
-    configureEngineUrlTrust({ trustEngineUrl: opts.trustEngineUrl === true, dryRun: globalDryRun })
+    // The daemon restart of `config set` checks the effective URL without the option.
+    const trustEngineUrl = opts.trustEngineUrl === true
+    globalTrustWrittenEngineUrl = trustEngineUrl && writesConfig
+    configureEngineUrlTrust({
+      trustEngineUrl: trustEngineUrl && !writesConfig,
+      dryRun: globalDryRun,
+    })
     const unread = unreadDryRunRefusal(process.argv.slice(2), globalDryRun)
     if (unread !== null) throwUsage(unread)
     if (globalDryRun) {
@@ -3160,7 +3165,7 @@ function registerDaemonCommand(program: Command): void {
       '\nExample:\n  bitcaster-cli daemon config --engine-url <url> --mint-url <url>',
     )
     .action(async () => {
-      await setCliConfig({})
+      await setCliConfig('daemon config', {})
     })
 
   daemon
@@ -3242,7 +3247,7 @@ Examples:
     .addHelpText('after', configSetHelp())
     .addHelpText('after', '\nExample:\n  bitcaster-cli config set --engine-url <url>')
     .action(async (options: { assetMonitoring?: string }) => {
-      await setCliConfig(options)
+      await setCliConfig('config set', options)
     })
 
   config
@@ -3284,7 +3289,10 @@ function printConfigValue(key: string | undefined): void {
   process.stdout.write(`${JSON.stringify(settings[key], null, 2)}\n`)
 }
 
-async function setCliConfig(options: { assetMonitoring?: string }): Promise<void> {
+async function setCliConfig(
+  command: 'config set' | 'daemon config',
+  options: { assetMonitoring?: string },
+): Promise<void> {
   const values: { -readonly [K in keyof NativeSettingOverrides]: NativeSettingOverrides[K] } = {
     ...globalConfigWrite,
   }
@@ -3300,15 +3308,19 @@ async function setCliConfig(options: { assetMonitoring?: string }): Promise<void
       'Usage: bitcaster-cli config set <setting option>... See bitcaster-cli config set --help.',
     )
   }
+  if (globalTrustWrittenEngineUrl && values.engineUrl === undefined) {
+    throwUsage(
+      `${command} --trust-engine-url needs --engine-url. The option trusts only the engine URL that ${command} writes.`,
+    )
+  }
   if (globalDryRun) {
     validateConfigSettingsWrite(values)
     printDryRun('config.set', values)
     return
   }
   let config = writeConfigSettings(values)
-  // The option trusts the engine URL that a daemon would start with after this write.
-  if (engineUrlTrustRequested()) {
-    await ensureDaemonEngineUrlTrusted(globalLaunchSettings)
+  if (globalTrustWrittenEngineUrl && values.engineUrl !== undefined) {
+    trustWrittenEngineUrl(values.engineUrl)
     config = readConfig()
   }
   const settings = requireSettings()
