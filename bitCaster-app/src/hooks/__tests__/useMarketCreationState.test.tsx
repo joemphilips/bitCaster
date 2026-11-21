@@ -57,6 +57,7 @@ const {
     published: [] as string[],
     relayAccepts: true,
     seed: new Uint8Array(64).fill(0x11),
+    oracleSecret: "11".repeat(32),
     scopeId: "",
     feeOperations: [] as string[],
     engineThumbnails: [] as Array<{ name: string; bytes: Uint8Array }>,
@@ -194,7 +195,8 @@ vi.mock("@/lib/kormir", async () => ({
   prepareEnumAnnouncement: async (_core: unknown, ...args: any[]) => {
     const sdk = await import("@bitcaster/client-sdk");
     const { finalizeEvent, getPublicKey } = await import("nostr-tools/pure");
-    const key = new Uint8Array(32).fill(0x11);
+    // The oracle signs with the creator key, as the real Kormir core does.
+    const key = new Uint8Array(Buffer.from(runtime.oracleSecret, "hex"));
     const artifactHex = await mockPrepareEnumAnnouncement(...args);
     runtime.conditionId = sdk.deriveDlcConditionId({
       eventId: args[0],
@@ -344,6 +346,7 @@ beforeEach(async () => {
   runtime.database = new BitcasterDB(databaseName);
   runtime.scopeId = walletScopeId;
   runtime.seed = new Uint8Array(64).fill(0x11);
+  runtime.oracleSecret = "11".repeat(32);
   runtime.engineThumbnails = [];
   runtime.published = [];
   runtime.relayAccepts = true;
@@ -1400,6 +1403,139 @@ describe("durable browser market creation", () => {
       expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
     },
   );
+});
+
+describe("saved creation after a Nostr ID change", () => {
+  const originalCreator = getPublicKey(new Uint8Array(32).fill(0x11));
+  const newSecret = "22".repeat(32);
+  const newCreator = getPublicKey(new Uint8Array(32).fill(0x22));
+
+  function switchCreator(secret: string) {
+    useSettingsStore.setState({ nsecSecret: secret });
+    runtime.oracleSecret = secret;
+  }
+
+  /** The mint lookup is unavailable, so the creation stops before its fee payment. */
+  async function stopBeforeFeePayment() {
+    const result = await beginPaidCreation();
+    runtime.lookupMint.mockImplementation(async () => new Response("unavailable", { status: 503 }));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.retainedCreation).not.toBeNull();
+    expect(runtime.feeOperations).toEqual([]);
+    runtime.lookupMint.mockImplementation(async () =>
+      Response.json({ code: 13021 }, { status: 400 }),
+    );
+    return useMarketDraftStore.getState().draft.creation!;
+  }
+
+  it("names the original ID of an unpaid creation, discards it, and creates with the new ID", async () => {
+    const saved = await stopBeforeFeePayment();
+    switchCreator(newSecret);
+
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.retainedCreation).toMatchObject({
+      owner: { kind: "creator", creatorId: originalCreator },
+      discardable: true,
+    });
+    expect(reloaded.current.submitError).toBeNull();
+    await act(async () => {
+      await reloaded.current.onDiscardCreation();
+    });
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    expect(await runtime.database.marketCreations.get([walletScopeId, saved.creationId])).toBe(
+      undefined,
+    );
+    expect(reloaded.current.retainedCreation).toBeNull();
+
+    await act(async () => {
+      await reloaded.current.onCreateMarket();
+    });
+    expect(reloaded.current.registrationFeePrompt?.feeSubunits).toBe(7);
+    await act(async () => {
+      await reloaded.current.onConfirmRegistrationFee();
+    });
+    expect(reloaded.current.submitError).toBeNull();
+    expect(reloaded.current.createdMarketConditionId).not.toBeNull();
+    const [created] = await runtime.database.marketCreations.toArray();
+    expect(created.creatorId).toBe(newCreator);
+    expect(created.creationId).not.toBe(saved.creationId);
+  });
+
+  it("discards an unpaid creation of the current ID", async () => {
+    const saved = await stopBeforeFeePayment();
+
+    const reloaded = await coldReloadCreation();
+    await waitFor(() =>
+      expect(reloaded.current.retainedCreation).toMatchObject({
+        owner: { kind: "current" },
+        discardable: true,
+      }),
+    );
+    await act(async () => {
+      await reloaded.current.onDiscardCreation();
+    });
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    expect(useMarketDraftStore.getState().draft.stepBasicInfo?.title).toBe("Test Market");
+    expect(await runtime.database.marketCreations.get([walletScopeId, saved.creationId])).toBe(
+      undefined,
+    );
+  });
+
+  it("keeps an unconfirmed creation whose fee transfer exists", async () => {
+    const saved = await stopBeforeFeePayment();
+    const record = await runtime.database.marketCreations.get([walletScopeId, saved.creationId]);
+    // Any wallet record of the fee transfer means that the payment can exist.
+    await runtime.database.outgoingCashuTransfers.put({
+      scopeId: walletScopeId,
+      transferId: record.registration.feeOperationRef,
+    } as never);
+    switchCreator(newSecret);
+
+    const reloaded = await coldReloadCreation();
+    expect(reloaded.current.retainedCreation).toMatchObject({
+      owner: { kind: "creator", creatorId: originalCreator },
+      discardable: false,
+    });
+    await act(async () => {
+      await reloaded.current.onDiscardCreation();
+    });
+    expect(useMarketDraftStore.getState().draft.creation?.creationId).toBe(saved.creationId);
+    expect(await runtime.database.marketCreations.count()).toBe(1);
+  });
+
+  it("keeps a mint-confirmed creation of the original ID and resumes it after the ID returns", async () => {
+    const result = await beginPaidCreation();
+    mockCreateMarket.mockRejectedValueOnce(new CreateMarketError("unauthorized", 401, false));
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.retainedCreation?.mintConfirmed).toBe(true);
+    switchCreator(newSecret);
+
+    const foreign = await coldReloadCreation();
+    expect(foreign.current.retainedCreation).toMatchObject({
+      owner: { kind: "creator", creatorId: originalCreator },
+      discardable: false,
+    });
+    await act(async () => {
+      await foreign.current.onDiscardCreation();
+    });
+    expect(useMarketDraftStore.getState().draft.creation).toBeDefined();
+
+    switchCreator("11".repeat(32));
+    const restored = await coldReloadCreation();
+    expect(restored.current.retainedCreation).toMatchObject({
+      owner: { kind: "current" },
+      discardable: false,
+    });
+    await act(async () => {
+      await restored.current.onResumeCreation();
+    });
+    expect(restored.current.createdMarketConditionId).toBe(conditionId);
+    expect(mockRegisterConditionWithFee).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("useMarketCreationState – wizard navigation", () => {

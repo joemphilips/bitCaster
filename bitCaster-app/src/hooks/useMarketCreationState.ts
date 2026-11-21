@@ -13,6 +13,7 @@ import type {
   OutcomeType,
   WizardOutcome,
   MarketBaseAsset,
+  RetainedCreationOwner,
 } from "@/types/market-creation";
 import { useSettingsStore } from "@/stores/settings";
 import { useMarketDraftStore } from "@/stores/marketDraft";
@@ -38,10 +39,14 @@ import {
   assertBrowserMarketCreationCapacity,
   browserMarketCreationSession,
   completeBrowserMarketCreation,
+  discardBrowserSavedCreation,
+  inspectBrowserSavedCreation,
   prepareBrowserMarketCreation,
   type BrowserMarketCreationPointer,
+  type BrowserSavedCreationOwner,
 } from "@/lib/browserMarketCreation";
 import { detectMintCapabilities } from "@/lib/mints";
+import { assertNever } from "@/lib/enumDiscipline";
 import { useWalletStore } from "@/stores/wallet";
 import { refreshMintInfoWithoutActivating } from "@/lib/walletOps";
 import {
@@ -247,6 +252,23 @@ function isConfirmedCreationProgress(
   }
 }
 
+function retainedCreationOwner(
+  pointer: BrowserMarketCreationPointer,
+  owner: BrowserSavedCreationOwner | null,
+): RetainedCreationOwner {
+  const mismatch = owner?.mismatch ?? null;
+  switch (mismatch) {
+    case null:
+      return { kind: "current" };
+    case "creator":
+      return { kind: "creator", creatorId: pointer.binding.creatorId };
+    case "other":
+      return { kind: "other" };
+    default:
+      return assertNever(mismatch);
+  }
+}
+
 type DraftImageErrorKey =
   | "marketCreation.imageRetentionMissing"
   | "marketCreation.imageRetentionInvalid"
@@ -314,11 +336,17 @@ export function useMarketCreationState() {
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [retainedRecord, setRetainedRecord] = useState<MarketCreationRecord | null>(null);
+  const [savedOwner, setSavedOwner] = useState<{
+    readonly pointer: BrowserMarketCreationPointer;
+    readonly owner: BrowserSavedCreationOwner;
+  } | null>(null);
   const [loadedCreation, setLoadedCreation] = useState<typeof draft.creation>(undefined);
   // A retained pointer is pending from its first render, including wallet hydration.
   const isLoadingCreation = draft.creation !== undefined && loadedCreation !== draft.creation;
   const currentRetainedRecord =
     retainedRecord?.creationId === draft.creation?.creationId ? retainedRecord : null;
+  const currentOwner =
+    savedOwner !== null && savedOwner.pointer === draft.creation ? savedOwner.owner : null;
   useEffect(() => {
     if (draft.creation === undefined) {
       setRetainedRecord(null);
@@ -334,12 +362,31 @@ export function useMarketCreationState() {
     const read = async () => {
       if (started || !isCurrent()) return;
       started = true;
+      const inspect = async () => {
+        const owner = await inspectBrowserSavedCreation(pointer);
+        if (isCurrent()) setSavedOwner({ pointer, owner });
+        return owner;
+      };
       try {
-        const record = await browserMarketCreationSession(pointer).store.read(pointer.creationId);
+        let session: ReturnType<typeof browserMarketCreationSession> | null = null;
+        try {
+          session = browserMarketCreationSession(pointer);
+        } catch {
+          // Another Nostr ID, wallet, or mint owns the creation. Name the owner instead.
+        }
+        if (session === null) {
+          if ((await inspect()).mismatch === null)
+            throw new Error("The saved creation is unavailable.");
+          if (isCurrent()) setSubmitError(null);
+          return;
+        }
+        const record = await session.store.read(pointer.creationId);
         if (isCurrent())
           setRetainedRecord(
             (previous) => record ?? (previous?.creationId === pointer.creationId ? previous : null),
           );
+        // The discard action of an unpaid creation does not delay the resume screen.
+        void inspect().catch(() => {});
       } catch {
         if (isCurrent() && !failure?.dismissed)
           setSubmitError(t("marketCreation.creationResumeUnavailable"));
@@ -980,6 +1027,29 @@ export function useMarketCreationState() {
     setSubmitError(null);
   }, [setDraft]);
 
+  // Discard only an unpaid creation. The store checks the payment again before it deletes.
+  const onDiscardCreation = useCallback(async () => {
+    const pointer = useMarketDraftStore.getState().draft.creation;
+    if (pointer === undefined || isSubmitting) return;
+    try {
+      await discardBrowserSavedCreation(pointer);
+    } catch {
+      setSavedOwner((previous) =>
+        previous?.pointer === pointer
+          ? { pointer, owner: { ...previous.owner, discardable: false } }
+          : previous,
+      );
+      return;
+    }
+    setDraft((previous) => {
+      if (previous.creation?.creationId !== pointer.creationId) return previous;
+      const { creation: _discarded, ...draft } = previous;
+      return { ...draft, lastModified: new Date().toISOString() };
+    });
+    setRetainedRecord(null);
+    setSubmitError(null);
+  }, [isSubmitting, setDraft]);
+
   const onConfirmRegistrationFee = useCallback(async () => {
     setRegistrationFeePrompt(null);
     await submitMarket({ registrationFeeConfirmed: true });
@@ -1030,17 +1100,22 @@ export function useMarketCreationState() {
     submitError,
     retainedCreation:
       draft.creation === undefined ||
-      (currentRetainedRecord === null && draft.creation.failure === undefined)
+      (currentRetainedRecord === null &&
+        draft.creation.failure === undefined &&
+        (currentOwner?.mismatch ?? null) === null)
         ? null
         : {
             title: currentRetainedRecord?.metadata.title ?? draft.stepBasicInfo?.title ?? "",
             mintConfirmed:
               currentRetainedRecord?.mintConfirmed ??
               isConfirmedCreationProgress(draft.creation.failure?.progress),
+            owner: retainedCreationOwner(draft.creation, currentOwner),
+            discardable: currentOwner?.discardable ?? false,
           },
     isLoadingCreation,
     onResumeCreation,
     onDismissCreationError,
+    onDiscardCreation,
     registrationFeePrompt,
     registrationFeeTopUp,
     registrationFeeTopUpStage,

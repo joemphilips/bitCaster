@@ -19,7 +19,11 @@ import { assertOracleBackupLifecycleCapacity } from "@bitcaster/client-sdk/oracl
 import { captureBrowserMintPersistenceContext } from "./cashu";
 import { resolveNsecIdentity } from "./identityOps";
 import { useSettingsStore } from "@/stores/settings";
-import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
+import {
+  BrowserMarketCreationStore,
+  discardUnpaidBrowserMarketCreation,
+  isUnpaidBrowserMarketCreation,
+} from "@/stores/market-creation-db";
 import { withBrowserOracleMutation, prepareEnumAnnouncement } from "./kormir";
 import {
   preflightBrowserOracleCreation,
@@ -73,6 +77,71 @@ export function currentBrowserMarketCreationBinding(): MarketCreationBinding {
     mintUrl: context.activeMintUrl,
     engineBaseUrl: window.location.origin,
   };
+}
+
+/** Who owns a saved creation, and whether it can be discarded. */
+export interface BrowserSavedCreationOwner {
+  /** `creator` when another Nostr ID owns it; `other` for another wallet, mint, or engine. */
+  readonly mismatch: "creator" | "other" | null;
+  /** True only when no fee payment can exist for the creation. */
+  readonly discardable: boolean;
+}
+
+/** Compare a saved creation with the current identity and wallet. It never throws for a mismatch. */
+export async function inspectBrowserSavedCreation(
+  pointer: BrowserMarketCreationPointer,
+): Promise<BrowserSavedCreationOwner> {
+  const settings = useSettingsStore.getState();
+  const creatorId =
+    settings.nostrSignerMode === "nsec"
+      ? (resolveNsecIdentity(settings.nsecSecret)?.publicKey ?? null)
+      : null;
+  const context = savedCreationWalletContext(pointer);
+  const mismatch =
+    pointer.binding.creatorId !== creatorId
+      ? "creator"
+      : context === null ||
+          pointer.binding.mintUrl !== context.activeMintUrl ||
+          pointer.binding.engineBaseUrl !== window.location.origin
+        ? "other"
+        : null;
+  const discardable =
+    context !== null &&
+    (await isUnpaidBrowserMarketCreation(
+      context.database,
+      pointer.binding.walletScopeId,
+      pointer.creationId,
+    ));
+  context?.requireCapturedProfile();
+  return { mismatch, discardable };
+}
+
+/** Delete an unpaid saved creation of the current wallet. A paid creation stays. */
+export async function discardBrowserSavedCreation(
+  pointer: BrowserMarketCreationPointer,
+): Promise<void> {
+  const context = savedCreationWalletContext(pointer);
+  if (context === null) throw new Error("The saved creation belongs to another wallet.");
+  await discardUnpaidBrowserMarketCreation(
+    context.database,
+    pointer.binding.walletScopeId,
+    pointer.creationId,
+  );
+  context.requireCapturedProfile();
+}
+
+/** The current wallet context, when it is the wallet that saved the creation. */
+function savedCreationWalletContext(pointer: BrowserMarketCreationPointer) {
+  try {
+    const context = captureBrowserMintPersistenceContext();
+    context.requireCapturedProfile();
+    return context.scopeId === pointer.binding.walletScopeId &&
+      deriveDurableCustodyWalletId(context.seed) === pointer.binding.walletId
+      ? context
+      : null;
+  } catch {
+    return null;
+  }
 }
 
 export function browserMarketCreationSession(pointer?: BrowserMarketCreationPointer) {

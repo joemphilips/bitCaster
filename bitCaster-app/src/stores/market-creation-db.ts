@@ -13,6 +13,52 @@ import {
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import type { BitcasterDB } from "./proof-db";
 
+/**
+ * A saved creation holds no fee payment when the mint has not confirmed its
+ * registration and the wallet has no record of its fee transfer. This read
+ * ignores the creator and mint binding, so it works after an ID change.
+ * An unreadable record counts as paid.
+ */
+export async function isUnpaidBrowserMarketCreation(
+  database: BitcasterDB,
+  walletScopeId: string,
+  creationId: string,
+): Promise<boolean> {
+  const stored = await database.marketCreations.get([walletScopeId, creationId]);
+  if (stored === undefined) return true;
+  let feeOperationRef: string | null;
+  try {
+    const record = snapshotMarketCreationPreparation(stored);
+    if (record.walletScopeId !== walletScopeId || stored.mintConfirmed !== false) return false;
+    feeOperationRef = record.registration.feeOperationRef;
+  } catch {
+    return false;
+  }
+  if (feeOperationRef === null) return true;
+  const key: [string, string] = [walletScopeId, feeOperationRef];
+  return (
+    (await database.outgoingCashuTransfers.get(key)) === undefined &&
+    (await database.custodyOperations.get(key)) === undefined
+  );
+}
+
+/** Delete one unpaid saved creation. A creation that can hold a payment stays. */
+export async function discardUnpaidBrowserMarketCreation(
+  database: BitcasterDB,
+  walletScopeId: string,
+  creationId: string,
+): Promise<void> {
+  await database.transaction(
+    "rw",
+    [database.marketCreations, database.outgoingCashuTransfers, database.custodyOperations],
+    async () => {
+      if (!(await isUnpaidBrowserMarketCreation(database, walletScopeId, creationId)))
+        throw new Error("A saved creation with a fee payment cannot be discarded.");
+      await database.marketCreations.delete([walletScopeId, creationId]);
+    },
+  );
+}
+
 export class BrowserMarketCreationStore implements MarketCreationStore {
   constructor(
     private readonly database: BitcasterDB,

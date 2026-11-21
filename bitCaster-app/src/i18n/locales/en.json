@@ -804,6 +804,8 @@
     "creationMintConfirmed": "Mint registration is confirmed. Finish engine registration for this same market.",
     "creationResumeDescription": "Use the original wallet, identity, mint, and engine. Your original announcement and thumbnail are saved. You do not need to select the file again.",
     "resumeCreation": "Resume saved creation",
+    "discardCreation": "Discard saved creation",
+    "creationOtherCreator": "This creation belongs to Nostr ID {{npub}}. Switch to that ID to resume it.",
     "creationResumeRequired": "Resume the saved creation before starting another market.",
     "creationIncompleteError": "Creation is incomplete. Check the original wallet, identity, mint, and engine. Then resume this saved creation. Do not start another payment.",
     "creationAnnouncementRelayUnavailable": "No Nostr relay accepted the oracle announcement. Resume this saved creation later. Do not start another payment.",

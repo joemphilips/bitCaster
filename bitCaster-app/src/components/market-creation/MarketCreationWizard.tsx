@@ -2,7 +2,9 @@ import { useState } from "react";
 import { ArrowLeft, KeyRound, Loader2, X } from "lucide-react";
 import { Link } from "react-router";
 import { useTranslation } from "react-i18next";
-import type { MarketCreationWizardProps } from "@/types/market-creation";
+import { nip19 } from "nostr-tools";
+import type { MarketCreationWizardProps, RetainedCreationOwner } from "@/types/market-creation";
+import { assertNever } from "@/lib/enumDiscipline";
 import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import { useSettingsStore } from "@/stores/settings";
 import { StepIndicator } from "./StepIndicator";
@@ -66,6 +68,7 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
     isLoadingCreation,
     onResumeCreation,
     onDismissCreationError,
+    onDiscardCreation,
   } = props;
 
   const { currentStep } = draft;
@@ -214,16 +217,18 @@ export function MarketCreationWizard(props: MarketCreationWizardProps) {
                 : "marketCreation.creationRetainedDescription",
             )}
           </p>
-          <p className="mt-3 text-sm text-slate-300">
-            {t("marketCreation.creationResumeDescription")}
-          </p>
-          <button
-            data-testid="resume-market-creation"
-            onClick={onResumeCreation}
-            className="mt-6 w-full rounded-full bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
-          >
-            {t("marketCreation.resumeCreation")}
-          </button>
+          <RetainedCreationResume
+            owner={retainedCreation.owner}
+            onResumeCreation={onResumeCreation}
+          />
+          {retainedCreation.discardable && (
+            <button
+              onClick={onDiscardCreation}
+              className="mt-3 w-full rounded-full border border-slate-600 px-4 py-3 font-semibold text-slate-200"
+            >
+              {t("marketCreation.discardCreation")}
+            </button>
+          )}
           {submitError && (
             <div
               role="alert"
@@ -424,4 +429,51 @@ function NostrKeyRequired() {
       )}
     </div>
   );
+}
+
+/** Only the owner can resume a saved creation. Another owner sees which ID owns it. */
+function RetainedCreationResume({
+  owner,
+  onResumeCreation,
+}: {
+  owner: RetainedCreationOwner;
+  onResumeCreation?: () => void;
+}) {
+  const { t } = useTranslation();
+  switch (owner.kind) {
+    case "current":
+      return (
+        <>
+          <p className="mt-3 text-sm text-slate-300">
+            {t("marketCreation.creationResumeDescription")}
+          </p>
+          <button
+            data-testid="resume-market-creation"
+            onClick={onResumeCreation}
+            className="mt-6 w-full rounded-full bg-green-600 px-4 py-3 font-semibold text-white disabled:opacity-50"
+          >
+            {t("marketCreation.resumeCreation")}
+          </button>
+        </>
+      );
+    case "creator":
+      return (
+        <p
+          data-testid="market-creation-owner"
+          className="mt-3 select-text break-all text-sm text-slate-200"
+        >
+          {t("marketCreation.creationOtherCreator", {
+            npub: nip19.npubEncode(owner.creatorId),
+          })}
+        </p>
+      );
+    case "other":
+      return (
+        <p data-testid="market-creation-owner" className="mt-3 text-sm text-slate-200">
+          {t("marketCreation.creationResumeUnavailable")}
+        </p>
+      );
+    default:
+      return assertNever(owner);
+  }
 }

@@ -121,6 +121,8 @@ describe("MarketCreationWizard outcome-step rendering", () => {
         retainedCreation={{
           title: "Saved original title",
           mintConfirmed: true,
+          owner: { kind: "current" },
+          discardable: false,
         }}
         submitError="The paid creation is incomplete."
         onResumeCreation={onResumeCreation}
@@ -142,6 +144,85 @@ describe("MarketCreationWizard outcome-step rendering", () => {
       }),
     );
     expect(onDismissCreationError).toHaveBeenCalledTimes(1);
+  });
+
+  it("names the Nostr ID of a saved creation of another ID and discards it only when unpaid", () => {
+    const creatorId = "4f355bdcb7cc0af728ef3cceb9615d90684bb5b2ca5f859ab0f0b704075871aa";
+    const npub = "npub1fu64hh9hes90w2808n8tjc2ajp5yhddjef0ctx4s7zmsgp6cwx4qgy4eg9";
+    const onDiscardCreation = vi.fn();
+    const props = makeProps("yesno");
+    const { rerender } = render(
+      <MarketCreationWizard
+        {...props}
+        retainedCreation={{
+          title: "Saved by the first ID",
+          mintConfirmed: false,
+          owner: { kind: "creator", creatorId },
+          discardable: true,
+        }}
+        onDiscardCreation={onDiscardCreation}
+      />,
+    );
+    expect(screen.getByTestId("market-creation-owner")).toHaveTextContent(
+      i18n.t("marketCreation.creationOtherCreator", { npub }),
+    );
+    expect(screen.queryByTestId("resume-market-creation")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("marketCreation.discardCreation") }));
+    expect(onDiscardCreation).toHaveBeenCalledTimes(1);
+
+    rerender(
+      <MarketCreationWizard
+        {...props}
+        retainedCreation={{
+          title: "Paid by the first ID",
+          mintConfirmed: true,
+          owner: { kind: "creator", creatorId },
+          discardable: false,
+        }}
+        onDiscardCreation={onDiscardCreation}
+      />,
+    );
+    expect(screen.getByTestId("market-creation-owner")).toHaveTextContent(npub);
+    expect(
+      screen.queryByRole("button", { name: i18n.t("marketCreation.discardCreation") }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByTestId("resume-market-creation")).not.toBeInTheDocument();
+
+    rerender(
+      <MarketCreationWizard
+        {...props}
+        retainedCreation={{
+          title: "Saved in another wallet",
+          mintConfirmed: false,
+          owner: { kind: "other" },
+          discardable: false,
+        }}
+      />,
+    );
+    expect(screen.getByTestId("market-creation-owner")).toHaveTextContent(
+      i18n.t("marketCreation.creationResumeUnavailable"),
+    );
+    expect(screen.queryByTestId("resume-market-creation")).not.toBeInTheDocument();
+  });
+
+  it("offers resume and discard for an unpaid saved creation of the current ID", () => {
+    const onDiscardCreation = vi.fn();
+    render(
+      <MarketCreationWizard
+        {...makeProps("yesno")}
+        retainedCreation={{
+          title: "Unpaid saved market",
+          mintConfirmed: false,
+          owner: { kind: "current" },
+          discardable: true,
+        }}
+        onDiscardCreation={onDiscardCreation}
+      />,
+    );
+    expect(screen.getByTestId("resume-market-creation")).toBeEnabled();
+    expect(screen.queryByTestId("market-creation-owner")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: i18n.t("marketCreation.discardCreation") }));
+    expect(onDiscardCreation).toHaveBeenCalledTimes(1);
   });
 
   it("offers only direct nsec registration while an extension is connected", () => {
@@ -183,7 +264,12 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     render(
       <MarketCreationWizard
         {...makeProps("yesno")}
-        retainedCreation={{ title: "Saved market", mintConfirmed: false }}
+        retainedCreation={{
+          title: "Saved market",
+          mintConfirmed: false,
+          owner: { kind: "current" },
+          discardable: true,
+        }}
         isLoadingCreation
       />,
     );
@@ -195,7 +281,12 @@ describe("MarketCreationWizard outcome-step rendering", () => {
     const props = makeProps("yesno");
     const { rerender } = render(<MarketCreationWizard {...props} isSubmitting />);
     expect(screen.getByRole("status")).toHaveTextContent(i18n.t("marketCreation.creatingMarket"));
-    const retainedCreation = { title: "Original paid attempt", mintConfirmed: true };
+    const retainedCreation = {
+      title: "Original paid attempt",
+      mintConfirmed: true,
+      owner: { kind: "current" } as const,
+      discardable: false,
+    };
     rerender(<MarketCreationWizard {...props} isSubmitting retainedCreation={retainedCreation} />);
     expect(screen.queryByTestId("market-creation-resume")).not.toBeInTheDocument();
     expect(screen.getByRole("status")).toHaveTextContent(i18n.t("marketCreation.creatingMarket"));
