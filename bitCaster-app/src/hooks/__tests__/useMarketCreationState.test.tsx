@@ -1,6 +1,9 @@
 import { installCreatorDocumentLocks } from "@/test/creatorDocumentLocks";
 import "fake-indexeddb/auto";
-import { BrowserMarketCreationStore } from "@/stores/market-creation-db";
+import {
+  BrowserMarketCreationStore,
+  discardUnpaidBrowserMarketCreation,
+} from "@/stores/market-creation-db";
 import { currentBrowserMarketCreationBinding } from "@/lib/browserMarketCreation";
 import * as oracleBackupCapacity from "@bitcaster/client-sdk/oracleBackupCapacity";
 import { marketDraftImages } from "@/stores/marketDraftImage";
@@ -58,6 +61,7 @@ const {
     relayAccepts: true,
     seed: new Uint8Array(64).fill(0x11),
     oracleSecret: "11".repeat(32),
+    onFeePrepared: undefined as (() => Promise<void>) | undefined,
     scopeId: "",
     feeOperations: [] as string[],
     engineThumbnails: [] as Array<{ name: string; bytes: Uint8Array }>,
@@ -157,6 +161,7 @@ vi.mock("@/lib/marketRegistrationFee", async () => ({
   registerConditionWithFee: (...args: unknown[]) => mockRegisterConditionWithFee(...args),
   prepareConditionRegistrationFee: async (input: { operationRef: string | null }) => {
     if (input.operationRef !== null) runtime.feeOperations.push(input.operationRef);
+    await runtime.onFeePrepared?.();
     return { kind: "fee-free" };
   },
   deliverPreparedConditionRegistrationFee: async (_prepared: unknown, input: any) =>
@@ -190,6 +195,8 @@ vi.mock("@/lib/marketRegistrationFee", async () => ({
 }));
 
 vi.mock("@/lib/kormir", async () => ({
+  BrowserOracleMutationError: (await vi.importActual<typeof import("@/lib/kormir")>("@/lib/kormir"))
+    .BrowserOracleMutationError,
   withBrowserOracleMutation: (...args: unknown[]) => mockWithBrowserOracleMutation(...args),
   getOracleAnnouncementEventId: (...args: unknown[]) => mockGetOracleAnnouncementEventId(...args),
   prepareEnumAnnouncement: async (_core: unknown, ...args: any[]) => {
@@ -307,6 +314,7 @@ vi.mock("@/lib/nip17", () => ({
 
 // Must import after mocks and env stub
 const { useMarketCreationState } = await import("../useMarketCreationState");
+const { BrowserOracleMutationError } = await import("@/lib/kormir");
 const { CreateMarketError } = await import("@/lib/markets");
 
 function wrapper({ children }: { children: ReactNode }) {
@@ -347,6 +355,7 @@ beforeEach(async () => {
   runtime.scopeId = walletScopeId;
   runtime.seed = new Uint8Array(64).fill(0x11);
   runtime.oracleSecret = "11".repeat(32);
+  runtime.onFeePrepared = undefined;
   runtime.engineThumbnails = [];
   runtime.published = [];
   runtime.relayAccepts = true;
@@ -1408,7 +1417,6 @@ describe("durable browser market creation", () => {
 describe("saved creation after a Nostr ID change", () => {
   const originalCreator = getPublicKey(new Uint8Array(32).fill(0x11));
   const newSecret = "22".repeat(32);
-  const newCreator = getPublicKey(new Uint8Array(32).fill(0x22));
 
   function switchCreator(secret: string) {
     useSettingsStore.setState({ nsecSecret: secret });
@@ -1430,37 +1438,64 @@ describe("saved creation after a Nostr ID change", () => {
     return useMarketDraftStore.getState().draft.creation!;
   }
 
-  it("names the original ID of an unpaid creation, discards it, and creates with the new ID", async () => {
+  it("names the original ID of an unpaid creation and leaves its discard to that ID", async () => {
     const saved = await stopBeforeFeePayment();
     switchCreator(newSecret);
 
-    const reloaded = await coldReloadCreation();
-    expect(reloaded.current.retainedCreation).toMatchObject({
+    const foreign = await coldReloadCreation();
+    expect(foreign.current.retainedCreation).toMatchObject({
       owner: { kind: "creator", creatorId: originalCreator },
-      discardable: true,
+      discardable: false,
     });
-    expect(reloaded.current.submitError).toBeNull();
+    expect(foreign.current.submitError).toBeNull();
+    // The prepared announcement keeps the original ID's oracle data in this
+    // browser, so discarding it here cannot let the new ID create a market.
     await act(async () => {
-      await reloaded.current.onDiscardCreation();
+      await foreign.current.onDiscardCreation();
+    });
+    expect(useMarketDraftStore.getState().draft.creation?.creationId).toBe(saved.creationId);
+
+    switchCreator("11".repeat(32));
+    const owner = await coldReloadCreation();
+    await waitFor(() =>
+      expect(owner.current.retainedCreation).toMatchObject({
+        owner: { kind: "current" },
+        discardable: true,
+      }),
+    );
+    await act(async () => {
+      await owner.current.onDiscardCreation();
     });
     expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
     expect(await runtime.database.marketCreations.get([walletScopeId, saved.creationId])).toBe(
       undefined,
     );
-    expect(reloaded.current.retainedCreation).toBeNull();
-
     await act(async () => {
-      await reloaded.current.onCreateMarket();
+      await owner.current.onCreateMarket();
     });
-    expect(reloaded.current.registrationFeePrompt?.feeSubunits).toBe(7);
+    expect(owner.current.registrationFeePrompt?.feeSubunits).toBe(7);
     await act(async () => {
-      await reloaded.current.onConfirmRegistrationFee();
+      await owner.current.onConfirmRegistrationFee();
     });
-    expect(reloaded.current.submitError).toBeNull();
-    expect(reloaded.current.createdMarketConditionId).not.toBeNull();
+    expect(owner.current.submitError).toBeNull();
+    expect(owner.current.createdMarketConditionId).not.toBeNull();
     const [created] = await runtime.database.marketCreations.toArray();
-    expect(created.creatorId).toBe(newCreator);
+    expect(created.creatorId).toBe(originalCreator);
     expect(created.creationId).not.toBe(saved.creationId);
+  });
+
+  it("names the oracle key conflict of a new ID and releases the unreserved draft pointer", async () => {
+    switchCreator(newSecret);
+    mockWithBrowserOracleMutation.mockRejectedValue(new BrowserOracleMutationError("key-conflict"));
+    const result = await beginPaidCreation();
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(result.current.submitError).toBe(i18n.t("marketCreation.creationOracleKeyConflict"));
+    expect(useMarketDraftStore.getState().draft.creation).toBeUndefined();
+    expect(await runtime.database.marketCreations.count()).toBe(0);
+    expect(runtime.feeOperations).toEqual([]);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
   });
 
   it("discards an unpaid creation of the current ID", async () => {
@@ -1483,6 +1518,20 @@ describe("saved creation after a Nostr ID change", () => {
     );
   });
 
+  it("does not deliver the fee after another tab discarded the saved creation", async () => {
+    const result = await beginPaidCreation();
+    // Another tab commits its discard before this tab records the fee transfer.
+    runtime.onFeePrepared = async () => {
+      await runtime.database.marketCreations.clear();
+    };
+    await act(async () => {
+      await result.current.onConfirmRegistrationFee();
+    });
+    expect(runtime.feeOperations).toHaveLength(1);
+    expect(mockRegisterConditionWithFee).not.toHaveBeenCalled();
+    expect(result.current.createdMarketConditionId).toBeNull();
+  });
+
   it("keeps an unconfirmed creation whose fee transfer exists", async () => {
     const saved = await stopBeforeFeePayment();
     const record = await runtime.database.marketCreations.get([walletScopeId, saved.creationId]);
@@ -1491,17 +1540,20 @@ describe("saved creation after a Nostr ID change", () => {
       scopeId: walletScopeId,
       transferId: record.registration.feeOperationRef,
     } as never);
-    switchCreator(newSecret);
 
     const reloaded = await coldReloadCreation();
-    expect(reloaded.current.retainedCreation).toMatchObject({
-      owner: { kind: "creator", creatorId: originalCreator },
-      discardable: false,
-    });
     await act(async () => {
       await reloaded.current.onDiscardCreation();
     });
+    expect(reloaded.current.retainedCreation).toMatchObject({
+      owner: { kind: "current" },
+      discardable: false,
+    });
     expect(useMarketDraftStore.getState().draft.creation?.creationId).toBe(saved.creationId);
+    // The store checks the payment again in the deleting transaction.
+    await expect(
+      discardUnpaidBrowserMarketCreation(runtime.database, walletScopeId, saved.creationId),
+    ).rejects.toThrow("A saved creation with a fee payment cannot be discarded.");
     expect(await runtime.database.marketCreations.count()).toBe(1);
   });
 

@@ -22,7 +22,8 @@ import { useSettingsStore } from "@/stores/settings";
 import {
   BrowserMarketCreationStore,
   discardUnpaidBrowserMarketCreation,
-  isUnpaidBrowserMarketCreation,
+  readBrowserMarketCreationPayment,
+  type BrowserMarketCreationPayment,
 } from "@/stores/market-creation-db";
 import { withBrowserOracleMutation, prepareEnumAnnouncement } from "./kormir";
 import {
@@ -30,6 +31,7 @@ import {
   preflightLockedBrowserOracleCreation,
 } from "./browserOracleBackup";
 import { buildEventId } from "./slug";
+import { assertNever } from "./enumDiscipline";
 import { publishRetainedOracleEvent } from "./oracleRelayTransport";
 import { createPreparedMarket, fetchMarketRegistrationForRecovery } from "./markets";
 import {
@@ -83,7 +85,7 @@ export function currentBrowserMarketCreationBinding(): MarketCreationBinding {
 export interface BrowserSavedCreationOwner {
   /** `creator` when another Nostr ID owns it; `other` for another wallet, mint, or engine. */
   readonly mismatch: "creator" | "other" | null;
-  /** True only when no fee payment can exist for the creation. */
+  /** No fee payment can exist, and discarding it lets this ID create a market. */
   readonly discardable: boolean;
 }
 
@@ -107,19 +109,54 @@ export async function inspectBrowserSavedCreation(
         : null;
   const discardable =
     context !== null &&
-    (await isUnpaidBrowserMarketCreation(
-      context.database,
-      pointer.binding.walletScopeId,
-      pointer.creationId,
-    ));
+    savedCreationDiscardable(
+      mismatch,
+      await readBrowserMarketCreationPayment(
+        context.database,
+        pointer.binding.walletScopeId,
+        pointer.creationId,
+      ),
+    );
   context?.requireCapturedProfile();
   return { mismatch, discardable };
+}
+
+/**
+ * This browser keeps the oracle data of one Nostr ID, and a prepared creation
+ * leaves that data. Discarding another ID's prepared creation cannot let the
+ * current ID create here, so only its owner discards it. A pointer without a
+ * record prepared nothing, so any ID can release it.
+ */
+function savedCreationDiscardable(
+  mismatch: BrowserSavedCreationOwner["mismatch"],
+  payment: BrowserMarketCreationPayment,
+): boolean {
+  switch (payment) {
+    case "absent":
+      return true;
+    case "paid":
+      return false;
+    case "unpaid":
+      switch (mismatch) {
+        case null:
+        case "other":
+          return true;
+        case "creator":
+          return false;
+        default:
+          return assertNever(mismatch);
+      }
+    default:
+      return assertNever(payment);
+  }
 }
 
 /** Delete an unpaid saved creation of the current wallet. A paid creation stays. */
 export async function discardBrowserSavedCreation(
   pointer: BrowserMarketCreationPointer,
 ): Promise<void> {
+  if (!(await inspectBrowserSavedCreation(pointer)).discardable)
+    throw new Error("This saved creation cannot be discarded here.");
   const context = savedCreationWalletContext(pointer);
   if (context === null) throw new Error("The saved creation belongs to another wallet.");
   await discardUnpaidBrowserMarketCreation(
@@ -332,6 +369,11 @@ export async function completeBrowserMarketCreation(
       async registerMint(record) {
         session.requireBinding();
         if (fee === null) throw new Error("Registration fee preparation is missing.");
+        // Another tab can discard an unpaid creation until the fee transfer row
+        // exists. That row exists now, so a later discard refuses. Check that no
+        // discard committed first; otherwise the prepared token stays unsent.
+        if ((await session.store.read(record.creationId)) === null)
+          throw new Error("The saved creation was discarded.");
         const result = await deliverPreparedConditionRegistrationFee(fee, feeInput(record));
         session.requireBinding();
         return result;
