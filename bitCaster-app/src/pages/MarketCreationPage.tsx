@@ -73,6 +73,7 @@ export function MarketCreationPage() {
         isLoadingCreation={state.isLoadingCreation}
         onResumeCreation={state.onResumeCreation}
         onDismissCreationError={state.onDismissCreationError}
+        onDiscardCreation={state.onDiscardCreation}
         registrationFeePrompt={state.registrationFeePrompt}
         registrationFeeTopUp={state.registrationFeeTopUp}
         registrationFeeTopUpStage={state.registrationFeeTopUpStage}

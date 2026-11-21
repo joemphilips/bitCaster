@@ -74,11 +74,24 @@ export interface WizardDraft {
 // Component Props
 // =============================================================================
 
+/** The owner of a saved creation, compared with the current Nostr ID and wallet. */
+export type RetainedCreationOwner =
+  | { readonly kind: "current" }
+  | { readonly kind: "creator"; readonly creatorId: string }
+  | { readonly kind: "other" };
+
 export interface MarketCreationWizardProps {
-  retainedCreation?: { title: string; mintConfirmed: boolean } | null;
+  retainedCreation?: {
+    title: string;
+    mintConfirmed: boolean;
+    owner: RetainedCreationOwner;
+    /** No fee payment can exist, so the saved creation can be discarded. */
+    discardable: boolean;
+  } | null;
   isLoadingCreation?: boolean;
   onResumeCreation?: () => void;
   onDismissCreationError?: () => void;
+  onDiscardCreation?: () => void;
   /** Current wizard draft state */
   draft: WizardDraft;
 
