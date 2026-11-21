@@ -52,6 +52,7 @@ import {
   byKeysetAndAmount,
   cursor,
   installLockManager,
+  json,
   position,
   regularHolding,
   regularKeyset,
@@ -155,6 +156,7 @@ import {
   browserSeedPositionRestoreHintsSettled,
   retryBrowserSeedPositionRestore,
   runBrowserSeedPositionRestorePass,
+  SEED_RESTORE_PERSISTENT_FAILURES,
 } from "@/lib/browserSeedPositionRestore";
 import { seedRestoreResultIsPartial, seedRestoreResultIsRetryable } from "@/stores/seed-restore-db";
 import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
@@ -863,6 +865,48 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(true);
     // The restore of the added mint used the market of the earlier report.
     expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
+  });
+
+  describe("an added mint whose keys never load", () => {
+    const mints = [MINT_URL, ADDED_MINT_URL];
+    const addedPass = () =>
+      runBrowserSeedPositionRestorePass({
+        scopeId: scopeId(),
+        mnemonic: MNEMONIC,
+        mintUrl: ADDED_MINT_URL,
+        now: () => 1_000_000,
+      });
+
+    beforeEach(async () => {
+      const mint = new FakeMint(regularKeyset(), []);
+      vi.stubGlobal("fetch", (request: RequestInfo | URL, init?: RequestInit) =>
+        requestOrigin(request) === ADDED_MINT_URL
+          ? Promise.resolve(json({ detail: "unavailable" }, 503))
+          : mint.fetch(request, init),
+      );
+      await openIndexOnly();
+      mocks.signer = { pubkey: "signer" };
+      mocks.getAssets.mockResolvedValue({ assets: [], nextCursor: null });
+      expect((await restorePass(() => 1_000_000)).hintsSettled).toBe(true);
+    });
+
+    it("lets the reports go after it read the earlier report", async () => {
+      await expect(addedPass()).rejects.toThrow();
+
+      expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(true);
+    });
+
+    it("lets the reports go after the bound of failed reads", async () => {
+      mocks.getAssets.mockRejectedValue(new Error("unavailable"));
+      for (let pass = 1; pass < SEED_RESTORE_PERSISTENT_FAILURES; pass += 1) {
+        await expect(addedPass()).rejects.toThrow();
+        expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(false);
+      }
+
+      await expect(addedPass()).rejects.toThrow();
+
+      expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(true);
+    });
   });
 
   it("keeps restoring while a hinted market listing fails and shows the error after repeated failures", async () => {
