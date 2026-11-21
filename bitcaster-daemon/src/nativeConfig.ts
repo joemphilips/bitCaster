@@ -91,6 +91,28 @@ export function nativeRecoveryIndexRealm(config: NativeConfig): RecoveryIndexSet
   return config.daemon.recoveryIndexRealm ?? DEFAULT_RECOVERY_INDEX_REALM
 }
 
+/**
+ * The daemon signs its requests to the engine. It uses only a trusted engine
+ * URL: the default URL, or a URL in `cli.trustedEngineUrls` of the file.
+ */
+export function isTrustedEngineUrl(config: NativeConfig): boolean {
+  const engineUrl = config.daemon.engineUrl
+  return engineUrl === DEFAULT_ENGINE_URL || config.cli.trustedEngineUrls.includes(engineUrl)
+}
+
+/** The refusal of an untrusted engine URL names the URL and the two ways to trust it. */
+export function untrustedEngineUrlMessage(engineUrl: string, directory = dataDir()): string {
+  return `Engine URL is not trusted: ${engineUrl}. Check the URL. Then add --trust-engine-url to a bitcaster-cli command, or add the URL to cli.trustedEngineUrls in ${nativeConfigPath(directory)}.`
+}
+
+/** Refuse a daemon start with an untrusted engine URL, before the daemon sends a request. */
+export function assertDaemonEngineUrlTrusted(config: NativeConfig): void {
+  if (isTrustedEngineUrl(config)) return
+  throw new Error(
+    `bitcaster-daemon did not start. ${untrustedEngineUrlMessage(config.daemon.engineUrl)}`,
+  )
+}
+
 export function assertNativeConfigSourceAdmissible(directory = dataDir()): void {
   assertLegacyCliConfigAbsent(directory)
 }

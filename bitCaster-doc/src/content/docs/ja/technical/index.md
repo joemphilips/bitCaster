@@ -49,7 +49,8 @@ OrderHub の Bearer またはクエリトークン認証では、`/negotiate` �
 独自の GUI や TUI、スクリプト、取引用 AI エージェントの操作用インターフェースとして
 CLI を利用できます。コマンドは、プログラムが読み取れる JSON の結果を返します。
 例えば、`bitcaster-cli order book <market-id>` は公開注文板を取得します。
-`bitcaster-cli config set --engine-url <url>` でエンジンの URL を設定します。
+`bitcaster-cli config set --engine-url <url> --trust-engine-url` でエンジンの URL を設定し、
+信頼します。
 環境変数とオプションは [CLI の設定](#cli-の設定)を参照してください。
 デーモンは、そのプロファイルのウォレットのバックアップを書き込みます。バックアップの環境は
 `bitcaster-cli config set --recovery-index-realm <realm>` で設定します。
@@ -133,6 +134,17 @@ CLI が起動したデーモンは、その CLI の環境変数とオプショ�
 実行中のデーモンは、環境変数またはオプションの設定が異なる CLI のコマンドを拒否します。
 エラーコードは `daemon-settings-mismatch` です。この場合は、使いたい設定で
 `bitcaster-cli daemon restart` を実行してください。
+
+デーモンは、注文やウォレットのバックアップの書き込みなど、エンジンへの要求に署名します。
+このため、デーモンは信頼済みのエンジンの URL でだけ起動します。信頼済みの URL は、既定の
+URL、または `config.json` の `trustedEngineUrls` にある URL です。CLI は、デーモンを
+起動または再起動する前に、デーモンのエンジンの URL をどの層の値でも確認します。
+それ以外の URL では、CLI はその URL を信頼するか確認します。確認なしで信頼するには、
+グローバルオプション `--trust-engine-url` を付けてください。CLI はその URL を
+`trustedEngineUrls` に保存します。端末がない場合、CLI は確認しません。終了コード 3 で
+停止し、エラーは URL を示します。URL の設定と信頼を 1 つのコマンドで行うには、
+`bitcaster-cli config set --engine-url <url> --trust-engine-url` を使います。
+デーモンも、信頼されていないエンジンの URL では起動しません。
 
 ### ネイティブウォレットのプロファイルを選択・インポートする
 
