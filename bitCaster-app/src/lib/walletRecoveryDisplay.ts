@@ -119,6 +119,7 @@ function pendingDisplay(
     case "probe-due":
       return { state: "pending", text: "recovering", retryAtMs: null };
     case "proof-pending":
+    case "operation-wait":
       return { state: "pending", text: "waitingForMint", retryAtMs: null };
     case "start-limit":
     case "backoff":

@@ -175,6 +175,12 @@ export interface SeedRestoreResyncRow {
   readonly pendingProofCounter: number | null;
   /** The `failures` of the PENDING proof marker, kept while the scan continues. */
   readonly pendingProofFailures: number;
+  /**
+   * Admission attempts in a row that waited for an operation of this browser
+   * with an output on this keyset. They are no failures. From
+   * `SEED_RESTORE_OPERATION_WAITS_SHOWN`, the recovery status shows the wait.
+   */
+  readonly operationWaits: number;
 }
 
 /** The evidence-triggered re-sync of keysets in use for one wallet mint. */
@@ -280,6 +286,12 @@ const SCAN_BUDGET_CONTINUATIONS_AT_ONCE = 10;
 export const SEED_RESTORE_SCAN_CONTINUATIONS_MAX = 100;
 /** Failures in a row that show the persistent restore error with Retry. */
 export const SEED_RESTORE_PERSISTENT_FAILURES = 3;
+/**
+ * Waits in a row for an operation of this browser after which the recovery
+ * status shows that a deferral waits for the mint. A wait backs off about
+ * 15 s, so the status changes after about one minute.
+ */
+export const SEED_RESTORE_OPERATION_WAITS_SHOWN = 4;
 
 /** The delay before the next attempt after `failures` failed attempts in a row. */
 export function seedRestoreBackoffMs(failures: number): number {
@@ -309,12 +321,14 @@ export function initialSeedRestoreResyncRow(
     scanContinuations: 0,
     pendingProofCounter: null,
     pendingProofFailures: 0,
+    operationWaits: 0,
   };
 }
 
 /**
- * A row that an earlier release wrote has no scan continuation fields. They
- * mean no continuation and no PENDING proof left behind.
+ * A row that an earlier release wrote has no scan continuation fields and no
+ * wait count. They mean no continuation, no PENDING proof left behind, and
+ * no wait.
  */
 export function readSeedRestoreResyncRow(row: SeedRestoreResyncRow): SeedRestoreResyncRow {
   const stored = row as Partial<SeedRestoreResyncRow>;
@@ -323,7 +337,13 @@ export function readSeedRestoreResyncRow(row: SeedRestoreResyncRow): SeedRestore
     scanContinuations: stored.scanContinuations ?? 0,
     pendingProofCounter: stored.pendingProofCounter ?? null,
     pendingProofFailures: stored.pendingProofFailures ?? 0,
+    operationWaits: stored.operationWaits ?? 0,
   };
+}
+
+/** True when a deferral waited long enough for an operation of this browser to show the wait. */
+export function isSeedRestoreOperationWaitShown(row: SeedRestoreResyncRow): boolean {
+  return readSeedRestoreResyncRow(row).operationWaits >= SEED_RESTORE_OPERATION_WAITS_SHOWN;
 }
 
 export function initialSeedRestoreResyncSchedule(
@@ -478,6 +498,7 @@ export async function settleSeedRestoreDeferral(input: {
         scanContinuations,
         pendingProofCounter: pendingProof,
         pendingProofFailures: pendingProof === null ? 0 : pendingProofFailures,
+        operationWaits: 0,
         // At the cap the restore shows its persistent error. Only Retry continues.
         failures: capped ? Math.max(row.failures, SEED_RESTORE_PERSISTENT_FAILURES) : 0,
         nextAttemptAtMs:
@@ -500,6 +521,7 @@ export async function settleSeedRestoreDeferral(input: {
         scanContinuations: 0,
         pendingProofCounter: null,
         pendingProofFailures: 0,
+        operationWaits: 0,
       });
       return;
     }
@@ -514,6 +536,7 @@ export async function settleSeedRestoreDeferral(input: {
       scanContinuations: 0,
       pendingProofCounter: null,
       pendingProofFailures: 0,
+      operationWaits: 0,
     });
   });
 }
@@ -533,7 +556,10 @@ function lowest(left: number | null, right: number | null): number | null {
   return Math.min(left, right);
 }
 
-/** Postpones one deferral without a failure, for example while local work is in flight. */
+/**
+ * Postpones one deferral without a failure while an operation of this
+ * browser with an output on its keyset is in flight. It counts the wait.
+ */
 export async function postponeSeedRestoreDeferral(input: {
   readonly scopeId: string;
   readonly mintUrl: string;
@@ -542,11 +568,13 @@ export async function postponeSeedRestoreDeferral(input: {
 }): Promise<void> {
   const database = seedRestoreDatabase(input.scopeId);
   await database.transaction("rw", database.resync, async () => {
-    const row = await database.resync.get([input.scopeId, input.mintUrl, input.keysetId]);
-    if (row?.pendingFromCounter == null) return;
+    const stored = await database.resync.get([input.scopeId, input.mintUrl, input.keysetId]);
+    if (stored?.pendingFromCounter == null) return;
+    const row = readSeedRestoreResyncRow(stored);
     await database.resync.put({
       ...row,
       nextAttemptAtMs: Math.max(row.nextAttemptAtMs, input.nextAttemptAtMs),
+      operationWaits: row.operationWaits + 1,
     });
   });
 }
@@ -569,6 +597,7 @@ export async function recordSeedRestoreDeferralFailure(input: {
       const failures = row.failures + 1;
       await database.resync.put({
         ...row,
+        operationWaits: 0,
         failures,
         nextAttemptAtMs: Math.max(
           row.nextAttemptAtMs,
@@ -580,6 +609,7 @@ export async function recordSeedRestoreDeferralFailure(input: {
     const failures = row.waitReason === "admission-failed" ? row.failures + 1 : 1;
     await database.resync.put({
       ...row,
+      operationWaits: 0,
       waitReason: "admission-failed",
       failures,
       nextAttemptAtMs: input.nowMs + seedRestoreBackoffMs(failures),

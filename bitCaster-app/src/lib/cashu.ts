@@ -95,6 +95,7 @@ import {
 } from "@/lib/browserDurableWalletReceive";
 import {
   DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
+  decodeDurableCustodyRecord,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
   type DurableCustodyOwnerAuthorization,
@@ -738,6 +739,37 @@ export interface KeysetRecoveryResult {
 
 /** A recovery scan met custody work in flight at admission. The caller waits; it is no failure. */
 export class CounterRecoveryPostponedError extends Error {}
+
+/**
+ * True when an operation of this browser in flight can own outputs on this
+ * keyset. A recovery scan of the keyset must not admit them before the
+ * operation records them. An operation records the keysets of its output
+ * plan, but not one counter range in a common form, so each output on the
+ * keyset counts as one at or above a deferral marker. An operation whose
+ * output plan cannot be read counts too.
+ */
+export async function browserCustodyWorkTouchesKeyset(
+  scopeId: string,
+  keysetId: string,
+): Promise<boolean> {
+  const active = await db.custodyActiveWork
+    .where("[scopeId+operationId]")
+    .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+    .toArray();
+  if (active.length === 0) return false;
+  const operations = await db.custodyOperations.bulkGet(
+    active.map(({ operationId }): [string, string] => [scopeId, operationId]),
+  );
+  return operations.some((row) => {
+    if (row === undefined) return true;
+    try {
+      const { operation } = decodeDurableCustodyRecord(row.record);
+      return operation.verification.outputKeysets.some((keyset) => keyset.keysetId === keysetId);
+    } catch {
+      return true;
+    }
+  });
+}
 
 type RecoverableMintKeyset = {
   id: string;
@@ -1892,10 +1924,7 @@ async function persistCounterRecoveryWindow(input: {
     // after the caller's check and while this scan runs.
     if (
       input.refuseWhileCustodyWork &&
-      (await db.custodyActiveWork
-        .where("[scopeId+operationId]")
-        .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
-        .count()) > 0
+      (await browserCustodyWorkTouchesKeyset(scopeId, input.keysetId))
     ) {
       throw new CounterRecoveryPostponedError();
     }
