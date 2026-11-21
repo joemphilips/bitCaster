@@ -75,7 +75,8 @@ states:
 - **Checking wallet…**: the app checks the wallet.
 - **Recovering wallet…**: the app recovers funds or positions, or completes a
   wallet operation.
-- **Waiting for the mint…**: the mint reports some funds as pending.
+- **Waiting for the mint…**: the mint reports some funds as pending, or the
+  recovery waits for a wallet operation that the mint has not finished.
 - **Recovery resumes at** and a time: the recovery waits until that time. The
   row shows the date too when the time is not today.
 
