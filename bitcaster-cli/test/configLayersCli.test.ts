@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, open, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import test, { after } from 'node:test'
+import test, { after, mock } from 'node:test'
 
 const SEED_HEX = 'cd'.repeat(64)
 
@@ -298,7 +298,7 @@ test('the CLI starts the daemon with its environment and option settings and nam
   }
 })
 
-test('the wait for a started daemon treats a daemon with other settings as not ready', async () => {
+test('the wait for a started daemon treats a daemon with other settings as not ready', async (t) => {
   await inProcessDataDir()
   const rpc = await import('../src/rpc.ts')
   const testGlobal = globalThis as Record<symbol, unknown>
@@ -312,22 +312,31 @@ test('the wait for a started daemon treats a daemon with other settings as not r
   }
   const answers: unknown[] = []
   let requests = 0
+  // A controlled clock: each answer moves it by `elapsedMs`.
+  let clock = 1_000
+  let elapsedMs = 0
+  const now = mock.method(Date, 'now', () => clock)
+  t.after(() => now.mock.restore())
   testGlobal[urlKey] = 'http://daemon.test'
   globalThis.fetch = async () => {
     requests += 1
+    clock += elapsedMs
     return Response.json(answers.shift() ?? mismatch, { status: 409 })
   }
   try {
     // A persistent mismatch ends the wait with a clear error, not a success.
+    // The first answer uses up the 10-second deadline.
+    elapsedMs = 10_000
     await assert.rejects(
-      rpc.waitForDaemon(undefined, 0),
+      rpc.waitForDaemon(),
       /a bitcaster-daemon with other environment or option settings answers at http:\/\/daemon\.test\/rpc/,
     )
     assert.equal(requests, 1)
     // The wait goes on after a mismatch and ends at the first ready answer.
+    elapsedMs = 0
     requests = 0
     answers.push(mismatch, { ok: true, result: { status: 'ok' } })
-    await rpc.waitForDaemon(undefined, 5_000)
+    await rpc.waitForDaemon()
     assert.equal(requests, 2)
   } finally {
     globalThis.fetch = previousFetch
