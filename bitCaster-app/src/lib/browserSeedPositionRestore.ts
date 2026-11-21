@@ -402,13 +402,21 @@ export async function runBrowserSeedPositionRestorePass(
     // This profile holds the wallet and no index read named another keyset.
     return { status: "skipped", retryAtMs: null, hintsSettled: true };
   }
+  const walletId = browserWalletIdFromMnemonic(input.mnemonic);
+  // The earlier asset-monitoring report is another profile's: it is read
+  // once, also after the restore completed, and it settles the report hold.
+  // The read needs no mint, so it comes first: a mint whose keys do not load
+  // still settles its hint state, and the reports can go.
+  if (state !== null && !hintsSettled(state)) {
+    await readAssetMonitoringHints({ scopeId: input.scopeId, mintUrl, walletId });
+  }
   const context: PassContext = {
     ...input,
     mintUrl,
     canonicalMintUrl: canonicalMint(mintUrl),
     now,
     seed: toSeed(input.mnemonic.trim().split(/\s+/)),
-    walletId: browserWalletIdFromMnemonic(input.mnemonic),
+    walletId,
     isCurrent,
     wallet: await walletForMint(mintUrl),
   };
@@ -477,26 +485,29 @@ async function claimRestoreStart(
   }
 }
 
+/** Reads the earlier asset-monitoring report and records the result in the restore state. */
+async function readAssetMonitoringHints(
+  target: Pick<PassContext, "scopeId" | "mintUrl" | "walletId">,
+): Promise<void> {
+  const hints = await addAssetMonitoringHints(target);
+  const read = await readState(target.scopeId, target.mintUrl);
+  await seedRestoreDatabase(target.scopeId).states.put({
+    ...read,
+    hintsDone: hints === "read",
+    hintFailures: hints === "failed" ? read.hintFailures + 1 : read.hintFailures,
+  });
+}
+
 /**
- * The restore part of a pass: the hints, the index of the restore start, the
- * regular keysets, and the keysets of the hinted markets.
+ * The restore part of a pass after the hints: the index of the restore
+ * start, the regular keysets, and the keysets of the hinted markets.
  */
 async function prepareRestore(context: PassContext, initial: SeedRestoreStateRow): Promise<void> {
   const database = seedRestoreDatabase(context.scopeId);
   // The activity log names a market only while the restore is unfinished. A
   // later activity item is a trade of this browser, whose keysets can be in
-  // use. The earlier asset-monitoring report is another profile's: it is read
-  // once, also after the restore completed, and it settles the report gate.
+  // use.
   const unfinished = initial.initialCompletedAtMs === null;
-  if (!hintsSettled(initial)) {
-    const hints = await addAssetMonitoringHints(context);
-    const read = await readState(context.scopeId, context.mintUrl);
-    await database.states.put({
-      ...read,
-      hintsDone: hints === "read",
-      hintFailures: hints === "failed" ? read.hintFailures + 1 : read.hintFailures,
-    });
-  }
   if (unfinished) await addActivityLogHints(context);
   if ((await readState(context.scopeId, context.mintUrl)).index === "unread") {
     // The wallet open read the index (ADR-033). The restore uses that read.
@@ -1014,7 +1025,7 @@ async function addConditions(
  * record. The restore lists a market only at a wallet mint.
  */
 async function addAssetMonitoringHints(
-  context: PassContext,
+  context: Pick<PassContext, "scopeId" | "mintUrl" | "walletId">,
 ): Promise<"read" | "no-signer" | "failed"> {
   const signer = getNdk().signer;
   if (!signer || context.walletId === null) return "no-signer";
