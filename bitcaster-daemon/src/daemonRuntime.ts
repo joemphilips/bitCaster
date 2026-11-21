@@ -13,7 +13,11 @@ import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
 import type { NativeWalletPaymentApproval } from './nativeWalletPaymentOps.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
-import { freezeNativeConfigAtStartup, nativeRecoveryIndexRealm } from './nativeConfig.ts'
+import {
+  assertDaemonEngineUrlTrusted,
+  freezeNativeConfigAtStartup,
+  nativeRecoveryIndexRealm,
+} from './nativeConfig.ts'
 import {
   applyNativeSettingOverrides,
   nativeSettingOverridesDigest,
@@ -57,6 +61,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   const nativeConfig = freezeNativeConfigAtStartup((config) =>
     applyNativeSettingOverrides(config, settingOverrides),
   ).config
+  // Each start of the runtime checks the engine URL before it sends a signed request.
+  assertDaemonEngineUrlTrusted(nativeConfig)
   const { acquireDaemonRunLock } = await import('./runLock.ts')
   await upgradeProfileUnderRunLock(acquireDaemonRunLock)
   await assertDaemonProfileStorageComplete()

@@ -38,6 +38,8 @@ test('actual disconnected main composes request recovery and closes request and 
     updateNativeConfig((config) => ({
       ...config,
       daemon: { ...config.daemon, nostrRelays: selected, assetMonitoringEnabled: true },
+      // The runtime starts only with a trusted engine URL.
+      cli: { trustedEngineUrls: [config.daemon.engineUrl] },
     }))
     const once = process.once
     mock.method(

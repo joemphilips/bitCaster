@@ -49,7 +49,8 @@ See [Authentication](/technical/protocol/authentication/) for the signing flow.
 Use the CLI as an application interface for a custom GUI or TUI, scripts,
 and trading AI agents. Commands provide JSON results for programs to consume.
 For example, `bitcaster-cli order book <market-id>` reads the public order book.
-Set the engine URL with `bitcaster-cli config set --engine-url <url>`.
+Set and trust the engine URL with
+`bitcaster-cli config set --engine-url <url> --trust-engine-url`.
 See [CLI settings](#cli-settings) for the environment variables and options.
 The daemon writes the wallet backup of its profile. Set the backup environment with
 `bitcaster-cli config set --recovery-index-realm <realm>`.
@@ -135,6 +136,17 @@ A daemon that the CLI starts uses the environment and option settings of that
 CLI. A running daemon refuses each command of a CLI that has other environment
 or option settings. The error code is `daemon-settings-mismatch`. Then run
 `bitcaster-cli daemon restart` with the settings that you want.
+
+The daemon signs its requests to the engine, for example its orders and its
+wallet backup writes. So it starts only with a trusted engine URL: the default
+URL, or a URL in `trustedEngineUrls` of `config.json`. Before the CLI starts or
+restarts the daemon, it checks the engine URL of the daemon, from any layer.
+For another URL, the CLI asks you to trust it. Add the global option
+`--trust-engine-url` to trust it without the question. The CLI then saves the
+URL in `trustedEngineUrls`. Without a terminal, the CLI does not ask. It stops
+with exit code 3, and the error names the URL. To set and trust a URL in one
+command, use `bitcaster-cli config set --engine-url <url> --trust-engine-url`.
+The daemon also refuses to start with an engine URL that is not trusted.
 
 ### Select and import a native wallet profile
 

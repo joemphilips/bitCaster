@@ -76,10 +76,11 @@ bin directory of npm. This build does not include the oracle helper, so it canno
 a release archive to create markets.
 
 The CLI defaults to a local development engine and mint. Set the bitCaster engine URL and mint
-URL. Then create the wallet profile:
+URL. `--trust-engine-url` trusts the engine URL: the daemon starts only with a trusted engine URL,
+and without a terminal the CLI cannot ask you. Then create the wallet profile:
 
 ```bash
-bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
+bitcaster-cli config set --engine-url https://api.bitcaster.market --trust-engine-url --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```

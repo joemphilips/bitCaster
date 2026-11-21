@@ -75,10 +75,12 @@ bitcaster-cli --help
 マーケットを作成するには、リリースのアーカイブを使ってください。
 
 CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
-bitCaster のエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
+bitCaster のエンジン URL とミント URL を設定してください。
+`--trust-engine-url` はエンジン URL を信頼します。デーモンは信頼済みのエンジン URL でだけ起動し、
+ターミナルがない場合、CLI は確認の質問ができません。その後、ウォレットのプロファイルを作成します。
 
 ```bash
-bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
+bitcaster-cli config set --engine-url https://api.bitcaster.market --trust-engine-url --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```

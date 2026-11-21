@@ -17,8 +17,7 @@ import { constants, existsSync } from 'node:fs'
 import { open, readFile } from 'node:fs/promises'
 import { normalize } from 'node:path'
 import { performance } from 'node:perf_hooks'
-import { stdin as input, stdout as output } from 'node:process'
-import { createInterface } from 'node:readline/promises'
+import { stdout as output } from 'node:process'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
 import { BitcasterEngineClient, EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
@@ -27,7 +26,6 @@ import { decodeCtfRangeOrderFeeFacts } from '@bitcaster-market/client-sdk/ctfRan
 import { isKind89NostrEvent } from '@bitcaster-market/client-sdk/marketLifecycle'
 import {
   isLoopbackHttpUrl,
-  normalizeEndpointUrl,
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk/engineUrlSecurity'
 import { parseSatsToMsat } from '@bitcaster-market/client-sdk/marketUnits'
@@ -95,10 +93,15 @@ import {
   configFilePath,
   readConfig,
   resolveCliSettings,
-  updateConfig,
   validateConfigSettingsWrite,
   writeConfigSettings,
 } from './config.ts'
+import {
+  configureEngineUrlTrust,
+  ensureDaemonEngineUrlTrusted,
+  ensureListedEngineUrlTrusted,
+  engineUrlTrustRequested,
+} from './engineUrlTrust.ts'
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
 import {
@@ -135,6 +138,7 @@ let globalMintUrl: string | undefined
 let globalSettings: ResolvedNativeSettings | undefined
 // The option values of `config set` and `daemon config` are values to write, not a layer.
 let globalConfigWrite: NativeSettingOverrides = {}
+let globalLaunchSettings: NativeSettingOverrides = {}
 let globalDryRun = false
 let globalJson = false
 
@@ -165,6 +169,10 @@ async function main(): Promise<void> {
       'Use one directory for config, wallet state, and daemon files. Environment: BITCASTER_DATADIR',
     )
     .option('--dry-run', 'Check a command without acting; see "Dry run" below')
+    .option(
+      '--trust-engine-url',
+      'Trust the engine URL of this command without a prompt, and save it in config.json',
+    )
     .option('--json', 'Print JSON output (currently the default)')
     .addHelpText(
       'after',
@@ -190,6 +198,7 @@ async function main(): Promise<void> {
         datadir?: string
         dryRun?: boolean
         json?: boolean
+        trustEngineUrl?: boolean
       } & NativeSettingTexts
     >()
     configureDataDir(selectedDataDir(opts.datadir))
@@ -198,9 +207,11 @@ async function main(): Promise<void> {
     const writesConfig = commandWritesConfig(actionCommand)
     globalConfigWrite = writesConfig ? options : {}
     const layerOptions = writesConfig ? {} : options
-    configureDaemonLaunchSettings({ ...environment, ...layerOptions })
+    globalLaunchSettings = { ...environment, ...layerOptions }
+    configureDaemonLaunchSettings(globalLaunchSettings)
     globalDryRun = opts.dryRun === true
     globalJson = opts.json === true
+    configureEngineUrlTrust({ trustEngineUrl: opts.trustEngineUrl === true, dryRun: globalDryRun })
     const unread = unreadDryRunRefusal(process.argv.slice(2), globalDryRun)
     if (unread !== null) throwUsage(unread)
     if (globalDryRun) {
@@ -672,7 +683,6 @@ function registerMarketCommand(program: Command): Command {
       parseSafeNonNegativeIntegerOption('max wallet debit msat'),
     )
     .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
-    .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .addHelpText(
       'after',
       '\nExamples:\n  bitcaster-cli market create --condition-id <condition-id> --title "Question" --description "Details" --outcomes YES,NO\n  bitcaster-cli --dry-run market create --creation-id create-001 --title "Question" --description "Details" --outcomes Yes,No --maturity-epoch 1893456000 --relay wss://relay.example',
@@ -704,7 +714,7 @@ function registerMarketCommand(program: Command): Command {
           printDryRun('market.create-native', params)
           return
         }
-        await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
+        await ensureTrustedAuthedEngineUrl()
         await printDaemonResult(callDaemon({ method: 'market.create-native', params }))
         return
       }
@@ -725,7 +735,7 @@ function registerMarketCommand(program: Command): Command {
       }
 
       // Keep the existing condition-ID path: check trust before the dry-run result.
-      await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
+      await ensureTrustedAuthedEngineUrl()
       const params: MarketCreateParams = {
         conditionId: options.conditionId,
         title: options.title,
@@ -928,7 +938,6 @@ function registerMarketCommand(program: Command): Command {
     .option('--retry', 'Retry the exact saved native oracle publication without signing')
     .option('--relay-only', 'Publish a native outcome or exact retry without contacting the engine')
     .option('--republish', 'With --retry, send the exact saved attestation again even if confirmed')
-    .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .addHelpText(
       'after',
       '\nExample:\n  bitcaster-cli --dry-run market close --condition-id cond --attestation @attestation.json',
@@ -949,8 +958,7 @@ function registerMarketCommand(program: Command): Command {
         throwUsage('--relay-only requires --outcome or --retry.')
       if (options.republish === true && options.retry !== true)
         throwUsage('--republish requires --retry.')
-      if (options.relayOnly !== true)
-        await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true)
+      if (options.relayOnly !== true) await ensureTrustedAuthedEngineUrl()
       if (options.retry === true) {
         const params = {
           conditionId: options.conditionId,
@@ -1020,7 +1028,6 @@ interface MarketCreateOptions {
   relay?: string[]
   maxWalletDebitMsat?: number
   thumbnail?: string
-  trustEngineUrl?: boolean
 }
 
 interface MarketCreationResumeOptions {
@@ -1040,7 +1047,6 @@ interface MarketCloseOptions {
   retry?: boolean
   relayOnly?: boolean
   republish?: boolean
-  trustEngineUrl?: boolean
 }
 
 interface MarketFundingQuoteOptions {
@@ -1847,7 +1853,6 @@ function registerWalletCommand(program: Command): void {
         'Recovery index realm of the engine. The default is the configured realm.',
       ).choices(Object.values(RECOVERY_INDEX_REALMS)),
     )
-    .option('--trust-engine-url', 'Trust the configured engine URL without prompting')
     .allowExcessArguments(false)
     .addHelpText(
       'after',
@@ -1858,7 +1863,6 @@ function registerWalletCommand(program: Command): void {
         walletSeedHexFile?: string
         recoveryPhraseFile?: string
         realm?: RecoveryIndexRealm
-        trustEngineUrl?: boolean
       }) => {
         if (
           (options.walletSeedHexFile === undefined) ===
@@ -1888,7 +1892,7 @@ function registerWalletCommand(program: Command): void {
         }
         if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
         // The seed signs this request, and the URL can come from any layer.
-        await ensureTrustedAuthedEngineUrl(options.trustEngineUrl === true, 'wallet backup delete')
+        await ensureTrustedAuthedEngineUrl('wallet backup delete')
         const result = await deleteRecoveryIndexDocument(
           createRecoveryIndexEngineStore({
             engineBaseUrl: globalEngineUrl,
@@ -3301,7 +3305,12 @@ async function setCliConfig(options: { assetMonitoring?: string }): Promise<void
     printDryRun('config.set', values)
     return
   }
-  const config = writeConfigSettings(values)
+  let config = writeConfigSettings(values)
+  // The option trusts the engine URL that a daemon would start with after this write.
+  if (engineUrlTrustRequested()) {
+    await ensureDaemonEngineUrlTrusted(globalLaunchSettings)
+    config = readConfig()
+  }
   const settings = requireSettings()
   for (const key of NATIVE_SETTING_KEYS) {
     if (values[key] !== undefined && settings[key].source === 'environment') {
@@ -4080,28 +4089,10 @@ function nativeMarketCreationInput(options: MarketCreateOptions): MarketCreation
   }
 }
 
-async function ensureTrustedAuthedEngineUrl(
-  trustEngineUrl: boolean,
-  purpose = 'market create',
-): Promise<void> {
+async function ensureTrustedAuthedEngineUrl(purpose = 'market create'): Promise<void> {
   if (globalEngineUrl === undefined) return
   validateAuthedEngineUrl(globalEngineUrl, purpose)
-
-  const config = readConfig()
-  const normalizedEngineUrl = normalizeEndpointUrl(globalEngineUrl, 'trusted engine URL')
-  if (config.trustedEngineUrls.includes(normalizedEngineUrl)) return
-  if (!trustEngineUrl) {
-    const confirmed = await confirmEngineUrlTrust(globalEngineUrl, purpose)
-    if (!confirmed) {
-      throwValidation(`Engine URL was not trusted: ${globalEngineUrl}`)
-    }
-  }
-  // A dry run checks trust like the real run but does not save it.
-  if (globalDryRun) return
-  updateConfig((current) => ({
-    ...current,
-    trustedEngineUrls: Array.from(new Set([...current.trustedEngineUrls, normalizedEngineUrl])),
-  }))
+  await ensureListedEngineUrlTrusted(globalEngineUrl, purpose)
 }
 
 function validateAuthedEngineUrl(value: string, purpose: string): void {
@@ -4116,22 +4107,6 @@ function validateAuthedEngineUrl(value: string, purpose: string): void {
   throwValidation(
     `Refusing insecure engine URL for ${purpose}: ${value}. Use https:// or a loopback URL.`,
   )
-}
-
-async function confirmEngineUrlTrust(engineUrl: string, purpose: string): Promise<boolean> {
-  process.stderr.write(`About to use engine URL for authenticated ${purpose}: ${engineUrl}\n`)
-  if (!process.stdin.isTTY) {
-    throwValidation(
-      'Refusing to trust a new engine URL without --trust-engine-url in non-interactive mode',
-    )
-  }
-  const rl = createInterface({ input, output })
-  try {
-    const answer = await rl.question('Trust this engine URL? Type yes to continue: ')
-    return answer.trim().toLowerCase() === 'yes'
-  } finally {
-    rl.close()
-  }
 }
 
 async function parseOracleAttestationOption(

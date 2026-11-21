@@ -33,6 +33,7 @@ import { request, type IncomingMessage } from 'node:http'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { promisify } from 'node:util'
+import { ensureDaemonEngineUrlTrusted } from './engineUrlTrust.ts'
 import { cliHomeDir } from './paths.ts'
 
 const DAEMON_STARTUP_TIMEOUT_MS = 10_000
@@ -585,6 +586,8 @@ function throwDaemonConnectionError(err: unknown, address: string): never {
 }
 
 export async function startDaemonProcess(): Promise<void> {
+  // The daemon also refuses an untrusted engine URL. This check can ask the user first.
+  await ensureDaemonEngineUrlTrusted(daemonLaunchSettings)
   const dir = cliHomeDir()
   await mkdir(dir, { recursive: true, mode: 0o700 })
   const logFd = openSync(
@@ -713,6 +716,8 @@ export async function stopDaemon(): Promise<{ stopped: boolean; message: string 
 
 export async function restartDaemon(): Promise<void> {
   const address = daemonAttemptAddress()
+  // Refuse an untrusted engine URL while the running daemon still runs.
+  await ensureDaemonEngineUrlTrusted(daemonLaunchSettings)
   try {
     await stopDaemon()
     await startDaemonProcess()
