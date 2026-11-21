@@ -637,18 +637,16 @@ export function daemonLogPath(): string {
 /**
  * Wait until the daemon answers with the settings of this CLI. A daemon with
  * other environment or option settings is not ready: it can be an older
- * daemon that still holds the socket. The wait makes at least one request.
+ * daemon that still holds the socket. The deadline includes the token read:
+ * a read that uses up the deadline ends the wait without a request.
  */
-export async function waitForDaemon(
-  signal?: AbortSignal,
-  timeoutMs = DAEMON_STARTUP_TIMEOUT_MS,
-): Promise<void> {
-  const deadline = Date.now() + timeoutMs
+export async function waitForDaemon(signal?: AbortSignal): Promise<void> {
+  const deadline = Date.now() + DAEMON_STARTUP_TIMEOUT_MS
   signal?.throwIfAborted()
   const token = await readDaemonRpcToken()
   signal?.throwIfAborted()
   let lastErr: unknown
-  for (;;) {
+  while (Date.now() < deadline) {
     signal?.throwIfAborted()
     try {
       const response = await sendAuthenticatedDaemonCommand({ method: 'health' }, token, signal)
@@ -660,7 +658,6 @@ export async function waitForDaemon(
       if (signal?.aborted) throw signal.reason ?? err
       lastErr = err
     }
-    if (Date.now() >= deadline) break
     await sleepWithSignal(
       Math.min(DAEMON_STARTUP_POLL_MS, Math.max(0, deadline - Date.now())),
       signal,
