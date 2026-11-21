@@ -136,6 +136,13 @@ export default defineConfig({
         find: /^@noble\/hashes\/sha2\.js$/,
         replacement: require.resolve("@noble/hashes/sha2.js"),
       },
+      // NDK uses the tseep event emitter. Its default build calls listeners through
+      // functions that it makes with eval, and the server's Content Security Policy
+      // blocks eval. The ee-safe build of the same emitter does not use eval.
+      {
+        find: /^tseep$/,
+        replacement: require.resolve("tseep/lib/ee-safe.js"),
+      },
     ],
   },
   // kormir-wasm is imported with a relative path (`./kormir-wasm-pkg/kormir_wasm`),
