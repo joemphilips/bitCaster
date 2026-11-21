@@ -47,6 +47,7 @@ import {
 } from "@/lib/browserMarketCreation";
 import { detectMintCapabilities } from "@/lib/mints";
 import { assertNever } from "@/lib/enumDiscipline";
+import { BrowserOracleMutationError } from "@/lib/kormir";
 import { useWalletStore } from "@/stores/wallet";
 import { refreshMintInfoWithoutActivating } from "@/lib/walletOps";
 import {
@@ -194,6 +195,31 @@ function wizardMarketInput(draft: WizardDraft): MarketCreationInput {
     categoryTags: draft.stepBasicInfo?.categoryTags ?? [],
     baseAsset: draft.stepOutcomes?.baseAsset,
   };
+}
+
+function releaseCreationPointer(creationId: string) {
+  useMarketDraftStore.getState().setDraft((previous) => {
+    if (previous.creation?.creationId !== creationId) return previous;
+    const { creation: _released, ...draft } = previous;
+    return { ...draft, lastModified: new Date().toISOString() };
+  });
+}
+
+/** This browser keeps one oracle key. Another key's retained data refuses a new key. */
+function oracleKeyConflictMessage(error: unknown) {
+  if (!(error instanceof BrowserOracleMutationError)) return null;
+  switch (error.reason) {
+    case "key-conflict":
+      return "marketCreation.creationOracleKeyConflict" as const;
+    case "identity-unavailable":
+    case "identity-changed":
+    case "authority-unavailable":
+    case "import-incomplete":
+    case "expired":
+      return null;
+    default:
+      return assertNever(error.reason);
+  }
 }
 
 function rememberCreationFailure(
@@ -937,10 +963,13 @@ export function useMarketCreationState() {
         setCreatedMarketDivisibility(snapshotDivisibility);
         setCreatedMarketConditionId(result.conditionId);
       } catch (error) {
+        const oracleKeyError = oracleKeyConflictMessage(error);
         const capacityError =
           error instanceof OracleBackupCapacityError
             ? t("marketCreation.oracleCapacityExceeded")
-            : null;
+            : oracleKeyError === null
+              ? null
+              : t(oracleKeyError);
         const failureCode =
           error instanceof MarketCreationThumbnailMismatchError
             ? "thumbnail-presence-mismatch"
@@ -950,14 +979,21 @@ export function useMarketCreationState() {
         const pointer = useMarketDraftStore.getState().draft.creation;
         if (pointer !== undefined) {
           let retained: MarketCreationRecord | null = null;
+          let absent = false;
           try {
             retained = (await session?.store.read(pointer.creationId)) ?? null;
+            absent = session !== undefined && retained === null;
             if (retained != null) setRetainedRecord(retained);
           } catch {
             /* The original binding can be unavailable. Keep its draft pointer. */
           }
+          // A key conflict refuses every retry with this ID. Without a record nothing
+          // was reserved or paid, so release the pointer. Then the original ID can
+          // create without a saved creation of this ID in the way.
+          const released = absent && oracleKeyError !== null;
+          if (released) releaseCreationPointer(pointer.creationId);
           let dismissed = false;
-          if (retained !== null || pointer.failure !== undefined) {
+          if (!released && (retained !== null || pointer.failure !== undefined)) {
             try {
               dismissed = rememberCreationFailure(retained, failureCode);
             } catch {
@@ -1041,14 +1077,10 @@ export function useMarketCreationState() {
       );
       return;
     }
-    setDraft((previous) => {
-      if (previous.creation?.creationId !== pointer.creationId) return previous;
-      const { creation: _discarded, ...draft } = previous;
-      return { ...draft, lastModified: new Date().toISOString() };
-    });
+    releaseCreationPointer(pointer.creationId);
     setRetainedRecord(null);
     setSubmitError(null);
-  }, [isSubmitting, setDraft]);
+  }, [isSubmitting]);
 
   const onConfirmRegistrationFee = useCallback(async () => {
     setRegistrationFeePrompt(null);

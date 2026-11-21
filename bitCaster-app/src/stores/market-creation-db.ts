@@ -12,37 +12,39 @@ import {
 } from "@bitcaster/client-sdk";
 import { browserWalletDatabaseName } from "../lib/browserWalletProfile";
 import type { BitcasterDB } from "./proof-db";
+import { assertNever } from "../lib/enumDiscipline";
 
 /**
- * A saved creation holds no fee payment when the mint has not confirmed its
- * registration and the wallet has no record of its fee transfer. This read
- * ignores the creator and mint binding, so it works after an ID change.
- * An unreadable record counts as paid.
+ * The fee state of a saved creation, read without its creator and mint binding.
+ * `unpaid` means that the mint has not confirmed its registration and the
+ * wallet has no record of its fee transfer. An unreadable record is `paid`.
  */
-export async function isUnpaidBrowserMarketCreation(
+export type BrowserMarketCreationPayment = "absent" | "unpaid" | "paid";
+
+export async function readBrowserMarketCreationPayment(
   database: BitcasterDB,
   walletScopeId: string,
   creationId: string,
-): Promise<boolean> {
+): Promise<BrowserMarketCreationPayment> {
   const stored = await database.marketCreations.get([walletScopeId, creationId]);
-  if (stored === undefined) return true;
+  if (stored === undefined) return "absent";
   let feeOperationRef: string | null;
   try {
     const record = snapshotMarketCreationPreparation(stored);
-    if (record.walletScopeId !== walletScopeId || stored.mintConfirmed !== false) return false;
+    if (record.walletScopeId !== walletScopeId || stored.mintConfirmed !== false) return "paid";
     feeOperationRef = record.registration.feeOperationRef;
   } catch {
-    return false;
+    return "paid";
   }
-  if (feeOperationRef === null) return true;
+  if (feeOperationRef === null) return "unpaid";
   const key: [string, string] = [walletScopeId, feeOperationRef];
-  return (
-    (await database.outgoingCashuTransfers.get(key)) === undefined &&
+  return (await database.outgoingCashuTransfers.get(key)) === undefined &&
     (await database.custodyOperations.get(key)) === undefined
-  );
+    ? "unpaid"
+    : "paid";
 }
 
-/** Delete one unpaid saved creation. A creation that can hold a payment stays. */
+/** Delete one saved creation that holds no payment. A creation that can hold a payment stays. */
 export async function discardUnpaidBrowserMarketCreation(
   database: BitcasterDB,
   walletScopeId: string,
@@ -52,9 +54,18 @@ export async function discardUnpaidBrowserMarketCreation(
     "rw",
     [database.marketCreations, database.outgoingCashuTransfers, database.custodyOperations],
     async () => {
-      if (!(await isUnpaidBrowserMarketCreation(database, walletScopeId, creationId)))
-        throw new Error("A saved creation with a fee payment cannot be discarded.");
-      await database.marketCreations.delete([walletScopeId, creationId]);
+      const payment = await readBrowserMarketCreationPayment(database, walletScopeId, creationId);
+      switch (payment) {
+        case "absent":
+          return;
+        case "unpaid":
+          await database.marketCreations.delete([walletScopeId, creationId]);
+          return;
+        case "paid":
+          throw new Error("A saved creation with a fee payment cannot be discarded.");
+        default:
+          return assertNever(payment);
+      }
     },
   );
 }

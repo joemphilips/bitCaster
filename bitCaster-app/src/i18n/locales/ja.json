@@ -800,6 +800,7 @@
     "resumeCreation": "保存済みの作成を再開",
     "discardCreation": "保存済みの作成を破棄",
     "creationOtherCreator": "この作成は Nostr ID {{npub}} のものです。再開するには、その ID に切り替えてください。",
+    "creationOracleKeyConflict": "このブラウザーには、別の Nostr ID のオラクルデータが保存されています。ここでマーケットを作成するには、その ID に戻してください。",
     "creationResumeRequired": "別のマーケットを作成する前に、保存済みの作成を再開してください。",
     "creationIncompleteError": "作成は未完了です。元のウォレット、ID、Mint、エンジンを確認し、この保存済みの作成を再開してください。新たな支払いを開始しないでください。",
     "creationAnnouncementRelayUnavailable": "Nostrリレーがオラクルのアナウンスを受け付けませんでした。後でこの保存済みの作成を再開してください。新たな支払いを開始しないでください。",

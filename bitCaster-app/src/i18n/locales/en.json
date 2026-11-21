@@ -806,6 +806,7 @@
     "resumeCreation": "Resume saved creation",
     "discardCreation": "Discard saved creation",
     "creationOtherCreator": "This creation belongs to Nostr ID {{npub}}. Switch to that ID to resume it.",
+    "creationOracleKeyConflict": "This browser keeps oracle data of another Nostr ID. Switch back to that ID to create a market here.",
     "creationResumeRequired": "Resume the saved creation before starting another market.",
     "creationIncompleteError": "Creation is incomplete. Check the original wallet, identity, mint, and engine. Then resume this saved creation. Do not start another payment.",
     "creationAnnouncementRelayUnavailable": "No Nostr relay accepted the oracle announcement. Resume this saved creation later. Do not start another payment.",
