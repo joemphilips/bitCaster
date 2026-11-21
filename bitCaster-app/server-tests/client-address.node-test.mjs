@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer, request } from 'node:http'
-import net from 'node:net'
 import { after, test } from 'node:test'
+import { deadline, startFrontendServer } from './frontend-server.mjs'
 
-const deadline = 5000
 const headerLines = (rawHeaders, name) =>
   rawHeaders.filter((_, index) => index % 2 === 1 && rawHeaders[index - 1].toLowerCase() === name)
 const observed = (req) => ({
@@ -36,24 +35,10 @@ after(async () => {
 backend.listen(0, '127.0.0.1')
 await once(backend, 'listening', { signal: AbortSignal.timeout(deadline) })
 
-process.env.PORT = '0'
-process.env.BACKEND_URL = `http://127.0.0.1:${backend.address().port}`
-process.env.MINT_URL = process.env.BACKEND_URL
-// The server listens when it is imported. Keep its instance to read the assigned port and to close it.
-const listen = net.Server.prototype.listen
-net.Server.prototype.listen = function (...args) {
-  frontend = this
-  return listen.apply(this, args)
-}
-let server
-try {
-  server = await import('../server.js')
-} finally {
-  net.Server.prototype.listen = listen
-}
-if (!frontend.listening)
-  await once(frontend, 'listening', { signal: AbortSignal.timeout(deadline) })
-const { clientAddressFromForwardedFor } = server
+const backendUrl = `http://127.0.0.1:${backend.address().port}`
+const started = await startFrontendServer({ BACKEND_URL: backendUrl, MINT_URL: backendUrl })
+frontend = started.frontend
+const { clientAddressFromForwardedFor } = started.server
 // Node sends this Host header for a request to the frontend.
 const frontendHost = `127.0.0.1:${frontend.address().port}`
 
