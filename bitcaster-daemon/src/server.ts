@@ -201,6 +201,7 @@ import { claimDaemonPosition, recoverDaemonPositionClaims } from './nativePositi
 import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePositionRemove.ts'
 import { streamDaemonWatch, type DaemonWatchProvider } from './watchTransport.ts'
 import {
+  CtfRangeOrderInsufficientFundsError,
   CtfRangeOrderReleasedError,
   CtfRangeSellPreparationPendingError,
   type DaemonCtfRangeRecoveryStatus,
@@ -1943,10 +1944,22 @@ async function dispatchOrderFeePreview(
         resolved.value.client,
       ),
     )
-  } catch {
+  } catch (error) {
+    if (error instanceof CtfRangeOrderInsufficientFundsError)
+      return insufficientFundsResponse(error)
     return { ok: false, code: 'fee-preview-unavailable', error: 'Order fee preview is unavailable' }
   }
   return { ok: true, result: { request: resolved.value.request, feeFacts } }
+}
+
+/** The browser uses the same code. The amounts are in msat, as order amounts are. */
+function insufficientFundsResponse(error: CtfRangeOrderInsufficientFundsError): DaemonResponse {
+  return {
+    ok: false,
+    code: 'insufficient-funds',
+    error: error.message,
+    result: { requiredMsat: error.requiredMsat, availableMsat: error.availableMsat },
+  }
 }
 
 function decodeOrderFeeConsent(value: unknown): OrderFeeConsent | null {
@@ -2126,6 +2139,10 @@ async function dispatchProtectedOrderSubmit(
         error: error.message,
         clientOrderId,
       }
+    }
+    if (error instanceof CtfRangeOrderInsufficientFundsError) {
+      // The wallet refused before it reserved anything, so nothing remains to recover.
+      return { ...insufficientFundsResponse(error), clientOrderId }
     }
     if (error instanceof CtfRangeSellPreparationPendingError) {
       // This sell reserved nothing and ended its attempt. The earlier sell

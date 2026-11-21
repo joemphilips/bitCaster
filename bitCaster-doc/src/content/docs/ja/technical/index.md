@@ -531,6 +531,11 @@ bitcaster-cli order submit --market <market-id> --outcome <outcome-id> --side Bu
 承認した合計額の制限は、同じ額または有利な額を許可します。
 不利な額になった場合は、FOK 注文全体を拒否します。手数料は、この制限とは別です。
 
+ウォレットが Buy の代金を払えない場合、手数料の見積もりと注文の送信は
+`code: "insufficient-funds"` を返します。ウォレットは何も予約せず、注文も送信しません。
+`result.requiredMsat` は、手数料を含めて注文に必要な金額です。
+`result.availableMsat` は、その注文にウォレットが使える金額です。
+
 署名付き取引コメントを付けるには、`--comment` と `--market-url` を一緒に指定します。
 クエリやフラグメントを含まない、正確な Web マーケット URL を使ってください。
 コメントは注文に添付されます。独立したコメント投稿ではありません。

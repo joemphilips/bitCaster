@@ -78,6 +78,7 @@ import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import { claimCustodyScopeLease, releaseCustodyScopeLease } from '../src/profileFencing.ts'
 import {
+  CtfRangeOrderInsufficientFundsError,
   CtfRangeOrderReleasedError,
   CtfRangeSellPreparationPendingError,
 } from '../src/ctfRangeOrderRelease.ts'
@@ -2619,6 +2620,66 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         if (priorState) await writeState(priorState)
       })
     }
+
+    await t.test(
+      'order fee-preview and submit name the needed and available msat of a Buy above the wallet',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let recoveryTriggers = 0
+        let submits = 0
+        const draft = {
+          marketId: 'cond-Bob',
+          outcomeId: 'Bob',
+          side: 'Buy' as const,
+          price: 420,
+          amountSubunits: 1_000,
+          timeInForce: 'FOK' as const,
+        }
+        const deps = {
+          createEngineClient: () => ({
+            ...testOrderEngine(),
+            submitOrder: async () => {
+              submits += 1
+              throw new Error('an unfunded order must not submit')
+            },
+          }),
+          previewSettlementCapabilityFees: async () => {
+            throw new CtfRangeOrderInsufficientFundsError(503, 352)
+          },
+          prepareSettlementCapability: async () => {
+            throw new CtfRangeOrderInsufficientFundsError(503, 352)
+          },
+          triggerSettlementRecovery: () => {
+            recoveryTriggers += 1
+          },
+        }
+        const refusal = {
+          ok: false,
+          code: 'insufficient-funds',
+          error:
+            'Insufficient funds: this order needs 503 msat, including fees, and the wallet has 352 msat.',
+          result: { requiredMsat: 503, availableMsat: 352 },
+        }
+
+        const preview = await dispatch({ method: 'order.fee-preview', params: draft }, deps)
+        const submit = await dispatch(
+          { method: 'order.submit', params: withFeeConsent(draft) },
+          deps,
+        )
+
+        assert.deepEqual(preview, refusal)
+        assert.deepEqual(
+          { ...submit, clientOrderId: typeof submit.clientOrderId },
+          { ...refusal, clientOrderId: 'string' },
+        )
+        assert.equal(submits, 0)
+        // The refusal reserved nothing, so recovery has no work.
+        assert.equal(recoveryTriggers, 0)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
 
     await t.test('order.recovery reports halted and released range operations', async () => {
       const status = {

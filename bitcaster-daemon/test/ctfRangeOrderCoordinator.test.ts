@@ -83,6 +83,7 @@ import {
   type DaemonCtfRangeOrderCoordinatorDependencies,
 } from '../src/ctfRangeOrderCoordinator.ts'
 import {
+  CtfRangeOrderInsufficientFundsError,
   CtfRangeOrderReleasedError,
   CtfRangeSellPreparationPendingError,
 } from '../src/ctfRangeOrderRelease.ts'
@@ -1384,6 +1385,89 @@ test('daemon does not consolidate fragmented order funds unless the caller opts 
     },
   )
 })
+
+for (const testCase of [
+  {
+    // A 1-share Buy at 500 reserves 501 msat: 500 msat of trade value and a
+    // 1 msat settlement fee bound. Spending all 11 proofs adds a 2 msat input
+    // fee (11 inputs at 100 ppk, rounded up).
+    name: 'all proofs fit one mint request',
+    maxInputs: 64,
+    proofAmounts: Array.from({ length: 11 }, () => 32),
+    price: 500,
+    requiredMsat: 503,
+    availableMsat: 352,
+  },
+  {
+    // A 1-share Buy at 5 reserves 6 msat. Four inputs add a 1 msat input fee.
+    // Consolidation cannot help, because the proofs hold too little.
+    name: 'the proofs exceed the mint input limit',
+    maxInputs: 3,
+    proofAmounts: [1, 1, 1, 1],
+    price: 5,
+    requiredMsat: 7,
+    availableMsat: 4,
+  },
+]) {
+  test(`daemon names the needed and available msat of a Buy above the wallet when ${testCase.name}`, async () => {
+    const sourceProofs = testCase.proofAmounts.map((amount) =>
+      signedProof(OutputData.createRandomData(Amount.from(amount), mintKeys())[0]!),
+    )
+    await withDaemonProfile(
+      {
+        prefix: 'bitcaster-range-insufficient-',
+        incarnationId: 'range-insufficient-test',
+        proofs: sourceProofs,
+        asset: regularAsset(),
+      },
+      async ({ directory, fence }) => {
+        const wallet = new FakeWallet(sourceProofs)
+        let nextId = 0
+        const coordinator = new DaemonCtfRangeOrderCoordinator(directory, () => fence, {
+          createMint: () => fakeMint(testCase.maxInputs),
+          createWallet: () => wallet,
+          now: () => 10_000,
+          randomId: () => `range-insufficient-${(nextId += 1)}`,
+        })
+        const client = fakeEngineClient()
+        const request = {
+          ...orderRequest(),
+          price: testCase.price,
+          maxQuotePaymentSubunits: testCase.price,
+        }
+        const expected = {
+          name: 'CtfRangeOrderInsufficientFundsError',
+          requiredMsat: testCase.requiredMsat,
+          availableMsat: testCase.availableMsat,
+        }
+        const refusal = (error: unknown) => {
+          assert.ok(error instanceof CtfRangeOrderInsufficientFundsError, String(error))
+          assert.deepEqual(
+            {
+              name: error.name,
+              requiredMsat: error.requiredMsat,
+              availableMsat: error.availableMsat,
+            },
+            expected,
+          )
+          return true
+        }
+
+        await assert.rejects(coordinator.previewFeeFacts(request, client), refusal)
+        await assert.rejects(coordinator.prepare(request, client, undefined, undefined), refusal)
+
+        // The refusal reserved nothing, so it leaves no recovery work.
+        assert.equal(wallet.completeCalls, 0)
+        assert.deepEqual((await readState())?.proofOperations, {})
+        assert.equal(await journalLifecycle(directory), 'terminal')
+        assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
+          recovered: [],
+          pending: [],
+        })
+      },
+    )
+  })
+}
 
 test('daemon previews full-exit source fees without persisting or spending', async () => {
   await withDaemonProfile(

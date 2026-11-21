@@ -525,6 +525,11 @@ The per-fill price limit does not protect the quoted total by itself.
 The accepted total bound permits an equal or better total. A worse total refuses
 the complete FOK order. Fees remain separate from this bound.
 
+If the wallet cannot pay a Buy, fee preview and submission return
+`code: "insufficient-funds"`. The wallet reserves nothing and sends no order.
+`result.requiredMsat` is the amount that the order needs, including fees.
+`result.availableMsat` is the amount that the wallet can use for it.
+
 Add `--comment` and `--market-url` together to attach a signed trade comment.
 Use the exact web market URL, without a query or fragment.
 The comment is attached to the order. It is not a separate comment publication.
