@@ -1,4 +1,5 @@
 import type { CashuMintRefusal } from '@bitcaster-market/client-sdk/mintRefusal'
+import { computeInputFeeSubunitsFromPpk } from '@bitcaster-market/client-sdk/proofSelection'
 
 /**
  * Range order recovery facts that the daemon RPC reports (ADR-037 mint
@@ -75,6 +76,31 @@ export class CtfRangeOrderInsufficientFundsError extends Error {
     this.requiredMsat = requiredMsat
     this.availableMsat = availableMsat
   }
+}
+
+/**
+ * The shortfall of a Buy that all available offered proofs cannot pay, or
+ * null. `inventory` maps each proof amount in msat to its proof count. A Buy
+ * pays its authorization amount and the input fee of each spent proof. A
+ * proof worth less than its own input fee lowers what the wallet can pay,
+ * so the bound leaves it out.
+ */
+export function rangeBuyFundsShortfall(
+  targetMsat: number,
+  inputFeePpk: number,
+  inventory: ReadonlyMap<number, number>,
+): CtfRangeOrderInsufficientFundsError | null {
+  let proofCount = 0
+  let availableMsat = 0
+  for (const [amount, count] of inventory) {
+    if (amount * 1_000 < inputFeePpk) continue
+    proofCount += count
+    availableMsat += amount * count
+  }
+  const requiredMsat = targetMsat + computeInputFeeSubunitsFromPpk(inputFeePpk * proofCount)
+  return availableMsat < requiredMsat
+    ? new CtfRangeOrderInsufficientFundsError(requiredMsat, availableMsat)
+    : null
 }
 
 /**
