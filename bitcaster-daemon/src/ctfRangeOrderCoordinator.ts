@@ -125,7 +125,10 @@ import {
   type CtfRangeMintMetadata as LoadedMintMetadata,
   type CtfRangeMintMetadataClient,
 } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
-import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import {
+  amountToNumber,
+  computeInputFeeSubunitsFromPpk,
+} from '@bitcaster-market/client-sdk/proofSelection'
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
   classifyCashuMintFailure,
@@ -208,6 +211,7 @@ import {
 } from './ctfRangeSourceState.ts'
 import { profileDir } from './profile.ts'
 import {
+  CtfRangeOrderInsufficientFundsError,
   CtfRangeOrderReleasedError,
   CtfRangeSellPreparationPendingError,
   rangeOrderReleasedMessage,
@@ -2562,7 +2566,10 @@ export class DaemonCtfRangeOrderCoordinator {
       if (error instanceof ProofConsolidationRequiredError) {
         await this.#markTerminal(authority.preparationInput.operationId)
       }
-      if (error instanceof CtfRangeOrderOutputCheckError) {
+      if (
+        error instanceof CtfRangeOrderOutputCheckError ||
+        error instanceof CtfRangeOrderInsufficientFundsError
+      ) {
         // The source request was not sent and holds no funds, so the attempt
         // ends here and leaves no recovery work.
         await this.#endUnfundedPreparation(authority.preparationInput.operationId)
@@ -2966,6 +2973,7 @@ async function planFreshSourceWithFees(
     }
   }
   assertConsolidationCanHelp(selection.plan, selection.offeredHasMore)
+  if (selection.plan.kind === 'source-unavailable') await assertBuyFundsSuffice(authority)
   if (!selection.offeredHasMore) throw new Error('daemon has insufficient exact range-order funds')
   if (!authority.consolidateProofs) throw new ProofConsolidationRequiredError()
 
@@ -3369,10 +3377,10 @@ async function readCanonicalAvailableWalletProofPage(
   )
 }
 
-async function planSourceConsolidation(
+/** Count every available offered proof by amount, across all pages. */
+async function readOfferedProofInventory(
   authority: PreparedMintAuthority,
-  maxRounds: number,
-): Promise<BoundedProofConsolidationPlan> {
+): Promise<ReadonlyMap<number, number>> {
   const counts = new Map<number, number>()
   let after: Parameters<typeof readAvailableCanonicalWalletProofPageFromDatabase>[1]['after']
   do {
@@ -3389,11 +3397,52 @@ async function planSourceConsolidation(
     }
     after = page.nextCursor ?? undefined
   } while (after !== undefined)
+  return counts
+}
+
+function authorizationTargetMsat(authority: PreparedMintAuthority): number {
+  return amountToNumber(OutputData.sumOutputAmounts(authority.preparation.authorizationOutputs))
+}
+
+/**
+ * Name the shortfall when all available sats cannot pay a Buy. A Buy pays its
+ * authorization amount and the input fee of each spent proof from its sats.
+ * If spending every available proof falls short, no selection and no
+ * consolidation can fund the order. A Sell can pay its source fee from
+ * regular cash, so its source plan names its shortfall.
+ */
+async function assertBuyFundsSuffice(authority: PreparedMintAuthority): Promise<void> {
+  const preparation = authority.preparationInput
+  switch (preparation.side) {
+    case 'Buy':
+      break
+    case 'Sell':
+      return
+    default:
+      return assertNeverSourcePlan(preparation.side)
+  }
+  let proofCount = 0
+  let availableMsat = 0
+  for (const [amount, count] of await readOfferedProofInventory(authority)) {
+    proofCount += count
+    availableMsat += amount * count
+  }
+  const requiredMsat =
+    authorizationTargetMsat(authority) +
+    computeInputFeeSubunitsFromPpk(preparation.offerKeyset.inputFeePpk * proofCount)
+  if (availableMsat < requiredMsat) {
+    throw new CtfRangeOrderInsufficientFundsError(requiredMsat, availableMsat)
+  }
+}
+
+async function planSourceConsolidation(
+  authority: PreparedMintAuthority,
+  maxRounds: number,
+): Promise<BoundedProofConsolidationPlan> {
+  const counts = await readOfferedProofInventory(authority)
   return planBoundedProofConsolidation({
     inventory: [...counts].map(([amount, count]) => ({ amount: String(amount), count })),
-    target: String(
-      amountToNumber(OutputData.sumOutputAmounts(authority.preparation.authorizationOutputs)),
-    ),
+    target: String(authorizationTargetMsat(authority)),
     inputFeePpk: authority.preparationInput.offerKeyset.inputFeePpk,
     maxInputs: authority.preparationInput.maxInputs,
     maxRounds,

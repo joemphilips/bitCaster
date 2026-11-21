@@ -60,6 +60,24 @@ export class CtfRangeSellPreparationPendingError extends Error {
 }
 
 /**
+ * The wallet cannot pay a Buy with all of its available sats. The daemon
+ * refused the order before it reserved anything. The amounts are in msat.
+ */
+export class CtfRangeOrderInsufficientFundsError extends Error {
+  readonly requiredMsat: number
+  readonly availableMsat: number
+
+  constructor(requiredMsat: number, availableMsat: number) {
+    super(
+      `Insufficient funds: this order needs ${requiredMsat} msat, including fees, and the wallet has ${availableMsat} msat.`,
+    )
+    this.name = 'CtfRangeOrderInsufficientFundsError'
+    this.requiredMsat = requiredMsat
+    this.availableMsat = availableMsat
+  }
+}
+
+/**
  * The consolidation rounds commit before the refused source swap, so a
  * consolidation fee can already be paid. The browser says the same.
  */
