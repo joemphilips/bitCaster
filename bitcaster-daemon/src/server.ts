@@ -2141,7 +2141,8 @@ async function dispatchProtectedOrderSubmit(
       }
     }
     if (error instanceof CtfRangeOrderInsufficientFundsError) {
-      // The wallet refused before it reserved anything, so nothing remains to recover.
+      // No order was sent and no funds stay reserved, so recovery has no work.
+      // A completed consolidation round can already have paid its fee.
       return { ...insufficientFundsResponse(error), clientOrderId }
     }
     if (error instanceof CtfRangeSellPreparationPendingError) {

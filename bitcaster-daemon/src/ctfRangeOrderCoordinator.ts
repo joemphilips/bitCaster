@@ -125,10 +125,7 @@ import {
   type CtfRangeMintMetadata as LoadedMintMetadata,
   type CtfRangeMintMetadataClient,
 } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
-import {
-  amountToNumber,
-  computeInputFeeSubunitsFromPpk,
-} from '@bitcaster-market/client-sdk/proofSelection'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
   classifyCashuMintFailure,
@@ -214,6 +211,7 @@ import {
   CtfRangeOrderInsufficientFundsError,
   CtfRangeOrderReleasedError,
   CtfRangeSellPreparationPendingError,
+  rangeBuyFundsShortfall,
   rangeOrderReleasedMessage,
   rangeOrderRetryCommand,
   type DaemonCtfRangeRecoveryPending,
@@ -3405,11 +3403,10 @@ function authorizationTargetMsat(authority: PreparedMintAuthority): number {
 }
 
 /**
- * Name the shortfall when all available sats cannot pay a Buy. A Buy pays its
- * authorization amount and the input fee of each spent proof from its sats.
- * If spending every available proof falls short, no selection and no
- * consolidation can fund the order. A Sell can pay its source fee from
- * regular cash, so its source plan names its shortfall.
+ * Name the shortfall when all available sats cannot pay a Buy. If the useful
+ * proofs fall short, no selection and no consolidation can fund the order.
+ * A Sell can pay its source fee from regular cash, so its source plan names
+ * its shortfall.
  */
 async function assertBuyFundsSuffice(authority: PreparedMintAuthority): Promise<void> {
   const preparation = authority.preparationInput
@@ -3421,18 +3418,12 @@ async function assertBuyFundsSuffice(authority: PreparedMintAuthority): Promise<
     default:
       return assertNeverSourcePlan(preparation.side)
   }
-  let proofCount = 0
-  let availableMsat = 0
-  for (const [amount, count] of await readOfferedProofInventory(authority)) {
-    proofCount += count
-    availableMsat += amount * count
-  }
-  const requiredMsat =
-    authorizationTargetMsat(authority) +
-    computeInputFeeSubunitsFromPpk(preparation.offerKeyset.inputFeePpk * proofCount)
-  if (availableMsat < requiredMsat) {
-    throw new CtfRangeOrderInsufficientFundsError(requiredMsat, availableMsat)
-  }
+  const shortfall = rangeBuyFundsShortfall(
+    authorizationTargetMsat(authority),
+    preparation.offerKeyset.inputFeePpk,
+    await readOfferedProofInventory(authority),
+  )
+  if (shortfall !== null) throw shortfall
 }
 
 async function planSourceConsolidation(
