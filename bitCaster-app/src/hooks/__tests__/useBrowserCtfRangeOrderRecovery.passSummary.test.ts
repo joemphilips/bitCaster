@@ -34,7 +34,7 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
 }));
 
 vi.mock("@/lib/browserSeedPositionRestore", () => ({
-  releaseBrowserSeedPositionRestoreGate: vi.fn(),
+  publishBrowserSeedPositionRestoreHintsSettled: vi.fn(),
   resyncBrowserKeysetsInUse: mocks.resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass: mocks.runBrowserSeedPositionRestorePass,
 }));

@@ -43,6 +43,12 @@ export interface AssetMonitoringReporterInput {
   readonly createReportId?: () => string
   /** Overrides retry timing for a host that needs a shorter bounded delay. */
   readonly retryDelayMs?: (failureCount: number) => number
+  /**
+   * Holds each report while this resolves false or rejects. A held report
+   * builds and sends nothing and schedules no retry. The host requests a
+   * report again when the hold can end.
+   */
+  readonly mayReport?: () => Promise<boolean>
 }
 
 /** Reads only the selected condition metadata through bounded requests. */
@@ -103,6 +109,8 @@ export class AssetMonitoringReporter {
       while (this.#queued && !this.#stopped) {
         this.#queued = false
         const revision = this.#requestedRevision
+        // Without a hold, the snapshot starts in the same task as the request.
+        if (this.#input.mayReport !== undefined && !(await this.#reportAllowed(revision))) continue
         let holdings: readonly AssetMonitoringReportedHolding[] | null
         try {
           holdings = await this.#input.buildHoldings()
@@ -124,6 +132,16 @@ export class AssetMonitoringReporter {
       this.#running = false
       if (this.#queued && !this.#stopped) void this.#run()
     }
+  }
+
+  async #reportAllowed(revision: number): Promise<boolean> {
+    let allowed: boolean
+    try {
+      allowed = (await this.#input.mayReport?.()) === true
+    } catch {
+      allowed = false
+    }
+    return allowed && this.#isCurrentRevision(revision)
   }
 
   async #submitFrozen(

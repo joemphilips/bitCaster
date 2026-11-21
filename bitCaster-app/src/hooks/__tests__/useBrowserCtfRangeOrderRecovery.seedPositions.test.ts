@@ -68,6 +68,8 @@ import {
 // the market catalogue. Network I/O goes to a fake mint and a fake engine.
 
 const GAP = 300;
+/** A second wallet mint, which the user adds after the first restore pass. */
+const ADDED_MINT_URL = "https://second-mint.example";
 const HOUR_MS = 60 * 60_000;
 const DAY_MS = 24 * HOUR_MS;
 
@@ -278,6 +280,12 @@ function expectNoCatalogueWalk(mint: FakeMint): void {
 
 function expectNotScanned(mint: FakeMint, ...keysets: FakeKeyset[]): void {
   for (const keyset of keysets) expect(mint.scanned(keyset), keyset.id).toBe(false);
+}
+
+function requestOrigin(request: RequestInfo | URL): string {
+  return new URL(
+    typeof request === "string" ? request : request instanceof URL ? request.href : request.url,
+  ).origin;
 }
 
 /** Deletes the restore record of the seed, as a seed handoff or a wallet reset does. */
@@ -789,7 +797,7 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
 
     // No signer: the earlier report cannot be read, so the first report waits.
     expect((await restorePass(now)).hintsSettled).toBe(false);
-    expect(await browserSeedPositionRestoreHintsSettled(scopeId())).toBe(false);
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), [MINT_URL])).toBe(false);
     expect(mocks.getAssets).not.toHaveBeenCalled();
 
     // A failed read does not settle the hints either.
@@ -797,12 +805,64 @@ describe("useBrowserCtfRangeOrderRecovery — a new browser opens an existing se
     mocks.getAssets.mockRejectedValueOnce(new Error("unavailable"));
     nowMs += 1_000;
     expect((await restorePass(now)).hintsSettled).toBe(false);
-    expect(await browserSeedPositionRestoreHintsSettled(scopeId())).toBe(false);
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), [MINT_URL])).toBe(false);
 
     nowMs += 1_000;
     expect((await restorePass(now)).hintsSettled).toBe(true);
-    expect(await browserSeedPositionRestoreHintsSettled(scopeId())).toBe(true);
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), [MINT_URL])).toBe(true);
     expect(await selectableHoldings()).toEqual([position(market.no, 4)]);
+  });
+
+  it("holds the report for a mint added after the report gate opened, and its restore still reads the earlier report", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    const market = binaryMarket("cd".repeat(32));
+    const addedMint = new FakeMint(regularKeyset(7), [market.yes, market.no], ADDED_MINT_URL);
+    addedMint.sign({ keyset: market.yes, counter: 3, amount: 2, state: "UNSPENT" });
+    vi.stubGlobal("fetch", (request: RequestInfo | URL, init?: RequestInit) =>
+      requestOrigin(request) === ADDED_MINT_URL
+        ? addedMint.fetch(request, init)
+        : mint.fetch(request, init),
+    );
+    await openIndexOnly();
+    mocks.signer = { pubkey: "signer" };
+    // The earlier report of another browser names a market at a mint that
+    // this wallet does not use yet.
+    mocks.getAssets.mockResolvedValue({
+      assets: [
+        {
+          asset: {
+            kind: "conditional",
+            canonicalMintUrl: ADDED_MINT_URL,
+            conditionId: "cd".repeat(32),
+          },
+        },
+      ],
+      nextCursor: null,
+    });
+    const now = () => 1_000_000;
+
+    expect((await restorePass(now)).hintsSettled).toBe(true);
+    // The report gate opens for the wallet mints. The first report of this
+    // browser then replaces the earlier report at the engine.
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), [MINT_URL])).toBe(true);
+    mocks.getAssets.mockResolvedValue({ assets: [], nextCursor: null });
+
+    // The user adds the mint. Its restore has not run, so each report waits.
+    const mints = [MINT_URL, ADDED_MINT_URL];
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(false);
+
+    const added = await runBrowserSeedPositionRestorePass({
+      scopeId: scopeId(),
+      mnemonic: MNEMONIC,
+      mintUrl: ADDED_MINT_URL,
+      now,
+    });
+
+    expect(added.hintsSettled).toBe(true);
+    expect(await browserSeedPositionRestoreHintsSettled(scopeId(), mints)).toBe(true);
+    // The restore of the added mint used the market of the earlier report.
+    expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
   });
 
   it("keeps restoring while a hinted market listing fails and shows the error after repeated failures", async () => {

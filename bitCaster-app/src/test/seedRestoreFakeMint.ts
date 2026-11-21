@@ -85,8 +85,9 @@ function publicKeys(privateKeys: ReadonlyMap<number, Uint8Array>): Record<string
   );
 }
 
-export function regularKeyset(): FakeKeyset {
-  const privateKeys = privateKeysFor(1);
+/** A regular msat keyset. Another salt gives other keys, for a keyset of another mint. */
+export function regularKeyset(salt = 1): FakeKeyset {
+  const privateKeys = privateKeysFor(salt);
   const keys = publicKeys(privateKeys);
   return {
     id: deriveKeysetId(keys, { unit: "msat", input_fee_ppk: 0, versionByte: 1 }),
@@ -198,6 +199,8 @@ export class FakeMint {
   constructor(
     readonly regular: FakeKeyset,
     readonly conditional: readonly FakeKeyset[],
+    /** The origin of this mint. A test of two wallet mints routes each request by origin. */
+    readonly url: string = MINT_URL,
   ) {}
 
   sign(output: SignedOutput): void {
@@ -257,7 +260,7 @@ export class FakeMint {
     return this.requests.filter(
       ({ url }) =>
         url.pathname === "/api/v1/markets/query" ||
-        (url.origin === MINT_URL &&
+        (url.origin === this.url &&
           url.pathname === "/v1/conditional_keysets" &&
           url.searchParams.get("condition_id") === null),
     );
@@ -272,7 +275,7 @@ export class FakeMint {
   }
 
   requestsTo(path: string): MintRequest[] {
-    return this.requests.filter(({ url }) => url.origin === MINT_URL && url.pathname === path);
+    return this.requests.filter(({ url }) => url.origin === this.url && url.pathname === path);
   }
 
   /** The blinded messages of each NUT-09 request, in request order. */
@@ -296,7 +299,7 @@ export class FakeMint {
       this.index.nowSeconds = Math.floor(Date.now() / 1000);
       return this.index.fetch(request instanceof Request ? request.url : String(request), init);
     }
-    if (url.origin !== MINT_URL) return this.#engine(url);
+    if (url.origin !== this.url) return this.#engine(url);
     const allKeysets = [this.regular, ...this.conditional];
     const parsed = () => JSON.parse(body || "{}") as Record<string, unknown>;
     if (method === "GET" && url.pathname === "/v1/info") {
