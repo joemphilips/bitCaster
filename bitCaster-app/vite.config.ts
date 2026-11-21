@@ -4,12 +4,26 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { nodePolyfills } from "vite-plugin-node-polyfills";
 import { VitePWA } from "vite-plugin-pwa";
+import { CONTENT_SECURITY_POLICY_DIGEST } from "./content-security-policy.js";
 
 const require = createRequire(import.meta.url);
 
 export default defineConfig({
   plugins: [
     react(),
+    {
+      // The service worker serves the precached index.html with the server headers that it
+      // cached. The policy digest makes a policy change also change index.html, so that
+      // the service worker fetches index.html, and its policy, again.
+      name: "bitcaster-csp-revision",
+      transformIndexHtml: () => [
+        {
+          tag: "meta",
+          attrs: { name: "bitcaster-csp", content: CONTENT_SECURITY_POLICY_DIGEST },
+          injectTo: "head",
+        },
+      ],
+    },
     nodePolyfills({
       include: ["buffer", "process"],
       globals: {
@@ -138,10 +152,10 @@ export default defineConfig({
       },
       // NDK uses the tseep event emitter. Its default build calls listeners through
       // functions that it makes with eval, and the server's Content Security Policy
-      // blocks eval. The ee-safe build of the same emitter does not use eval.
+      // blocks eval. This module keeps the default build without eval.
       {
         find: /^tseep$/,
-        replacement: require.resolve("tseep/lib/ee-safe.js"),
+        replacement: path.resolve(__dirname, "src/lib/tseepWithoutEval.ts"),
       },
     ],
   },

@@ -1,15 +1,32 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { once } from 'node:events'
 import { readFileSync } from 'node:fs'
+import { createServer } from 'node:http'
 import { createRequire } from 'node:module'
 import { after, test } from 'node:test'
+import { CONTENT_SECURITY_POLICY } from '../content-security-policy.js'
 import { deadline, startFrontendServer } from './frontend-server.mjs'
 
-const { frontend } = await startFrontendServer({})
-after(async () => {
-  frontend.closeAllConnections()
-  await new Promise((resolve) => frontend.close(resolve))
+// The backend answers every proxied request without a policy of its own.
+const backend = createServer((_req, res) => {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end('{}')
 })
+let frontend
+after(async () => {
+  frontend?.closeAllConnections()
+  backend.closeAllConnections()
+  await Promise.all([
+    frontend ? new Promise((resolve) => frontend.close(resolve)) : undefined,
+    new Promise((resolve) => backend.close(resolve)),
+  ])
+})
+backend.listen(0, '127.0.0.1')
+await once(backend, 'listening', { signal: AbortSignal.timeout(deadline) })
+;({ frontend } = await startFrontendServer({
+  BACKEND_URL: `http://127.0.0.1:${backend.address().port}`,
+}))
 
 async function policyOf(path) {
   const response = await fetch(`http://127.0.0.1:${frontend.address().port}${path}`, {
@@ -19,6 +36,8 @@ async function policyOf(path) {
   assert.equal(response.status, 200, path)
   const header = response.headers.get('content-security-policy')
   assert.ok(header, `${path} has no Content-Security-Policy`)
+  // The build writes the digest of this shared policy into index.html.
+  assert.equal(header, CONTENT_SECURITY_POLICY, path)
   return Object.fromEntries(
     header
       .split(';')
@@ -61,9 +80,16 @@ const expected = {
   'form-action': ["'self'"],
 }
 
-test('the app document and its client routes carry the content security policy', async () => {
-  for (const path of ['/', '/markets/some-market', '/user/npub1example'])
+test('the app document, its client routes, the service worker and the API carry the policy', async () => {
+  // The source tree has no built sw.js, so the app fallback answers /sw.js here. The policy
+  // middleware runs before the static files, the fallback and the proxies.
+  for (const path of ['/', '/markets/some-market', '/user/npub1example', '/sw.js', '/api/probe'])
     assert.deepEqual(await policyOf(path), expected, path)
+  // The backend, not the app fallback, answered /api/probe.
+  const api = await fetch(`http://127.0.0.1:${frontend.address().port}/api/probe`, {
+    signal: AbortSignal.timeout(deadline),
+  })
+  assert.equal(await api.text(), '{}')
 })
 
 test('the hashed styles are the style attributes that the installed QR scanner writes', () => {

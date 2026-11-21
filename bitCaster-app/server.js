@@ -1,5 +1,6 @@
 // Production server for Azure App Service.
 // Mirrors Vite dev proxy (vite.config.ts) so frontend code uses relative URLs everywhere.
+import { CONTENT_SECURITY_POLICY } from "./content-security-policy.js";
 import { captureDeploymentIdentity, deploymentIdentityHandler } from "./deployment-identity.js";
 import compression from "compression";
 import express from "express";
@@ -19,31 +20,6 @@ const BACKEND_URL = process.env.BACKEND_URL;
 
 app.disable("x-powered-by");
 app.use(compression());
-
-// The production build loads its scripts, styles, workers and manifest from this origin.
-// - script-src: the oracle (Kormir) WASM needs 'wasm-unsafe-eval'. No inline script exists.
-// - style-src and font-src: index.html loads Google Fonts. The two hashes allow only the
-//   style attributes of the deposit QR scanner overlay (qr-scanner). No other inline style
-//   is allowed.
-// - img-src: Nostr profile pictures are https or data: images. Image previews are blob: URLs.
-// - connect-src: a user can add any https mint. Nostr relays use wss.
-// - worker-src: the deposit QR scanner starts its decoder worker from a blob: URL.
-const CONTENT_SECURITY_POLICY = [
-  "default-src 'self'",
-  "script-src 'self' 'wasm-unsafe-eval'",
-  "style-src 'self' https://fonts.googleapis.com 'unsafe-hashes'" +
-    " 'sha256-WJ4j1S+Lg0uXNK3sw0TRF93tPA//eAz36eL7k8Ss620='" +
-    " 'sha256-FjZ9tznq9lxGuKN6dQKvforasppptrlhMV7TcBgRDq0='",
-  "font-src 'self' https://fonts.gstatic.com",
-  "img-src 'self' data: blob: https:",
-  "connect-src 'self' https: wss:",
-  "worker-src 'self' blob:",
-  "manifest-src 'self'",
-  "object-src 'none'",
-  "base-uri 'self'",
-  "frame-ancestors 'none'",
-  "form-action 'self'",
-].join("; ");
 
 // Security headers
 app.use((_req, res, next) => {
@@ -202,6 +178,7 @@ app.get("/deployment-identity", deploymentIdentityHandler(identity));
 app.use(
   [
     "/server.js",
+    "/content-security-policy.js",
     "/deployment-identity.js",
     "/deployment-identity.json",
     "/package.json",
