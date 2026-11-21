@@ -35,6 +35,7 @@ import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { NativeDialog } from "@/components/shared/NativeDialog";
 import { NostrProfilePanel } from "./NostrProfilePanel";
+import { ParticipationScoreHistory } from "./ParticipationScoreHistory";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 
 //─── Segmented Control ──────────────────────────────────────────────────────
@@ -151,6 +152,7 @@ export function Settings({
   onSaveNostrProfileEdit,
   onAddRelay,
   onRemoveRelay,
+  onLoadParticipationScoreHistory,
 }: SettingsProps) {
   const { t } = useTranslation();
   const { general, cashu, nostr } = settings;
@@ -860,6 +862,13 @@ export function Settings({
               </p>
             )}
           </div>
+        )}
+
+        {signerConnected && onLoadParticipationScoreHistory && (
+          <ParticipationScoreHistory
+            key={nostr.profileEditorKey ?? nostr.signerMode}
+            load={onLoadParticipationScoreHistory}
+          />
         )}
 
         {/* Relay Management */}

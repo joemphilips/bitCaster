@@ -1,10 +1,5 @@
 import { Mint as CashuMint, splitAmount, type Proof } from "@cashu/cashu-ts";
-import {
-  EngineClientError,
-  isDefinitiveOrderSubmissionError,
-  type NostrKind1Event,
-  type SubmitOrderResponse,
-} from "@bitcaster/client-sdk/engineClient";
+import { type NostrKind1Event, type SubmitOrderResponse } from "@bitcaster/client-sdk/engineClient";
 import {
   loadCtfRangeMintMetadata,
   type CtfRangeMintMetadataClient,
@@ -17,7 +12,6 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeCapabilitySourcePlan";
 import { planCtfRangeSourceConsolidation } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
 import type { CtfRangeSourceMode } from "@bitcaster/client-sdk/ctfRangeSourceOperation";
-import { planCtfRangeOrderAuthorization } from "@bitcaster/client-sdk/ctfRangeOrderAuthorization";
 import {
   assertCtfRangeOrderFeeConsent,
   composeCtfRangeOrderFeeFacts,
@@ -29,7 +23,9 @@ import {
   planPersistedCtfRangeOrderAuthorization,
   previewCtfRangeSettlementCapabilityWorkFacts,
   reconstructCtfRangePreparation,
+  type CtfRangePreparationIntent,
   type PersistedCtfRangeOrderPreparation,
+  type PersistedCtfRangeOrderPreparationV2,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
 import {
   CURRENT_SETTLEMENT_CAPABILITY_TARIFF_RULE_ID,
@@ -42,8 +38,9 @@ import { toSeed } from "@/lib/bip39";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
 import type { MarketDetail } from "@/types/market-detail";
 import { getBoundedCanonicalRangeProofsForKeyset } from "@/stores/proof-db";
-import { getWalletForMnemonicUnit, useWalletStore } from "@/stores/wallet";
+import { getWalletForMnemonicUnit } from "@/stores/wallet";
 import {
+  BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
   BrowserCtfRangeOrderCoordinator,
   BrowserCtfRangeOrderError,
   buildBrowserCtfRangeOrderPreparation,
@@ -55,10 +52,11 @@ import {
 } from "./browserCtfRangeOrderCoordinator";
 import { sharedBrowserCtfRangeRecoverySchedule } from "./browserCtfRangeRecoverySchedule";
 import {
-  createBuyReceiveProbeCache,
-  probeBuyReceiveRange,
   browserSeedCounterRestoreClient,
-} from "./browserCtfRangeCounterProbe";
+  reserveCheckedBrowserCtfRangePreparation,
+} from "./browserCtfRangeOrderOutputCheck";
+import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
+import type { SeedCounterSkip } from "@bitcaster/client-sdk/seedCounterGapScan";
 import { createAuthenticatedBrowserEngineClient } from "./markets";
 import {
   readCtfRangePreparation,
@@ -72,16 +70,23 @@ import {
   resolveTerminalBrowserCtfRangeMessages,
 } from "@/stores/ctf-range-order-messages";
 import type { CtfRangeOrderPreparationLifecycle } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
-import { recoverBrowserFundedAsset } from "./browserFundedAssetRecovery";
+import { classifyBrowserFundedPlan } from "./browserFundedPlan";
+import {
+  isLocalCtfRangeOrderRefusal,
+  isTerminalCtfRangePreparation,
+} from "./ctfRangeOrderLifecycle";
 import { activeBrowserWalletScopeId } from "./browserWalletProfile";
 import { browserRangeSourceAsset } from "./browserCtfRangeOrderSource";
 import {
   WalletKeysetCounterPendingError,
+  WalletKeysetCounterReadinessError,
   advanceWalletKeysetCounterPastMint,
   advanceWalletKeysetCounterPastSignedOutputs,
   ensureWalletKeysetCounterReady,
 } from "./cashu";
 import { requestBrowserKeysetResync } from "@/stores/seed-restore-db";
+import { RECOVERY_INDEX_READ_MINT_REFUSAL_CODES } from "@bitcaster/client-sdk/recoveryIndexSync";
+import { readBrowserRecoveryIndexAfterMintRefusal } from "./browserRecoveryIndex";
 import i18n from "@/i18n";
 import { ensureParticipationScoreForNextMatch } from "./participationScorePayment";
 import {
@@ -94,8 +99,6 @@ import {
 } from "./browserCtfRangeOrderRecoveryWake";
 
 const MINT_METADATA_CACHE_TTL_MS = 30_000;
-/** The preview and the submit share clean buy receive-range probes. */
-const buyReceiveProbeCache = createBuyReceiveProbeCache();
 const MINT_METADATA_CACHE_LIMIT = 64;
 const ADMISSION_POLICY_CACHE_TTL_MS = 30_000;
 const BROWSER_CONSOLIDATION_ROUNDS_MAX = 256;
@@ -172,9 +175,6 @@ export async function previewBrowserCtfRangeOrderFees(input: {
     ...input,
     clientOrderId: crypto.randomUUID(),
   });
-  // Probe during the preview so the submit adds no mint round trip. A failed
-  // probe here only means that the submit probes again.
-  await previewBuyReceiveCounters(scopeId, preparation).catch(() => undefined);
   const selection = await loadBrowserRangeSourceSelection(
     preparation,
     scopeId,
@@ -281,27 +281,12 @@ export async function submitBrowserCtfRangeOrder(
     } catch (error) {
       throw counterReadinessError(error);
     }
-    const counterStore = new BrowserWalletCounterDexieStore({
-      database: db,
+    const reservation = await reserveCheckedRangePreparation(
       scopeId,
-      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-    });
-    try {
-      // Reuses the preview's clean probe unless the receive cursor moved.
-      await probeBuyReceiveCounters(scopeId, basePreparation, seed, counterStore);
-    } catch {
-      throw new BrowserCtfRangeOrderError(
-        "source-preparation-failed",
-        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
-      );
-    }
-    const reservation = await counterStore.reserveCtfPreparationInContext({
-      context: { mintUrl: basePreparation.mintUrl, unit: "msat" },
-      preparation: basePreparation,
-      intent: preparationIntent.intent,
+      basePreparation,
+      preparationIntent.intent,
       seed,
-      createdAtMs: Date.now(),
-    });
+    );
     preparation = decodeCtfRangeOrderPreparationFromRecord(reservation.record);
     reconstructCtfRangePreparation(preparation, seed);
     sourceCountersReady = !reservation.replayed;
@@ -358,8 +343,11 @@ export async function submitBrowserCtfRangeOrder(
     });
   } catch (error) {
     failed = true;
-    if (seedUsedElsewhere(error instanceof BrowserCtfRangeOrderError ? error.mintError : null)) {
-      // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
+    const mintError = error instanceof BrowserCtfRangeOrderError ? error.mintError : null;
+    if (seedUsedElsewhere(mintError)) {
+      // Another client used the seed. Re-sync the keysets in use at once, and
+      // read the recovery index again (ADR-033).
+      readBrowserRecoveryIndexAfterMintRefusal(scopeId, mintError!.code);
       await requestBrowserKeysetResync({ scopeId, mintUrl: preparation.mintUrl }).catch(
         () => undefined,
       );
@@ -375,7 +363,12 @@ export async function submitBrowserCtfRangeOrder(
     // A refused second sell locked nothing, so it needs no durable alert.
     if (durableCode !== null && durableCode !== "source-preparation-pending") {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
-      if (record !== null) {
+      if (record !== null && stoppedByUser(input.signal, record.lifecycleState)) {
+        // The user stopped the wait, left the page, or changed the preview.
+        // The coordinator records that as a refused request because no
+        // attempt committed, but the engine refused nothing. The progress
+        // panel shows the order until its refund; it is not an order failure.
+      } else if (record !== null) {
         await persistRangeMessages({
           scopeId,
           operationId: preparation.operationId,
@@ -470,15 +463,7 @@ async function consolidateBrowserRangeSource(
     default:
       return assertNever(initial);
   }
-  const recovered = await recoverRangeSourcePlan(input);
-  switch (recovered.kind) {
-    case "direct":
-      return directRangeSource(input, "0", recovered.selection);
-    case "consolidation":
-      return executeConsolidationRounds(input, recovered.plan);
-    default:
-      return assertNever(recovered);
-  }
+  return executeConsolidationRounds(input, await recoverRangeSourcePlan(input));
 }
 
 function directRangeSource(
@@ -497,40 +482,20 @@ function directRangeSource(
 
 async function recoverRangeSourcePlan(
   input: BrowserRangeSourceInput,
-): Promise<RecoveredRangeSourcePlan> {
-  const recovery = await recoverBrowserFundedAsset({
-    scopeId: input.scopeId,
-    seed: input.seed,
-    mnemonic: input.mnemonic,
+): Promise<ReadyRangeSourcePlan> {
+  const recovery = await classifyBrowserFundedPlan({
     asset: rangeSourceAsset(input.preparation),
-    requiredAmount: rangeSourceRequiredAmount(input.preparation),
     loadPlan: () => loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
     isCurrentProfile: () => activeBrowserWalletScopeId() === input.scopeId,
   });
   switch (recovery.kind) {
     case "ready":
-      return { kind: "consolidation", plan: readyRangeSourcePlan(recovery.plan) };
-    case "recovered": {
-      // Recovered custody gets the same selection policy as a fresh preview.
-      const selection = await loadBrowserRangeSourceSelection(
-        input.preparation,
-        input.scopeId,
-        input.maxOutputs,
-        "cash-funded-preferred",
-      );
-      if (selection.kind === "direct") return { kind: "direct", selection };
-      return {
-        kind: "consolidation",
-        plan: postRecoveryRangeSourcePlan(
-          await loadBrowserRangeConsolidationPlan(input.preparation, input.scopeId),
-        ),
-      };
-    }
+      return readyRangeSourcePlan(recovery.plan);
     case "persistent-error":
       throw assetRecoveryFailed();
     case "unavailable":
       throw rangeSourcePlanError("insufficient");
-    case "not-recoverable":
+    case "limited":
       throw rangeSourcePlanError(
         recovery.plan.kind === "ready" ? "insufficient" : recovery.plan.kind,
       );
@@ -540,18 +505,6 @@ async function recoverRangeSourcePlan(
 }
 
 type DirectBrowserRangeSourceSelection = Extract<BrowserRangeSourceSelection, { kind: "direct" }>;
-
-type RecoveredRangeSourcePlan =
-  | { readonly kind: "direct"; readonly selection: DirectBrowserRangeSourceSelection }
-  | { readonly kind: "consolidation"; readonly plan: ReadyRangeSourcePlan };
-
-function postRecoveryRangeSourcePlan(
-  plan: Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
-): ReadyRangeSourcePlan {
-  if (plan.kind === "ready") return plan;
-  if (plan.kind === "insufficient") throw assetRecoveryFailed();
-  throw rangeSourcePlanError(plan.kind);
-}
 
 type ReadyRangeSourcePlan = Extract<
   Awaited<ReturnType<typeof loadBrowserRangeConsolidationPlan>>,
@@ -827,21 +780,6 @@ export class BrowserCtfRangeScoreTopUpCancelledError extends Error {
     super("Participation Score top-up was cancelled.");
     this.name = "BrowserCtfRangeScoreTopUpCancelledError";
   }
-}
-
-function rangeSourceRequiredAmount(preparation: PersistedCtfRangeOrderPreparation): bigint {
-  return BigInt(
-    planCtfRangeOrderAuthorization({
-      side: preparation.side,
-      priceNumerator: preparation.priceNumerator,
-      amountSubunits: preparation.amountSubunits,
-      divisibility: preparation.divisibility,
-      inputFeePpk: preparation.offerKeyset.inputFeePpk,
-      offerKeysetKeys: preparation.offerKeyset.keys,
-      maxPoolEntries: preparation.maxPoolEntries,
-      maxInputs: preparation.maxInputs,
-    }).inputAmount,
-  );
 }
 
 function conditionalCounterAsset(keyset: PersistedCtfRangeOrderPreparation["offerKeyset"]) {
@@ -1164,22 +1102,29 @@ export async function recoverBrowserCtfRangeOrders(input: {
   let recovered = 0;
   const pending: BrowserCtfRangeRecoveryPending[] = [];
   let priorCursor = "";
-  do {
-    const page = await coordinator.recoverPage({
-      seed,
-      limit: 64,
-      ...(after === undefined ? {} : { after }),
-    });
-    recovered += page.recoveredOperationIds.length;
-    pending.push(...page.pending);
-    await persistRecoveryResults(scopeId, page);
-    if (page.nextCursor === null) break;
-    const cursor = JSON.stringify(page.nextCursor);
-    if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
-    priorCursor = cursor;
-    after = page.nextCursor;
-    await Promise.resolve();
-  } while (after !== undefined);
+  let refusalCode: number | null = null;
+  try {
+    do {
+      const page = await coordinator.recoverPage({
+        seed,
+        limit: 64,
+        ...(after === undefined ? {} : { after }),
+      });
+      recovered += page.recoveredOperationIds.length;
+      pending.push(...page.pending);
+      refusalCode ??= await persistRecoveryResults(scopeId, page);
+      if (page.nextCursor === null) break;
+      const cursor = JSON.stringify(page.nextCursor);
+      if (cursor === priorCursor) throw new Error("Browser range recovery cursor did not advance.");
+      priorCursor = cursor;
+      after = page.nextCursor;
+      await Promise.resolve();
+    } while (after !== undefined);
+  } finally {
+    // One index read for the pass: each read is an engine presence
+    // observation (ADR-034 "Engine privacy").
+    if (refusalCode !== null) readBrowserRecoveryIndexAfterMintRefusal(scopeId, refusalCode);
+  }
   return { recovered, pending };
 }
 
@@ -1205,7 +1150,8 @@ export async function recoverBrowserCtfRangeOrder(input: {
     seed,
     clientOrderId: input.clientOrderId,
   });
-  await persistRecoveryResults(scopeId, recovery);
+  const refusalCode = await persistRecoveryResults(scopeId, recovery);
+  if (refusalCode !== null) readBrowserRecoveryIndexAfterMintRefusal(scopeId, refusalCode);
   return { recovered: recovery.recoveredOperationIds.length, pending: recovery.pending };
 }
 
@@ -1220,7 +1166,7 @@ async function resolveRecoveredRangeMessages(
 ): Promise<void> {
   for (const operationId of operationIds) {
     const record = await readCtfRangePreparation(scopeId, operationId);
-    if (record === null || !isTerminalRangePreparation(record.lifecycleState)) continue;
+    if (record === null || !isTerminalCtfRangePreparation(record.lifecycleState)) continue;
     await resolveTerminalBrowserCtfRangeMessages({
       scopeId,
       operationId,
@@ -1229,28 +1175,19 @@ async function resolveRecoveredRangeMessages(
   }
 }
 
-function isTerminalRangePreparation(state: CtfRangeOrderPreparationLifecycle): boolean {
-  switch (state) {
-    case "terminal":
-      return true;
-    case "prepared":
-    case "capability-requested":
-    case "capability-bound":
-    case "order-submitted":
-    case "submission-rejected":
-      return false;
-    default:
-      return assertNever(state);
-  }
-}
-
+/**
+ * Persist the results of one recovery page. Return the mint code of the first
+ * refusal that shows another client of the seed, or null. The caller reads the
+ * recovery index once for the pass.
+ */
 async function persistRecoveryResults(
   scopeId: string,
   page: Omit<BrowserCtfRangeRecoveryPage, "nextCursor">,
-): Promise<void> {
+): Promise<number | null> {
   for (const message of page.pending) await persistRecoveryPending(scopeId, message);
-  // The automatic replay stopped. The funds alert shows the mint code and a
-  // retry. It returns on every pass, also after the user dismissed it.
+  // The automatic replay stopped. The funds alert shows the mint code, when
+  // the mint refused, and a retry. It returns on every pass, also after the
+  // user dismissed it.
   for (const halted of page.attention) {
     await raiseBrowserCtfRangeAttentionMessage({
       scopeId,
@@ -1259,15 +1196,12 @@ async function persistRecoveryResults(
       code: "recovery-pending",
       kind: "funds",
       observedAtMs: Date.now(),
-      mintError: halted.mintError,
+      ...mintErrorField(halted.mintError),
       retryable: true,
     });
   }
-  const evidenceMints = new Set(
-    page.refused
-      .filter(({ mintError }) => seedUsedElsewhere(mintError))
-      .map(({ mintUrl }) => mintUrl),
-  );
+  const evidence = page.refused.filter(({ mintError }) => seedUsedElsewhere(mintError));
+  const evidenceMints = new Set(evidence.map(({ mintUrl }) => mintUrl));
   for (const mintUrl of evidenceMints) {
     // Another client used the seed. Re-sync the keysets in use at once (ADR-033).
     await requestBrowserKeysetResync({ scopeId, mintUrl }).catch(() => undefined);
@@ -1286,6 +1220,7 @@ async function persistRecoveryResults(
     });
   }
   await resolveRecoveredRangeMessages(scopeId, page.recoveredOperationIds);
+  return evidence[0]?.mintError?.code ?? null;
 }
 
 async function persistRecoveryPending(
@@ -1298,6 +1233,7 @@ async function persistRecoveryPending(
     // retry, as a failure.
     case "awaiting-authorization-expiry":
     case "awaiting-mint-retry":
+    case "awaiting-order-confirmation":
       return;
     default:
       await persistRangeMessages({
@@ -1311,11 +1247,10 @@ async function persistRecoveryPending(
   }
 }
 
-// The mint refused reused outputs or spent inputs: another client used the seed.
-const SEED_USED_ELSEWHERE_MINT_CODES: ReadonlySet<number> = new Set([11001, 11003, 11008]);
-
+// The mint refused reused outputs or spent inputs: another client used the
+// seed. These are the refusals after which the browser reads the index (ADR-033).
 function seedUsedElsewhere(mintError: BrowserCtfRangeMintError | null | undefined): boolean {
-  return mintError != null && SEED_USED_ELSEWHERE_MINT_CODES.has(mintError.code);
+  return mintError != null && RECOVERY_INDEX_READ_MINT_REFUSAL_CODES.has(mintError.code);
 }
 
 /** The order was not submitted. A PENDING restored proof has its own message. */
@@ -1332,6 +1267,14 @@ function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
   mintError?: BrowserCtfRangeMintError;
 } {
   return mintError === null ? {} : { mintError };
+}
+
+/** Only the user's own signal ends a wait as a refused request. */
+function stoppedByUser(
+  signal: AbortSignal | undefined,
+  lifecycleState: CtfRangeOrderPreparationLifecycle,
+): boolean {
+  return signal?.aborted === true && isLocalCtfRangeOrderRefusal(lifecycleState);
 }
 
 async function persistRangeMessages(input: {
@@ -1370,6 +1313,14 @@ function createBrowserCtfRangeCoordinator(
   return new BrowserCtfRangeOrderCoordinator({
     wallet: (mintUrl) => getWalletForMnemonicUnit(mintUrl, "msat", mnemonic),
     engine,
+    sourceOutputCheck: {
+      mint: browserSeedCounterRestoreClient,
+      skipSignedCounters: (keyset, skip) => {
+        const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+        if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+        return skipSignedBrowserCounters(scopeId, keyset.canonicalMintUrl)(keyset, skip);
+      },
+    },
     allowInsecureLoopbackHttp,
     recoverySchedule: sharedBrowserCtfRangeRecoverySchedule(),
     // The coordinator holds the profile lock and the custody scope here. The
@@ -1419,59 +1370,75 @@ function createBrowserCtfRangeCoordinator(
         });
       }
     },
-    isDefinitiveOrderRejection: (error) =>
-      error instanceof EngineClientError && isDefinitiveOrderSubmissionError(error),
   });
 }
 
 /**
- * Another client with this seed can have signed a buy's planned receive
- * outputs. The engine's group convert would then reject every participant.
+ * Check every output of a new order with the mint before the order reserves
+ * its counters (ADR-037 reused-output amendment, decision 14). Another client
+ * of this seed can already have signed outputs at these counters: a reused
+ * pool output rejects the settlement group and charges the reused-output
+ * penalty. A hit moves the counter past the signed outputs and asks for a
+ * re-sync. When the check cannot finish, nothing is reserved or submitted.
  */
-async function probeBuyReceiveCounters(
+async function reserveCheckedRangePreparation(
   scopeId: string,
-  preparation: PersistedCtfRangeOrderPreparation,
+  preparation: PersistedCtfRangeOrderPreparationV2,
+  intent: CtfRangePreparationIntent,
   seed: Uint8Array,
-  counterStore: BrowserWalletCounterDexieStore,
-): Promise<void> {
-  if (preparation.version !== 2) return;
-  await probeBuyReceiveRange({
-    scopeId,
-    counterStore,
-    preparation,
-    seed,
-    mint: browserSeedCounterRestoreClient(preparation.mintUrl),
-    cache: buyReceiveProbeCache,
-    advancePastSignedOutputs: (keyset, fromCounter, nextCounter) =>
-      advanceWalletKeysetCounterPastSignedOutputs({
+): ReturnType<typeof reserveCheckedBrowserCtfRangePreparation> {
+  try {
+    return await reserveCheckedBrowserCtfRangePreparation({
+      counterStore: new BrowserWalletCounterDexieStore({
+        database: db,
         scopeId,
-        mintUrl: preparation.mintUrl,
-        unit: "msat",
-        keyset,
-        ...conditionalCounterAsset(keyset),
-        fromCounter,
-        nextCounter,
+        isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
       }),
-  });
+      preparation,
+      intent,
+      seed,
+      mint: browserSeedCounterRestoreClient(preparation.mintUrl),
+      createdAtMs: Date.now(),
+      skipSignedCounters: skipSignedBrowserCounters(scopeId, preparation.mintUrl),
+    });
+  } catch (error) {
+    if (
+      error instanceof CtfRangeOrderOutputCheckError ||
+      error instanceof WalletKeysetCounterReadinessError
+    ) {
+      throw new BrowserCtfRangeOrderError(
+        "source-preparation-failed",
+        BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE,
+      );
+    }
+    throw error;
+  }
 }
 
-async function previewBuyReceiveCounters(
+/**
+ * Move one order keyset past outputs that another client of this seed signed.
+ * The checked range starts the deferral, so a later pass admits the skipped
+ * outputs (ADR-033). It admits no proof, so it can run while the caller holds
+ * the profile lock and the custody scope.
+ */
+function skipSignedBrowserCounters(
   scopeId: string,
-  preparation: PersistedCtfRangeOrderPreparation,
-): Promise<void> {
-  if (preparation.side !== "Buy") return;
-  const mnemonic = useWalletStore.getState().mnemonic;
-  if (!mnemonic || browserWalletScopeIdFromMnemonic(mnemonic) !== scopeId) return;
-  await probeBuyReceiveCounters(
-    scopeId,
-    preparation,
-    toSeed(mnemonic.trim().split(/\s+/).filter(Boolean)),
-    new BrowserWalletCounterDexieStore({
-      database: db,
+  mintUrl: string,
+): (
+  keyset: PersistedCtfRangeOrderPreparation["offerKeyset"],
+  skip: SeedCounterSkip,
+) => Promise<void> {
+  return (keyset, skip) =>
+    advanceWalletKeysetCounterPastSignedOutputs({
       scopeId,
-      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-    }),
-  );
+      mintUrl,
+      unit: "msat",
+      keyset,
+      ...conditionalCounterAsset(keyset),
+      fromCounter: skip.fromCounter,
+      lastSignedCounter: skip.lastSignedCounter,
+      nextCounter: skip.nextCounter,
+    });
 }
 
 function isLoopbackMint(mintUrl: string): boolean {

@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   executeOutgoing: vi.fn(),
   getBoundedCanonicalRegularProofs: vi.fn(),
   getWalletForUnit: vi.fn(),
-  recoverFundedAsset: vi.fn(),
+  classifyFundedPlan: vi.fn(),
   readOutgoing: vi.fn(),
   registerCondition: vi.fn(),
   restoreExactMintOutputs: vi.fn(),
@@ -24,8 +24,8 @@ vi.mock("@/lib/browserDurableOutgoingCashuTransfer", () => ({
   readBrowserDurableOutgoingCashuTransfer: (...args: unknown[]) => mocks.readOutgoing(...args),
 }));
 
-vi.mock("@/lib/browserFundedAssetRecovery", () => ({
-  recoverBrowserFundedAsset: (...args: unknown[]) => mocks.recoverFundedAsset(...args),
+vi.mock("@/lib/browserFundedPlan", () => ({
+  classifyBrowserFundedPlan: (...args: unknown[]) => mocks.classifyFundedPlan(...args),
 }));
 
 vi.mock("@/lib/cashu", () => ({
@@ -179,7 +179,7 @@ describe("registerConditionWithFee", () => {
     mocks.getWalletForUnit.mockResolvedValue(mocks.wallet);
     mocks.readOutgoing.mockResolvedValue(null);
     mocks.getBoundedCanonicalRegularProofs.mockResolvedValue([registrationProof()]);
-    mocks.recoverFundedAsset.mockResolvedValue({
+    mocks.classifyFundedPlan.mockResolvedValue({
       kind: "ready",
       plan: { kind: "ready" },
     });
@@ -319,7 +319,7 @@ describe("registerConditionWithFee", () => {
 
     const outgoing = mocks.executeOutgoing.mock.calls[0]![0];
     await outgoing.preflightFundedAsset();
-    const recovery = mocks.recoverFundedAsset.mock.calls[0]![0];
+    const recovery = mocks.classifyFundedPlan.mock.calls[0]![0];
     await expect(recovery.loadPlan()).resolves.toEqual({ kind: "ready" });
     expect(mocks.getBoundedCanonicalRegularProofs).toHaveBeenCalledWith(
       "https://mint.example.test",
@@ -354,7 +354,7 @@ describe("registerConditionWithFee", () => {
     });
     const outgoing = mocks.executeOutgoing.mock.calls[0]![0];
 
-    mocks.recoverFundedAsset.mockResolvedValueOnce({ kind: "unavailable" });
+    mocks.classifyFundedPlan.mockResolvedValueOnce({ kind: "unavailable" });
     await expect(outgoing.preflightFundedAsset()).rejects.toThrow(
       "Not enough regular msat proofs are available for the 3 msat condition registration fee.",
     );

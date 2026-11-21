@@ -1,8 +1,11 @@
-import { render, screen, fireEvent } from "@testing-library/react";
+import { render, screen, fireEvent, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { NotificationBell } from "../NotificationBell";
 import { useNotificationsStore, type Notification } from "@/stores/notifications";
+import { orderFailureNoticeKey, useOrderFailureNotices } from "@/stores/orderFailureNotices";
 import i18n from "@/i18n";
+import en from "@/i18n/locales/en.json";
+import ja from "@/i18n/locales/ja.json";
 
 const COND = "b".repeat(64);
 const TITLE = "Will Alice win the 2026 cup?";
@@ -47,6 +50,7 @@ function openBell(onNavigate?: (href: string) => void) {
 
 beforeEach(async () => {
   useNotificationsStore.setState({ items: [] });
+  useOrderFailureNotices.setState({ notices: {} });
   await i18n.changeLanguage("en");
 });
 
@@ -158,6 +162,92 @@ describe("NotificationBell order failures", () => {
 
     expect(screen.queryByText(/Order cancelled/i)).not.toBeInTheDocument();
     expect(navigated).toBe(`/markets/${COND}`);
+  });
+
+  // The reason and the funds sentence of the notice form one paragraph.
+  it.each([
+    [
+      "en",
+      "OwnOutputReused",
+      "pending",
+      `${en.settlementProgress.OwnOutputReused} ${en.settlementProgress.fundsPending}`,
+    ],
+    [
+      "ja",
+      "GroupOutputReused",
+      "refunded",
+      `${ja.settlementProgress.GroupOutputReused}${ja.settlementProgress.fundsReturned}`,
+    ],
+    ["en", "Unspecified", "ended", en.settlementProgress.failed],
+  ] as const)(
+    "shows the recorded failure reason in the %s Failed notification, also after dismissal (%s, funds %s)",
+    async (language, reason, funds, text) => {
+      await i18n.changeLanguage(language);
+      useNotificationsStore.getState().add(orderNotice("Matched", 1_000, 0));
+      useNotificationsStore
+        .getState()
+        .add({ ...orderNotice("Failed", 0, 1_000), id: "order-1-failed" });
+      useOrderFailureNotices.getState().record({
+        scopeId: "scope-1",
+        operationId: "operation-1",
+        orderId: "order-1",
+        marketId: `${COND}-Yes`,
+        marketTitle: null,
+        reason,
+      });
+      if (funds !== "pending")
+        useOrderFailureNotices
+          .getState()
+          .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: funds });
+      useOrderFailureNotices.getState().dismiss("scope-1", "operation-1");
+
+      openBell();
+
+      const entries = screen.getAllByRole("listitem");
+      expect(entries).toHaveLength(2);
+      const failed = entries.find((entry) => entry.textContent?.includes(text));
+      expect(failed).toBeDefined();
+      expect(within(failed!).getByText(text)).toBeVisible();
+      // Only the Failed entry of the order carries the reason.
+      expect(screen.getAllByText(text)).toHaveLength(1);
+    },
+  );
+
+  it("shows no failure reason for an order whose settlement completed after all", () => {
+    useNotificationsStore
+      .getState()
+      .add({ ...orderNotice("Failed", 0, 1_000), id: "order-1-failed" });
+    useOrderFailureNotices.getState().record({
+      scopeId: "scope-1",
+      operationId: "operation-1",
+      orderId: "order-1",
+      marketId: `${COND}-Yes`,
+      marketTitle: null,
+      reason: "OwnOutputReused",
+    });
+    useOrderFailureNotices
+      .getState()
+      .settleFunds({ [orderFailureNoticeKey("scope-1", "operation-1")]: "settled" });
+
+    openBell();
+
+    expect(screen.getByRole("listitem")).not.toHaveTextContent(
+      en.settlementProgress.OwnOutputReused,
+    );
+  });
+
+  it("shows a Failed notification without a recorded reason as before", () => {
+    useNotificationsStore
+      .getState()
+      .add({ ...orderNotice("Failed", 0, 1_000), id: "order-1-failed" });
+
+    openBell();
+
+    const entry = screen.getByRole("listitem");
+    expect(entry).toHaveTextContent(`Order failed on “${TITLE}”`);
+    expect(entry).not.toHaveTextContent(en.settlementProgress.OwnOutputReused);
+    expect(entry).not.toHaveTextContent(en.settlementProgress.GroupOutputReused);
+    expect(entry).not.toHaveTextContent(en.settlementProgress.failed);
   });
 });
 

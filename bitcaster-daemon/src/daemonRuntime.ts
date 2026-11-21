@@ -1,4 +1,5 @@
 import type { Server } from 'node:http'
+import { boundedErrorText } from './mintErrorText.ts'
 import { createOrderTimelineStderrSink } from './orderTimeline.ts'
 import { randomUUID } from 'node:crypto'
 import {
@@ -18,11 +19,36 @@ export interface DaemonRuntimeOptions {
   readonly authorizationLifetimeSeconds?: number
 }
 
+/**
+ * A forward-only profile schema upgrade runs only under the run lock, so no
+ * older daemon holds the profile open. A missing profile is left to validation.
+ */
+async function upgradeProfileUnderRunLock(
+  acquireDaemonRunLock: typeof import('./runLock.ts').acquireDaemonRunLock,
+): Promise<void> {
+  const { access } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const { DAEMON_PROFILE_DATABASE } = await import('./profileSchema.ts')
+  try {
+    await access(join(profileDir(), DAEMON_PROFILE_DATABASE))
+  } catch {
+    return
+  }
+  const lock = await acquireDaemonRunLock()
+  try {
+    const { upgradeDaemonProfileSchema } = await import('./profileSchemaUpgrade.ts')
+    await upgradeDaemonProfileSchema(profileDir())
+  } finally {
+    await lock.release()
+  }
+}
+
 export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Promise<void> {
   const observeOrderTimeline = createOrderTimelineStderrSink(process.stderr)
   const nativeConfig = freezeNativeConfigAtStartup().config
-  await assertDaemonProfileStorageComplete()
   const { acquireDaemonRunLock } = await import('./runLock.ts')
+  await upgradeProfileUnderRunLock(acquireDaemonRunLock)
+  await assertDaemonProfileStorageComplete()
   const { startDaemonServer } = await import('./server.ts')
   const { SignalROrderLifecycleConnection } = await import('./orderHubConnection.ts')
   const { SignalRMarketHubConnection } = await import('./marketHubConnection.ts')
@@ -330,12 +356,11 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         onResult: (result) => {
           logRangeRecovery(result)
           void wakeManagedConditionRetirements().catch((error: unknown) => {
-            const message = error instanceof Error ? error.message : String(error)
-            process.stderr.write(`Condition retirement wake failed: ${message}\n`)
+            process.stderr.write(`Condition retirement wake failed: ${boundedErrorText(error)}\n`)
           })
         },
         onError: (error: Error) => {
-          process.stderr.write(`Range recovery sweep failed: ${error.message}\n`)
+          process.stderr.write(`Range recovery sweep failed: ${boundedErrorText(error)}\n`)
         },
       })
     rangeRecoveryLoop?.accept(initialRangeRecovery)
@@ -593,7 +618,9 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         }
       },
       onError: (error: Error) => {
-        process.stderr.write(`Automatic non-retirement custody recovery failed: ${error.message}\n`)
+        process.stderr.write(
+          `Automatic non-retirement custody recovery failed: ${boundedErrorText(error)}\n`,
+        )
       },
       retryAfterError: () => readiness.isRetryPending(),
     })

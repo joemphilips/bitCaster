@@ -1610,7 +1610,7 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+    /// How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split; `Merge` pairs two Sells for complementary outcome sets, which merge into collateral. The engine does not send `Merge` yet. Until it does, it reports a Sell matched against a Sell of the complementary set as `Complementary`, with the taker's token side and execution price. Clients must accept `Merge`, because a later engine version will send it.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
@@ -1622,6 +1622,9 @@ namespace BitCaster.MatchingEngine.Contracts
 
         [System.Runtime.Serialization.EnumMember(Value = @"Mint")]
         Mint = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"Merge")]
+        Merge = 2,
 
     }
 
@@ -2055,26 +2058,34 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     /// <summary>
-    /// Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority.
+    /// Order submission. The body holds exactly one of settlementCapability (reference form) and settlementCapabilityAdmission (admission form). A body with both forms or with neither form gets 400 order-invalid-request. In the reference form the server loads all immutable order identity and economic terms from the current durable DCB binding. In the admission form the server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. A reference is not bearer authority.
     /// <br/>
     /// </summary>
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public partial class SubmitOrderRequest
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference @settlementCapability, string? @walletId)
+        public SubmitOrderRequest(NostrKind1Event? @comment, SettlementCapabilityReference? @settlementCapability, CreateSettlementCapabilityRequest? @settlementCapabilityAdmission, string? @walletId)
         {
             this.SettlementCapability = @settlementCapability;
+            this.SettlementCapabilityAdmission = @settlementCapabilityAdmission;
             this.Comment = @comment;
             this.WalletId = @walletId;
         }
 
         /// <summary>
-        /// Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state.
+        /// Reference form. A current capability binding from POST /api/v1/settlement-capabilities. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state.
         /// <br/>
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
-        public SettlementCapabilityReference SettlementCapability { get; }
+        public SettlementCapabilityReference? SettlementCapability { get; }
+
+        /// <summary>
+        /// Admission form. The capability artifact and order intent, with the same fields and limits as POST /api/v1/settlement-capabilities. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. A stageIdempotencyKey that the stage route used conflicts here, and the reverse. A capability that the stage route bound is accepted only through the reference form.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapabilityAdmission")]
+        public CreateSettlementCapabilityRequest? SettlementCapabilityAdmission { get; }
 
         /// <summary>
         /// Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL.
@@ -2492,7 +2503,7 @@ namespace BitCaster.MatchingEngine.Contracts
     public partial class SubmitOrderResponse
     {
         [System.Text.Json.Serialization.JsonConstructor]
-        public SubmitOrderResponse(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, OrderLifecycleStatus @status)
+        public SubmitOrderResponse(SettlementGroupSummary? @activeSettlementGroup, BaseAsset @baseAsset, SubmitOrderResponseDivisibility @divisibility, System.Collections.Generic.List<Fill> @fills, System.Guid @orderId, long @remainingAmountSubunits, SettlementCapabilityResponse? @settlementCapability, OrderLifecycleStatus @status)
         {
             this.OrderId = @orderId;
             this.Status = @status;
@@ -2501,6 +2512,7 @@ namespace BitCaster.MatchingEngine.Contracts
             this.BaseAsset = @baseAsset;
             this.Divisibility = @divisibility;
             this.ActiveSettlementGroup = @activeSettlementGroup;
+            this.SettlementCapability = @settlementCapability;
         }
 
         /// <summary>
@@ -2538,6 +2550,59 @@ namespace BitCaster.MatchingEngine.Contracts
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("activeSettlementGroup")]
         public SettlementGroupSummary? ActiveSettlementGroup { get; }
+
+        /// <summary>
+        /// Admission form only. The capability lifecycle of this order. It is absent from a reference-form response, and from a stored result whose capability the server no longer keeps.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
+        public SettlementCapabilityResponse? SettlementCapability { get; }
+
+    }
+
+    /// <summary>
+    /// One accepted order of the authenticated owner, found by condition and client order id. Read the order details through GET /api/v1/{marketId}/orders/{orderId}.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderLookupResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderLookupResponse(string @artifactDigest, string @marketId, System.Guid @orderId, SettlementCapabilityReference @settlementCapability, OrderLookupResponseStatus @status)
+        {
+            this.OrderId = @orderId;
+            this.MarketId = @marketId;
+            this.Status = @status;
+            this.SettlementCapability = @settlementCapability;
+            this.ArtifactDigest = @artifactDigest;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// Public market route of the order.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("marketId")]
+        public string MarketId { get; }
+
+        /// <summary>
+        /// accepted: the order is accepted and its processing result is not recorded yet. processed: its processing result is recorded.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("status")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderLookupResponseStatus>))]
+        public OrderLookupResponseStatus Status { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("settlementCapability")]
+        public SettlementCapabilityReference SettlementCapability { get; }
+
+        /// <summary>
+        /// Digest of the capability artifact. A client compares it with its local artifact digest before it uses the reference.
+        /// <br/>
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("artifactDigest")]
+        public string ArtifactDigest { get; }
 
     }
 
@@ -3694,7 +3759,7 @@ namespace BitCaster.MatchingEngine.Contracts
         public long PurchasedTotal { get; }
 
         /// <summary>
-        /// Total Score consumed by capability-admission and invalid-validation charges.
+        /// Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
         /// </summary>
         [System.Text.Json.Serialization.JsonPropertyName("consumedTotal")]
         public long ConsumedTotal { get; }
@@ -3713,6 +3778,148 @@ namespace BitCaster.MatchingEngine.Contracts
             get { return _additionalProperties ?? (_additionalProperties = new System.Collections.Generic.Dictionary<string, object>()); }
             set { _additionalProperties = value; }
         }
+
+    }
+
+    /// <summary>
+    /// `purchase` credits purchased Score. `capability-binding` is the admission charge of an order. `invalid-capability-validation` is the charge for an invalid proof or DLEQ validation attempt. `reused-output-penalty` is the 100 Score penalty for an order whose output was already used by another operation, so that the order was removed from its settlement.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum ParticipationScoreHistoryKind
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"purchase")]
+        Purchase = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"capability-binding")]
+        CapabilityBinding = 1,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"invalid-capability-validation")]
+        InvalidCapabilityValidation = 2,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"reused-output-penalty")]
+        ReusedOutputPenalty = 3,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScoreHistoryEntry
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScoreHistoryEntry(long @amountScore, long @balanceAfter, ParticipationScoreHistoryKind @kind, System.DateTimeOffset @occurredAt)
+        {
+            this.Kind = @kind;
+            this.AmountScore = @amountScore;
+            this.BalanceAfter = @balanceAfter;
+            this.OccurredAt = @occurredAt;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("kind")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<ParticipationScoreHistoryKind>))]
+        public ParticipationScoreHistoryKind Kind { get; }
+
+        /// <summary>
+        /// Signed Score change. A charge or a penalty is negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("amountScore")]
+        public long AmountScore { get; }
+
+        /// <summary>
+        /// Score balance after this change. It can be negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("balanceAfter")]
+        public long BalanceAfter { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("occurredAt")]
+        public System.DateTimeOffset OccurredAt { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class ParticipationScoreHistoryResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public ParticipationScoreHistoryResponse(long @balance, System.Collections.Generic.List<ParticipationScoreHistoryEntry> @entries)
+        {
+            this.Balance = @balance;
+            this.Entries = @entries;
+        }
+
+        /// <summary>
+        /// Current Participation Score balance. It can be negative.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("balance")]
+        public long Balance { get; }
+
+        /// <summary>
+        /// The most recent Score changes, newest first.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("entries")]
+        public System.Collections.Generic.List<ParticipationScoreHistoryEntry> Entries { get; }
+
+    }
+
+    /// <summary>
+    /// `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+    /// <br/>
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderSettlementFailureReason
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"OwnOutputReused")]
+        OwnOutputReused = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"GroupOutputReused")]
+        GroupOutputReused = 1,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderSettlementFailure
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderSettlementFailure(System.DateTimeOffset @failedAt, System.Guid @groupId, OrderSettlementFailureReason @reason)
+        {
+            this.GroupId = @groupId;
+            this.Reason = @reason;
+            this.FailedAt = @failedAt;
+        }
+
+        /// <summary>
+        /// The settlement group that the order joined.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("groupId")]
+        public System.Guid GroupId { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("reason")]
+        [System.Text.Json.Serialization.JsonConverter(typeof(BitCaster.MatchingEngine.Contracts.Json.OpenApiJsonStringEnumConverter<OrderSettlementFailureReason>))]
+        public OrderSettlementFailureReason Reason { get; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("failedAt")]
+        public System.DateTimeOffset FailedAt { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class OrderSettlementFailureResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public OrderSettlementFailureResponse(OrderSettlementFailure? @failure, System.Guid @orderId)
+        {
+            this.OrderId = @orderId;
+            this.Failure = @failure;
+        }
+
+        [System.Text.Json.Serialization.JsonPropertyName("orderId")]
+        public System.Guid OrderId { get; }
+
+        /// <summary>
+        /// The recorded settlement failure, or null when none is recorded.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("failure")]
+        public OrderSettlementFailure? Failure { get; }
 
     }
 
@@ -4091,6 +4298,51 @@ namespace BitCaster.MatchingEngine.Contracts
     }
 
     [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RecoveryIndexVersionResponse
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RecoveryIndexVersionResponse(long @version)
+        {
+            this.Version = @version;
+        }
+
+        /// <summary>
+        /// The version after the write, or the tombstone version after a delete.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("version")]
+        public long Version { get; }
+
+    }
+
+    /// <summary>
+    /// Problem details of a recovery index refusal.
+    /// </summary>
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public partial class RecoveryIndexProblemDetails : ProblemDetails
+    {
+        [System.Text.Json.Serialization.JsonConstructor]
+        public RecoveryIndexProblemDetails(string? @code, long? @currentVersion, string? @detail, string? @instance, string? @limitCode, long? @serverTime, int? @status, string? @title, string? @traceId, string? @type)
+            : base(code, detail, instance, limitCode, status, title, traceId, type)
+        {
+            this.CurrentVersion = @currentVersion;
+            this.ServerTime = @serverTime;
+        }
+
+        /// <summary>
+        /// The current version for a conflict or a missing document. 0 means no document and no tombstone.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("currentVersion")]
+        public long? CurrentVersion { get; }
+
+        /// <summary>
+        /// The engine clock in Unix seconds, for an issue-time refusal.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonPropertyName("serverTime")]
+        public long? ServerTime { get; }
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
     public enum Timeframe
     {
 
@@ -4359,6 +4611,18 @@ namespace BitCaster.MatchingEngine.Contracts
         _1000 = 1000,
 
         _1000000 = 1000000,
+
+    }
+
+    [System.CodeDom.Compiler.GeneratedCode("NJsonSchema", "14.6.3.0 (NJsonSchema v11.5.2.0 (Newtonsoft.Json v13.0.0.0))")]
+    public enum OrderLookupResponseStatus
+    {
+
+        [System.Runtime.Serialization.EnumMember(Value = @"accepted")]
+        Accepted = 0,
+
+        [System.Runtime.Serialization.EnumMember(Value = @"processed")]
+        Processed = 1,
 
     }
 

@@ -50,18 +50,27 @@ import {
   serializeDurableWalletReceiveOperation,
   serializeDurableWalletSendOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
-import { deriveDurableCustodyArtifactFingerprint } from "@bitcaster/client-sdk/durableCustody";
+import {
+  deriveDurableCustodyArtifactFingerprint,
+  type DurableCustodyOwnerAuthorization,
+} from "@bitcaster/client-sdk/durableCustody";
 import { browserOutgoingCashuTransferRow } from "../browserDurableOutgoingCashuTransfer";
-import { addProofs, addProofsIfMissing, BitcasterDB } from "../../stores/proof-db";
+import {
+  addProofs,
+  addProofsIfMissing,
+  BitcasterDB,
+  type StoredProof,
+} from "../../stores/proof-db";
+import { admitBrowserReceivedProofsWithHeldProfileLock } from "../browserCustodyProofReceive";
 import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
 } from "../../stores/durable-custody-db";
 import { browserWalletScope } from "../browserCtfRangeOrderSource";
 import { browserWalletDatabaseName } from "../browserWalletProfile";
+import { readBrowserRecoveryIndexLocalEntries } from "../browserRecoveryIndex";
 import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
 
-const requireNewWritePermission = vi.hoisted(() => vi.fn(async () => undefined));
 const receiveDraftFactory = vi.hoisted(() => ({
   counterSource: undefined as CounterSource | undefined,
   wallet: undefined as BrowserDurableWalletReceiveWallet | undefined,
@@ -77,10 +86,6 @@ vi.mock("../../stores/wallet", () => ({
     }
     return receiveDraftFactory.wallet;
   },
-}));
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: requireNewWritePermission,
 }));
 
 const MINT = "https://mint.example";
@@ -111,8 +116,6 @@ const seed = new Uint8Array(64).fill(1);
 const databases: BitcasterDB[] = [];
 
 afterEach(async () => {
-  requireNewWritePermission.mockClear();
-  requireNewWritePermission.mockResolvedValue(undefined);
   receiveDraftFactory.counterSource = undefined;
   receiveDraftFactory.wallet = undefined;
   receiveDraftFactory.afterPrepare = undefined;
@@ -192,17 +195,6 @@ describe("browser durable ordinary receive", () => {
     expect(receiveOperation.record.operation.proofStorage.pinReasons).toEqual([]);
     expect(receiveOperation.operationId).toBe(receiveOperation.record.operation.operationId);
 
-    const desiredRows = await database.encryptedWalletBackupV2DesiredAssets.toArray();
-    expect(desiredRows).toHaveLength(1);
-    expect(desiredRows[0]).toMatchObject({
-      mintUrl: MINT,
-      unit: "msat",
-      assetIdentity: `ctf:${CONDITION_ID}:${OUTCOME_COLLECTION_ID}`,
-      activeProofCount: 2,
-      desiredAction: "replace",
-      syncState: "pending",
-    });
-
     const receivedProofIds = new Set(rows.map((row) => row.proofId));
     const authorities = await database.custodyProofBackupAuthorities.toArray();
     expect(authorities).toHaveLength(2);
@@ -226,6 +218,100 @@ describe("browser durable ordinary receive", () => {
         CONDITIONAL_KEYSET_ID,
       ]),
     ).toMatchObject({ next: 2 });
+  });
+
+  it("lists a new conditional keyset in its conditional form before the swap admits a proof", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    const scopeId = browserWalletScope(seed).scopeId;
+    await markConditionalCounterReady(database);
+    let entriesAtSwap: unknown = null;
+    const completeSwap = receiveWallet.completeConditionalSwap!;
+    receiveWallet.completeConditionalSwap = vi.fn(async (preview: ConditionalSwapPreview) => {
+      // The counter commit is before the mint call. Custody admits the
+      // outputs only after it, so the custody table cannot name the keyset.
+      expect(await database.custodyConditionalKeysets.count()).toBe(0);
+      entriesAtSwap = await readBrowserRecoveryIndexLocalEntries(database, scopeId);
+      return completeSwap(preview);
+    });
+
+    await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: [inputProof],
+      ensureConditionalCounterReady: async () => undefined,
+      wallet: receiveWallet,
+      context: receiveContext(database),
+    });
+
+    expect(entriesAtSwap).toEqual([
+      {
+        kind: "conditional",
+        mintUrl: MINT,
+        keysetId: CONDITIONAL_KEYSET_ID,
+        conditionId: CONDITION_ID,
+        outcomeCollectionId: OUTCOME_COLLECTION_ID,
+      },
+    ]);
+  });
+
+  it("admits recovered counter proofs under the receive owner and completes the receive", async () => {
+    const database = createConditionalDatabase();
+    const inputProof = conditionalInputProof();
+    const receiveWallet = conditionalWallet(inputProof);
+    await markConditionalCounterReady(database);
+    // Counter readiness can find unrecorded proofs, for example after a seed
+    // restore. It admits them while the receive holds the profile lock and
+    // the custody scope.
+    const recovered: StoredProof = {
+      ...proofForOutput(
+        OutputData.createSingleData(8, CONDITIONAL_KEYSET_ID, "recovered-counter-proof", 29n),
+      ),
+      mintUrl: MINT,
+      baseAsset: "sat",
+      unit: "msat",
+      conditionId: CONDITION_ID,
+      outcomeCollection: OUTCOME_COLLECTION,
+    };
+    const readiness = vi.fn(
+      async (_keyset: unknown, owner: DurableCustodyOwnerAuthorization | null) => {
+        await admitBrowserReceivedProofsWithHeldProfileLock({
+          seed,
+          sourceOperationId: "counter-recovery:test",
+          mintUrl: MINT,
+          unit: "msat",
+          wallet: receiveWallet as never,
+          proofs: [recovered],
+          derivationAuthority: null,
+          database,
+          ...(owner === null ? {} : { custodyOwner: owner }),
+        });
+      },
+    );
+
+    const received = await receiveBrowserDurableWalletToken({
+      token: "cashuB-conditional-token",
+      mintUrl: MINT,
+      unit: "msat",
+      asset: "conditional",
+      conditionalInputProofs: [inputProof],
+      ensureConditionalCounterReady: readiness,
+      wallet: receiveWallet,
+      context: receiveContext(database),
+    });
+
+    expect(readiness).toHaveBeenCalledOnce();
+    expect(readiness.mock.calls[0]![1]).toMatchObject({
+      incarnationId: expect.stringMatching(/^browser-wallet-receive:/),
+    });
+    expect(received).toHaveLength(2);
+    expect(await database.custodyProofs.count()).toBe(3);
+    const scopeRow = await database.custodyScopes.get(browserWalletScope(seed).scopeId);
+    expect(scopeRow?.state.owner).toBeNull();
+    expect(scopeRow?.state.fencingEpoch).toBe(1);
   });
 
   it("rejects a self-consistent conditional fee plan that conflicts with the verified keyset fee", async () => {
@@ -432,31 +518,6 @@ describe("browser durable ordinary receive", () => {
     expect(await database.proofs.count()).toBe(0);
   });
 
-  it("refuses a new receive before deterministic output preparation", async () => {
-    const database = createDatabase();
-    const preview = receivePreview();
-    const receiveWallet = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
-    requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(
-      receiveBrowserDurableWalletToken({
-        token: "cashuB-token",
-        mintUrl: MINT,
-        unit: "msat",
-        wallet: receiveWallet,
-        context: receiveContext(database),
-      }),
-    ).rejects.toThrow("Another browser changed this wallet");
-
-    expect(receiveWallet.prepareSwapToReceive).not.toHaveBeenCalled();
-    expect(await database.custodyScopes.count()).toBe(0);
-    expect(await database.custodyOperations.count()).toBe(0);
-  });
-
   it("persists the exact preview before mint completion and replays it after an all-UNSPENT restart", async () => {
     const database = createDatabase();
     const preview = receivePreview();
@@ -482,19 +543,12 @@ describe("browser durable ordinary receive", () => {
     vi.mocked(restarted.checkProofsStates).mockResolvedValue(
       statesFor(preview, CheckStateEnum.UNSPENT) as never,
     );
-    requireNewWritePermission.mockClear();
-    requireNewWritePermission.mockRejectedValue(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
     const recovered = await recoverBrowserDurableWalletReceives({
       context,
       walletForMint: async () => restarted,
     });
 
     expect(recovered.pending).toBe(0);
-    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(first.prepareSwapToReceive).toHaveBeenCalledOnce();
     expect(restarted.prepareSwapToReceive).not.toHaveBeenCalled();
     expect(restarted.completeSwap).toHaveBeenCalledWith(
@@ -590,7 +644,6 @@ describe("browser durable ordinary receive", () => {
     }
 
     expect(await database.walletCounterCursors.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
     expect(await database.custodyOperations.count()).toBe(0);
     expect(await database.custodyArtifacts.count()).toBe(0);
     expect(await database.custodyProofs.count()).toBe(0);
@@ -780,7 +833,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual(["active-reservation"]);
     expect(await database.custodyProofs.count()).toBe(0);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(0);
 
     const restarted = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
     const recovered = await recoverBrowserDurableWalletReceives({
@@ -802,7 +854,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
   });
 
   it("repairs the display cache from current inventory after an after-commit failure", async () => {
@@ -825,7 +876,6 @@ describe("browser durable ordinary receive", () => {
       (await database.custodyOperations.toArray())[0]?.record.operation.proofStorage.pinReasons,
     ).toEqual([]);
     expect(await database.custodyProofs.count()).toBe(1);
-    expect(await database.encryptedWalletBackupV2DesiredAssets.count()).toBe(1);
 
     const restarted = wallet(preview, proofForOutput(preview.keepOutputs![0]!));
     const recovered = await recoverBrowserDurableWalletReceives({
@@ -967,7 +1017,6 @@ describe("browser durable ordinary receive", () => {
     expect(second.operationId).toBe(first.operationId);
     expect(vi.mocked(receiveWallet.prepareSwapToReceive)).toHaveBeenCalledOnce();
     expect(outgoingTransfer).toHaveBeenCalledOnce();
-    expect(requireNewWritePermission).toHaveBeenCalledOnce();
     expect(await database.walletCounterCursors.get([scopeId, KEYSET_ID])).toMatchObject({
       next: 22,
     });

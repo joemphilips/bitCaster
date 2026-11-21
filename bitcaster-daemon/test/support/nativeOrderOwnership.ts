@@ -1,5 +1,5 @@
 import {
-  bindRangePreparationCapability,
+  bindRangePreparationAdmission,
   encodeCanonicalRangePreparation,
   insertRangePreparation,
   transitionRangePreparation,
@@ -43,10 +43,10 @@ export async function retainNativeOrderLink(
       rangeOperationId,
       expectedRevision: 0,
       from: 'prepared',
-      to: 'capability-requested',
+      to: 'order-requested',
       updatedAtMs: 2,
     })
-    bindRangePreparationCapability(database, {
+    bindRangePreparationAdmission(database, {
       scopeId,
       rangeOperationId,
       expectedRevision: 1,
@@ -63,7 +63,7 @@ export async function retainNativeOrderLink(
         scopeId,
         rangeOperationId,
         expectedRevision: 2,
-        from: 'capability-bound',
+        from: 'order-submitted',
         to: 'terminal',
         updatedAtMs: 4,
       })

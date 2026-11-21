@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { useTranslation } from "react-i18next";
+import { walletOperationErrorMessage } from "@/lib/walletOperationError";
 import { useNavigate } from "react-router";
 import { InvoiceDisplay } from "@/components/deposit-withdraw/InvoiceDisplay";
 import { NativeDialog } from "@/components/shared/NativeDialog";
@@ -21,12 +22,6 @@ import {
   type CashuProofUnit,
 } from "@bitcaster/client-sdk/marketUnits";
 import { validateTopUpEcashToken, type TopUpPasteValidationError } from "./topUpPasteValidation";
-import {
-  useWalletBackupPresentation,
-  walletBackupPausesNewChanges,
-  walletBackupWriteErrorMessage,
-} from "@/hooks/WalletBackupPresentation";
-import { EncryptedWalletBackupRecoveryStatus } from "@/components/shell/EncryptedWalletBackupRecoveryStatus";
 import { isMintAmountOutsideLimitError } from "@bitcaster/client-sdk/mintPaymentLimits";
 import { useMintPaymentAmountLimit } from "@/hooks/useMintPaymentAmountLimit";
 import { useErrorAfterBlur } from "@/hooks/useErrorAfterBlur";
@@ -170,8 +165,6 @@ export function TopUpOverlay({
   onSuccess,
   onCancel,
 }: TopUpOverlayProps) {
-  const walletBackup = useWalletBackupPresentation();
-  const backupPaused = walletBackupPausesNewChanges(walletBackup);
   const { t } = useTranslation();
   const navigate = useNavigate();
   const activeMintUrl = useWalletStore((s) => s.activeMintUrl);
@@ -326,7 +319,7 @@ export function TopUpOverlay({
 
   const startInvoice = useCallback(async () => {
     // The field shows the amount error. Continue stays disabled while the amount breaks a rule.
-    if (inflightRef.current || backupPaused || amountLimitError !== null) return;
+    if (inflightRef.current || amountLimitError !== null) return;
     if (amount <= 0 || belowMinimum) return;
     const presentationGeneration = quotePresentationGenerationRef.current;
     inflightRef.current = true;
@@ -387,7 +380,7 @@ export function TopUpOverlay({
           recordDepositRefusal(amountMsat);
         } else {
           setStatus("error");
-          setError(walletBackupWriteErrorMessage(e, t));
+          setError(walletOperationErrorMessage(e, t));
         }
       }
       inflightRef.current = false;
@@ -395,7 +388,6 @@ export function TopUpOverlay({
       if (!cancelledRef.current) setLoading(false);
     }
   }, [
-    backupPaused,
     activeMintUrl,
     amount,
     amountLimitError,
@@ -408,7 +400,7 @@ export function TopUpOverlay({
   ]);
 
   const submitEcashToken = useCallback(async () => {
-    if (inflightRef.current || backupPaused) return;
+    if (inflightRef.current) return;
     const trimmed = ecashToken.trim();
     if (!trimmed) {
       setError(t("topUp.ecash.errorRequired"));
@@ -436,12 +428,12 @@ export function TopUpOverlay({
       });
       if (!cancelledRef.current) onSuccessRef.current();
     } catch (e) {
-      if (!cancelledRef.current) setError(walletBackupWriteErrorMessage(e, t));
+      if (!cancelledRef.current) setError(walletOperationErrorMessage(e, t));
     } finally {
       inflightRef.current = false;
       if (!cancelledRef.current) setLoading(false);
     }
-  }, [activeMintUrl, backupPaused, baseAsset, deficit, ecashToken, proofUnitInput, t]);
+  }, [activeMintUrl, baseAsset, deficit, ecashToken, proofUnitInput, t]);
 
   const regenerateInvoice = useCallback(() => {
     void stopActiveQuote().finally(() => {
@@ -496,8 +488,6 @@ export function TopUpOverlay({
                   <X className="w-5 h-5" />
                 </button>
               </div>
-
-              {walletBackup && <EncryptedWalletBackupRecoveryStatus {...walletBackup} />}
 
               {showBackupWarning && (
                 <div
@@ -653,13 +643,7 @@ export function TopUpOverlay({
                 <button
                   data-testid="top-up-continue"
                   onClick={startInvoice}
-                  disabled={
-                    backupPaused ||
-                    loading ||
-                    amount <= 0 ||
-                    belowMinimum ||
-                    amountLimitError !== null
-                  }
+                  disabled={loading || amount <= 0 || belowMinimum || amountLimitError !== null}
                   className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
                 >
                   {loading ? t("topUp.requesting") : t("common.continue")}
@@ -668,7 +652,7 @@ export function TopUpOverlay({
                 <button
                   data-testid="top-up-ecash-submit"
                   onClick={submitEcashToken}
-                  disabled={backupPaused || loading || ecashToken.trim().length === 0}
+                  disabled={loading || ecashToken.trim().length === 0}
                   className="mt-6 w-full py-2.5 rounded-xl bg-[#f7931a] hover:bg-[#e8850f] disabled:bg-slate-300 dark:disabled:bg-slate-700 disabled:cursor-not-allowed text-white font-semibold transition-colors"
                 >
                   {loading ? t("topUp.ecash.adding") : t("topUp.ecash.addFunds")}

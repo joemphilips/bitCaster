@@ -14,6 +14,7 @@ import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
   CheckStateEnum,
+  HttpResponseError,
   MintOperationError,
   deriveKeysetId,
   deriveConditionalKeysetId,
@@ -41,7 +42,10 @@ import {
   writeState,
 } from '../src/state.ts'
 import { createDaemonCounterSource } from '../src/walletOps.ts'
-import { retireDaemonConditionInventory } from '../src/managedConditionRetirement.ts'
+import {
+  retireDaemonConditionInventory,
+  retireResolvedDaemonConditions,
+} from '../src/managedConditionRetirement.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { readProfile } from '../src/profile.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
@@ -174,6 +178,36 @@ async function createRetirementFixture(count = 65) {
     },
   }
 }
+
+test('a retirement failure reports a mint answer only as fixed text', async () => {
+  // A mint answer can quote long text, such as a blinded message or a proof Y point.
+  const raw = `Token already spent: ${'02ab'.repeat(40)}`
+  const { profile, fence, common, conditionId, dispose } = await createRetirementFixture(1)
+  try {
+    for (const [failure, expected] of [
+      [
+        new Error('retirement failed', { cause: new MintOperationError(11001, raw) }),
+        'mint request was refused (mint code 11001)',
+      ],
+      [new HttpResponseError(raw, 502), 'mint request failed (HTTP 502)'],
+    ] as const) {
+      const results = await retireResolvedDaemonConditions({
+        profile,
+        secrets: common.secrets,
+        fence,
+        engine: {
+          getConditionAttestation: async () => {
+            throw failure
+          },
+        },
+        walletDependencies: common.walletDependencies,
+      })
+      assert.deepEqual(results, [{ conditionId, error: expected }])
+    }
+  } finally {
+    await dispose()
+  }
+})
 
 test('daemon previews then atomically retires one verified condition inventory', async () => {
   const {

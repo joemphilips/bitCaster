@@ -61,20 +61,6 @@ vi.mock("../../stores/wallet", () => ({
   }) => privateDraft.create!(input.counterSource),
 }));
 
-import {
-  createEncryptedWalletBackupOwnerCurrentHead,
-  collectEncryptedWalletBackupOwnerDescriptorPages,
-  enumerateEncryptedWalletBackupOwnerDescriptorPages,
-} from "@bitcaster/client-sdk/encryptedWalletBackupOwnerHead";
-import { EncryptedWalletBackupOwnerDexieAuthorityStore } from "../../stores/encrypted-wallet-backup-owner-db";
-const requireNewWritePermission = vi.hoisted(() =>
-  vi.fn(async (_input: { database: BitcasterDB; scopeId: string }): Promise<void> => undefined),
-);
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: requireNewWritePermission,
-}));
-
 const MINT = "https://mint.example";
 const PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7]);
 const FOUR_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 9]);
@@ -91,8 +77,6 @@ let testClock = Date.now();
 
 afterEach(async () => {
   vi.unstubAllEnvs();
-  requireNewWritePermission.mockClear();
-  requireNewWritePermission.mockResolvedValue(undefined);
   for (const database of databases.splice(0)) {
     database.close();
     await database.delete();
@@ -199,32 +183,6 @@ describe("browser durable wallet melt", () => {
     expect(wallet.completeMelt).toHaveBeenCalledOnce();
   });
 
-  it("refuses a new melt before output preparation", async () => {
-    const database = createDatabase();
-    const input = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "blocked-input", 7n));
-    await seedInput(database, input);
-    const quote = meltQuote("quote-blocked");
-    const wallet = meltWallet(meltPreview(quote, input), { state: "PAID", change: [] });
-    requireNewWritePermission.mockRejectedValueOnce(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
-
-    await expect(
-      meltBrowserDurableWallet({
-        quote,
-        mintUrl: MINT,
-        proofs: [input],
-        wallet,
-        context: meltContext(database),
-      }),
-    ).rejects.toThrow("Another browser changed this wallet");
-
-    expect(wallet.prepareMelt).not.toHaveBeenCalled();
-    expect(await database.custodyOperations.count()).toBe(0);
-  });
-
   it("keeps a lost-response reservation and retries the exact persisted preview", async () => {
     const database = createDatabase();
     const input = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "retry-input", 7n));
@@ -246,12 +204,6 @@ describe("browser durable wallet melt", () => {
     ).rejects.toThrow("lost melt response");
     expect((await database.custodyProofs.toArray())[0]?.selectability).toBe("locked");
 
-    requireNewWritePermission.mockClear();
-    requireNewWritePermission.mockRejectedValue(
-      new Error(
-        "Another browser changed this wallet. Reload to start recovery before making a new wallet change.",
-      ),
-    );
     await expect(
       meltBrowserDurableWallet({
         quote,
@@ -261,7 +213,6 @@ describe("browser durable wallet melt", () => {
         context: meltContext(database),
       }),
     ).resolves.toMatchObject({ paid: true, change: [change] });
-    expect(requireNewWritePermission).not.toHaveBeenCalled();
     expect(wallet.prepareMelt).toHaveBeenCalledOnce();
     expect(wallet.completeMelt).toHaveBeenCalledOnce();
     expect(wallet.checkMeltQuote).toHaveBeenCalledOnce();
@@ -643,65 +594,6 @@ describe("browser melt real private counter preparation", () => {
     expect(f.ranges).toEqual([{ keysetId: KEYSET_ID, start: 0, count: 2, next: 2 }]);
   });
 
-  it("checks real owner permission within the joint readwrite transaction", async () => {
-    const f = await realMeltFixture();
-    const permission = await vi.importActual<typeof import("../browserWalletNewWritePermission")>(
-      "../browserWalletNewWritePermission",
-    );
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_REALM", "backup.example");
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_SIGNED_ORIGIN", "https://backup.example");
-    vi.stubEnv("VITE_ENCRYPTED_BACKUP_RECEIPT_KEY_ID", "55".repeat(16));
-    vi.stubEnv(
-      "VITE_ENCRYPTED_BACKUP_RECEIPT_PUBLIC_KEY",
-      "531fe6068134503d2723133227c867ac8fa6c83c537e9a44c3c5bdbdcb1fe337",
-    );
-    const scopeId = browserWalletScope(SEED).scopeId;
-    const session = permission.beginBrowserWalletBackupAuthenticationSession({
-      database: f.database,
-      scopeId,
-      realm: "backup.example",
-    });
-    expect(session.markOwnerAuthenticated("aa".repeat(32), 1, "bb".repeat(32))).toBe(true);
-    const context = {
-      ownerScopeId: "aa".repeat(32),
-      realm: "backup.example",
-      walletId: scopeId.slice("custody:wallet:".length),
-      enrollmentEpoch: 1,
-    };
-    const head = createEncryptedWalletBackupOwnerCurrentHead({
-      ...context,
-      headVersion: 0,
-      bundles: [],
-    });
-    const evidence = collectEncryptedWalletBackupOwnerDescriptorPages(
-      enumerateEncryptedWalletBackupOwnerDescriptorPages({ head, bundles: [] }),
-      context,
-    );
-    const store = new EncryptedWalletBackupOwnerDexieAuthorityStore({
-      ...context,
-      database: f.database,
-      scopeId,
-      requestAuthPublicKey: "bb".repeat(32),
-      isCurrent: () => true,
-    });
-    expect(await store.acceptCurrentHead({ expectedHeadVersion: null, evidence })).toBe("accepted");
-    requireNewWritePermission.mockImplementation(permission.requireBrowserWalletNewWritePermission);
-    const table = f.database.encryptedWalletBackupOwnerAcceptedHeads;
-    const original = table.get.bind(table);
-    const modes: string[] = [];
-    const spy = vi.spyOn(table, "get").mockImplementation((...args: unknown[]) => {
-      modes.push(Dexie.currentTransaction!.idbtrans.mode);
-      return original(...(args as [never]));
-    });
-    try {
-      await expect(f.run()).resolves.toMatchObject({ paid: true });
-      expect(modes.filter((mode) => mode === "readwrite").length).toBeGreaterThanOrEqual(2);
-    } finally {
-      spy.mockRestore();
-      session.stop();
-    }
-  });
-
   it("commits real NUT08 blanks at counter0 and reuses saved bytes after lost COMMIT reply", async () => {
     const f = await realMeltFixture();
     f.context.injectPreparationFault = (phase) => {
@@ -834,7 +726,6 @@ describe("browser melt real private counter preparation", () => {
           f.database.custodyActiveWork,
           f.database.custodyProofBackupAuthorities,
           f.database.custodyConditionalKeysets,
-          f.database.encryptedWalletBackupV2DesiredAssets,
           f.database.walletCounterAssociations,
           f.database.walletCounterCursors,
         ],
@@ -1032,11 +923,8 @@ async function preparationFacts(database: BitcasterDB) {
     database.custodyActiveWork,
     database.custodyProofBackupAuthorities,
     database.custodyConditionalKeysets,
-    database.encryptedWalletBackupV2DesiredAssets,
     database.walletCounterAssociations,
     database.walletCounterCursors,
-    database.encryptedWalletBackupOwnerAcceptedHeads,
-    database.encryptedWalletBackupV2AcceptedHeads,
   ];
   return Promise.all(tables.map((table) => table.orderBy(":id").toArray()));
 }

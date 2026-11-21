@@ -48,10 +48,6 @@ vi.mock("../../stores/wallet", () => ({
 
 vi.mock("@/lib/cashu", () => ({ restoreExactMintOutputs: async () => [] }));
 
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: async () => undefined,
-}));
-
 const SEED = new Uint8Array(64).fill(41);
 const SCOPE = browserWalletScope(SEED);
 const MINT_URL = "https://mint.test";
@@ -555,7 +551,6 @@ async function outgoingFacts(
     authorities,
     associations,
     counters,
-    desiredAssets,
     transfers,
     admissions,
     fundingHeads,
@@ -567,7 +562,6 @@ async function outgoingFacts(
     database.custodyProofBackupAuthorities.toArray(),
     database.walletCounterAssociations.toArray(),
     database.walletCounterCursors.toArray(),
-    database.encryptedWalletBackupV2DesiredAssets.toArray(),
     database.outgoingCashuTransfers.toArray(),
     database.outgoingCashuTransferAdmissions.toArray(),
     database.marketFundingHeads.toArray(),
@@ -581,7 +575,6 @@ async function outgoingFacts(
     associations: associations.filter((row) => row.scopeId === scopeId).length,
     counter:
       counters.find((row) => row.scopeId === scopeId && row.keysetId === keysetId)?.next ?? null,
-    desiredAssets: desiredAssets.filter((row) => row.scopeId === scopeId).length,
     transfers: transfers.filter((row) => row.scopeId === scopeId).length,
     admissions: admissions.filter((row) => row.scopeId === scopeId).length,
     fundingHeads: fundingHeads.filter((row) => row.scopeId === scopeId).length,

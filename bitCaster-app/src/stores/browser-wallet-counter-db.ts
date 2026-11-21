@@ -5,7 +5,9 @@ import {
   deriveDurableCustodyScopeId,
   deriveDurableCustodyWalletId,
 } from "@bitcaster/client-sdk/durableCustody";
+import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { isCanonicalNut02V2KeysetId } from "@bitcaster/client-sdk/durableSeedDerivedOutputs";
+import { RECOVERY_INDEX_ENTRIES_GUARANTEED } from "@bitcaster/client-sdk/recoveryIndexDocument";
 import { parseCashuProofUnit, type CashuProofUnit } from "@bitcaster/client-sdk/marketUnits";
 import {
   counterCtfRangePreparationIdentity,
@@ -14,17 +16,27 @@ import {
   type CtfRangePreparationIntent,
   type PersistedCtfRangeOrderPreparationV2,
 } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import type { CtfRangeOrderCounterStarts } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
 import { activeBrowserWalletScopeId, browserWalletDatabaseName } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
-import { advanceBrowserV2DesiredAssetsForCounter } from "./browser-encrypted-wallet-backup-v2-desired-asset";
 import {
   insertCtfRangePreparationInTransaction,
   readCtfRangePreparationForIntentInTransaction,
 } from "./ctf-range-order-db";
-import type { BitcasterDB } from "./proof-db";
+import type {
+  BitcasterDB,
+  BrowserWalletCounterAssociationRow,
+  BrowserWalletCounterConditionalIdentity,
+} from "./proof-db";
 
-export const BROWSER_WALLET_COUNTER_ASSOCIATION_MAX = 256;
-export const BROWSER_WALLET_COUNTER_SNAPSHOT_MAX = 256;
+/**
+ * Each local keyset becomes one recovery index entry, so the 64 KiB step of
+ * one browser's index holds every association (ADR-034 recovery index
+ * amendment, ADR-051). A larger bound needs a new index format version.
+ */
+export const BROWSER_WALLET_COUNTER_ASSOCIATION_MAX = RECOVERY_INDEX_ENTRIES_GUARANTEED;
+/** A cursor exists only for an associated keyset. */
+export const BROWSER_WALLET_COUNTER_SNAPSHOT_MAX = BROWSER_WALLET_COUNTER_ASSOCIATION_MAX;
 
 export type BrowserWalletCounterErrorCode =
   | "invalid_counter"
@@ -75,11 +87,19 @@ export interface BrowserWalletCounterDexieProfile {
 export interface BrowserWalletCounterContext {
   readonly mintUrl: string;
   readonly unit: CashuProofUnit | string;
+  /**
+   * The NUT-CTF identity of a conditional keyset. Pass it only after the mint
+   * keys derived the keyset id with this identity. The association keeps it,
+   * so the recovery index lists the keyset in its conditional form before
+   * custody admits a proof (ADR-051 "Upload").
+   */
+  readonly conditional?: BrowserWalletCounterConditionalIdentity;
 }
 
 interface NormalizedBrowserWalletCounterContext {
   readonly normalizedMint: string;
   readonly unit: CashuProofUnit;
+  readonly conditional?: BrowserWalletCounterConditionalIdentity;
 }
 
 type BrowserWalletCounterContextInput =
@@ -111,18 +131,11 @@ export class BrowserWalletCounterDexieStore {
     this.#requireCurrentProfile();
     return this.#database.transaction(
       "rw",
-      [
-        this.#database.walletCounterAssociations,
-        this.#database.walletCounterCursors,
-        this.#database.custodyProofs,
-        this.#database.custodyProofBackupAuthorities,
-        this.#database.custodyConditionalKeysets,
-        this.#database.encryptedWalletBackupV2DesiredAssets,
-      ],
+      [this.#database.walletCounterAssociations, this.#database.walletCounterCursors],
       async () => {
         const row = await this.#ensureAssociation(association, id);
         if (requireRecoveryComplete && !row.recoveryComplete) this.#throwRecoveryIncomplete();
-        return this.#reserveInTransaction(association, id, count);
+        return this.#reserveInTransaction(id, count);
       },
     );
   }
@@ -134,7 +147,12 @@ export class BrowserWalletCounterDexieStore {
     readonly intent: CtfRangePreparationIntent;
     readonly seed: Uint8Array;
     readonly createdAtMs: number;
-  }): Promise<BrowserCtfPreparationReservationResult> {
+    /**
+     * The starts whose outputs the SDK checked with the mint. The reservation
+     * returns null when a counter moved after that check.
+     */
+    readonly counterStarts: CtfRangeOrderCounterStarts;
+  }): Promise<BrowserCtfPreparationReservationResult | null> {
     const association = requireContext(input.context);
     const intentScopeId = input.intent.scopeId;
     if (intentScopeId !== this.#scopeId) {
@@ -172,10 +190,6 @@ export class BrowserWalletCounterDexieStore {
       [
         this.#database.walletCounterAssociations,
         this.#database.walletCounterCursors,
-        this.#database.custodyProofs,
-        this.#database.custodyProofBackupAuthorities,
-        this.#database.custodyConditionalKeysets,
-        this.#database.encryptedWalletBackupV2DesiredAssets,
         this.#database.ctfRangePreparations,
       ],
       async (transaction) => {
@@ -202,11 +216,23 @@ export class BrowserWalletCounterDexieStore {
         if (associationRows.some((row) => row?.recoveryComplete !== true)) {
           this.#throwRecoveryIncomplete();
         }
+        for (const [index, keyset] of [
+          preparation.offerKeyset,
+          preparation.receiveKeyset,
+        ].entries()) {
+          await this.#recordIdentity(associationRows[index]!, conditionalKeysetIdentity(keyset));
+        }
         const currentValues = await Promise.all(
           keysets.map((keysetId) => this.#currentNext(keysetId)),
         );
         const offerStart = currentValues[0]!;
         const receiveStart = currentValues[1]!;
+        if (
+          offerStart !== input.counterStarts.offer ||
+          receiveStart !== input.counterStarts.receive
+        ) {
+          return null;
+        }
         const offerNext = offerStart + counts.offerCount;
         const receiveNext = receiveStart + counts.receiveCount;
         if (!Number.isSafeInteger(offerNext) || !Number.isSafeInteger(receiveNext)) {
@@ -239,8 +265,6 @@ export class BrowserWalletCounterDexieStore {
           keysetId: receiveKeysetId,
           next: receiveNext,
         });
-        await this.#advanceDesiredAssetAuthority(association, offerKeysetId);
-        await this.#advanceDesiredAssetAuthority(association, receiveKeysetId);
         return { record, replayed: false };
       },
     );
@@ -258,18 +282,11 @@ export class BrowserWalletCounterDexieStore {
     this.#requireCurrentProfile();
     return this.#database.transaction(
       "rw",
-      [
-        this.#database.walletCounterAssociations,
-        this.#database.walletCounterCursors,
-        this.#database.custodyProofs,
-        this.#database.custodyProofBackupAuthorities,
-        this.#database.custodyConditionalKeysets,
-        this.#database.encryptedWalletBackupV2DesiredAssets,
-      ],
+      [this.#database.walletCounterAssociations, this.#database.walletCounterCursors],
       async () => {
         const row = await this.#ensureAssociation(association, id);
         if (requireRecoveryComplete && !row.recoveryComplete) this.#throwRecoveryIncomplete();
-        return this.#advanceInTransaction(association, id, minimum);
+        return this.#advanceInTransaction(id, minimum);
       },
     );
   }
@@ -294,7 +311,6 @@ export class BrowserWalletCounterDexieStore {
         this.#database.custodyProofs,
         this.#database.custodyProofBackupAuthorities,
         this.#database.custodyConditionalKeysets,
-        this.#database.encryptedWalletBackupV2DesiredAssets,
         this.#database.proofs,
       ],
       () =>
@@ -359,7 +375,6 @@ export class BrowserWalletCounterDexieStore {
         keysetId,
         next,
       });
-      await this.#advanceDesiredAssetAuthority(association, keysetId);
     }
     return { changed: counterChanged || recoveryChanged || admissionChangesWallet, next };
   }
@@ -403,10 +418,6 @@ export class BrowserWalletCounterDexieStore {
     const required = [
       this.#database.walletCounterAssociations,
       this.#database.walletCounterCursors,
-      this.#database.custodyProofs,
-      this.#database.custodyProofBackupAuthorities,
-      this.#database.custodyConditionalKeysets,
-      this.#database.encryptedWalletBackupV2DesiredAssets,
     ];
     if (
       Dexie.currentTransaction !== transaction ||
@@ -435,11 +446,11 @@ export class BrowserWalletCounterDexieStore {
         id,
       ]);
       if (row?.recoveryComplete !== true) this.#throwRecoveryIncomplete();
+      await this.#recordIdentity(row, association.conditional ?? null);
       const cursor = await this.#database.walletCounterCursors.get([this.#scopeId, id]);
       const current = cursor === undefined ? null : requireCounter(cursor.next);
       if (current !== expected) throw new BrowserWalletCounterSnapshotConflictError();
       await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId: id, next });
-      await this.#advanceDesiredAssetAuthority(association, id);
       this.#requireCurrentProfile();
     } catch (error) {
       transaction.abort();
@@ -490,21 +501,15 @@ export class BrowserWalletCounterDexieStore {
     return requireCounter(row.next);
   }
 
-  async #reserveInTransaction(
-    context: NormalizedBrowserWalletCounterContext,
-    keysetId: string,
-    count: number,
-  ): Promise<CounterRange> {
+  async #reserveInTransaction(keysetId: string, count: number): Promise<CounterRange> {
     const current = await this.#currentNext(keysetId);
     if (count === 0) return { start: current, count };
     const next = requireCounter(current + count);
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
-    await this.#advanceDesiredAssetAuthority(context, keysetId);
     return { start: current, count };
   }
 
   async #advanceInTransaction(
-    context: NormalizedBrowserWalletCounterContext,
     keysetId: string,
     minimum: number,
   ): Promise<BrowserWalletCounterAdvanceResult> {
@@ -512,14 +517,13 @@ export class BrowserWalletCounterDexieStore {
     const next = Math.max(current, minimum);
     if (next === current) return { changed: false, next };
     await this.#database.walletCounterCursors.put({ scopeId: this.#scopeId, keysetId, next });
-    await this.#advanceDesiredAssetAuthority(context, keysetId);
     return { changed: true, next };
   }
 
   async #ensureAssociation(
     context: NormalizedBrowserWalletCounterContext,
     keysetId: string,
-  ): Promise<import("./proof-db").BrowserWalletCounterAssociationRow> {
+  ): Promise<BrowserWalletCounterAssociationRow> {
     const key: [string, string, CashuProofUnit, string] = [
       this.#scopeId,
       context.normalizedMint,
@@ -527,7 +531,7 @@ export class BrowserWalletCounterDexieStore {
       keysetId,
     ];
     const current = await this.#database.walletCounterAssociations.get(key);
-    if (current !== undefined) return current;
+    if (current !== undefined) return this.#recordIdentity(current, context.conditional ?? null);
     const count = await this.#database.walletCounterAssociations
       .where("scopeId")
       .equals(this.#scopeId)
@@ -538,17 +542,44 @@ export class BrowserWalletCounterDexieStore {
         "wallet counter associations exceed the limit",
       );
     }
-    const row = this.#associationRow(context.normalizedMint, context.unit, keysetId);
+    const row: BrowserWalletCounterAssociationRow = {
+      scopeId: this.#scopeId,
+      normalizedMint: context.normalizedMint,
+      unit: context.unit,
+      keysetId,
+      recoveryComplete: false,
+      ...(context.conditional === undefined ? {} : { conditional: context.conditional }),
+    };
     await this.#database.walletCounterAssociations.add(row);
     return row;
   }
 
-  #associationRow(
-    normalizedMint: string,
-    unit: CashuProofUnit,
-    keysetId: string,
-  ): import("./proof-db").BrowserWalletCounterAssociationRow {
-    return { scopeId: this.#scopeId, normalizedMint, unit, keysetId, recoveryComplete: false };
+  /**
+   * Keep the NUT-CTF identity of a conditional keyset for its recovery index
+   * entry, in the caller's transaction. A keyset id binds one identity, so
+   * another identity is invalid. Only a Dexie request is awaited here: another
+   * promise would let the transaction commit early.
+   */
+  #recordIdentity(
+    row: BrowserWalletCounterAssociationRow,
+    identity: BrowserWalletCounterConditionalIdentity | null,
+  ): BrowserWalletCounterAssociationRow | PromiseLike<BrowserWalletCounterAssociationRow> {
+    if (identity === null) return row;
+    if (row.conditional !== undefined) {
+      if (
+        row.conditional.conditionId !== identity.conditionId ||
+        deriveRootCtfOutcomeCollectionId(row.conditional) !==
+          deriveRootCtfOutcomeCollectionId(identity)
+      ) {
+        throw new BrowserWalletCounterError(
+          "invalid_keyset",
+          "wallet counter keyset has another conditional identity",
+        );
+      }
+      return row;
+    }
+    const recorded = { ...row, conditional: identity };
+    return this.#database.walletCounterAssociations.put(recorded).then(() => recorded);
   }
 
   #throwRecoveryIncomplete(): never {
@@ -556,19 +587,6 @@ export class BrowserWalletCounterDexieStore {
       "recovery_incomplete",
       "wallet counter recovery is incomplete",
     );
-  }
-
-  async #advanceDesiredAssetAuthority(
-    context: NormalizedBrowserWalletCounterContext,
-    keysetId: string,
-  ): Promise<void> {
-    await advanceBrowserV2DesiredAssetsForCounter({
-      database: this.#database,
-      scopeId: this.#scopeId,
-      normalizedMint: context.normalizedMint,
-      unit: context.unit,
-      keysetId,
-    });
   }
 
   #requireCurrentProfile(): void {
@@ -640,6 +658,52 @@ export function createActiveBrowserWalletCounterSource(
   );
 }
 
+/**
+ * The counter context of one keyset of a CTF order preparation. A conditional
+ * keyset of the preparation adds its NUT-CTF identity. Another keyset keeps
+ * the given context.
+ */
+export function ctfPreparationCounterContext(
+  context: BrowserWalletCounterContext,
+  preparation: Pick<PersistedCtfRangeOrderPreparationV2, "offerKeyset" | "receiveKeyset">,
+  keysetId: string,
+): BrowserWalletCounterContext {
+  const keyset = [preparation.offerKeyset, preparation.receiveKeyset].find(
+    ({ id }) => id === keysetId,
+  );
+  const conditional = keyset === undefined ? null : conditionalKeysetIdentity(keyset);
+  return conditional === null ? context : { ...context, conditional };
+}
+
+/** The NUT-CTF identity of a preparation keyset, or null for a regular keyset. */
+function conditionalKeysetIdentity(
+  keyset: PersistedCtfRangeOrderPreparationV2["offerKeyset"],
+): BrowserWalletCounterConditionalIdentity | null {
+  const candidate = keyset as typeof keyset & {
+    readonly conditionId?: unknown;
+    readonly outcomeCollection?: unknown;
+  };
+  if (candidate.conditionId === undefined && candidate.outcomeCollection === undefined) return null;
+  return requireConditionalIdentity(candidate.conditionId, candidate.outcomeCollection);
+}
+
+function requireConditionalIdentity(
+  value: unknown,
+  outcomeCollection: unknown,
+): BrowserWalletCounterConditionalIdentity {
+  // A condition id is hex. The recovery index entry keeps it in lowercase.
+  const conditionId = typeof value === "string" ? value.toLowerCase() : value;
+  if (
+    typeof conditionId !== "string" ||
+    !/^[0-9a-f]{64}$/.test(conditionId) ||
+    typeof outcomeCollection !== "string" ||
+    outcomeCollection.length === 0
+  ) {
+    throw new BrowserWalletCounterError("invalid_keyset", "CTF keyset identity is invalid");
+  }
+  return { conditionId, outcomeCollection };
+}
+
 function requireScope(scopeId: string): string {
   decodeDurableCustodyScopeId(scopeId);
   return scopeId;
@@ -661,13 +725,27 @@ function requireUnit(value: string): CashuProofUnit {
 function requireContext(
   context: BrowserWalletCounterContextInput,
 ): NormalizedBrowserWalletCounterContext {
+  const conditional =
+    context.conditional === undefined
+      ? {}
+      : {
+          conditional: requireConditionalIdentity(
+            context.conditional.conditionId,
+            context.conditional.outcomeCollection,
+          ),
+        };
   if ("normalizedMint" in context) {
     return {
       normalizedMint: normalizeUrl(context.normalizedMint),
       unit: requireUnit(context.unit),
+      ...conditional,
     };
   }
-  return { normalizedMint: normalizeUrl(context.mintUrl), unit: requireUnit(context.unit) };
+  return {
+    normalizedMint: normalizeUrl(context.mintUrl),
+    unit: requireUnit(context.unit),
+    ...conditional,
+  };
 }
 
 function requireCounter(value: number): number {

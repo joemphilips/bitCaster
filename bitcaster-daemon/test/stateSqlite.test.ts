@@ -11,7 +11,7 @@ import {
 import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import {
-  bindRangePreparationCapability,
+  bindRangePreparationAdmission,
   encodeCanonicalRangePreparation,
   insertRangePreparation,
   linkRangePreparationSource,
@@ -356,10 +356,10 @@ test('order writes preserve range custody rows and do not notify wallet holdings
           rangeOperationId: 'range-operation-source',
           expectedRevision: 0,
           from: 'prepared',
-          to: 'capability-requested',
+          to: 'order-requested',
           updatedAtMs: 2,
         })
-        bindRangePreparationCapability(database, {
+        bindRangePreparationAdmission(database, {
           scopeId: mutation.fence.scopeId,
           rangeOperationId: 'range-operation-source',
           expectedRevision: 1,

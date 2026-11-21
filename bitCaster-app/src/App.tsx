@@ -3,7 +3,8 @@ import { useTranslation } from "react-i18next";
 import {
   AppShell,
   DurableWalletErrors,
-  EncryptedWalletBackupRecoveryStatus,
+  RecoveryIndexStatus,
+  ShellBanners,
 } from "@/components/shell";
 import { SettlementProgress } from "@/components/shell/SettlementProgress";
 import { BetaNotice } from "@/components/shell/BetaNotice";
@@ -41,13 +42,11 @@ import { effectiveRelayUrls } from "@/lib/relayDefaults";
 import { refreshMintInfoWithoutActivating, userAddAndSelectMint } from "@/lib/walletOps";
 import { rehydratePersistedNostrIdentity } from "@/lib/identityOps";
 import { BrowserPreReleaseResetGate } from "@/lib/BrowserPreReleaseResetGate";
-import {
-  useEncryptedWalletBackupDriver,
-  type EncryptedWalletBackupDriverState,
-} from "@/hooks/useEncryptedWalletBackupDriver";
 import { useAssetMonitoringReporter } from "@/hooks/useAssetMonitoringReporter";
 import { useBrowserOracleRecovery } from "@/hooks/useBrowserOracleRecovery";
 import { useBrowserCtfRangeOrderRecovery } from "@/hooks/useBrowserCtfRangeOrderRecovery";
+import { useBrowserRecoveryIndex } from "@/hooks/useBrowserRecoveryIndex";
+import { useWalletHeaderBalance } from "@/hooks/useWalletHeaderBalance";
 import { DEFAULT_MARKET_BASE_ASSET } from "@bitcaster/client-sdk/marketUnits";
 import {
   MAX_NOSTR_PROFILE_NAME_CHARACTERS,
@@ -55,8 +54,6 @@ import {
 } from "@bitcaster/client-sdk/nostrProfilePage";
 import { ownProfileImageUrl } from "@/lib/ownProfileImageUrl";
 import { browserWalletScopeIdFromMnemonic } from "@/lib/browserWalletProfile";
-import { resumeBrowserEncryptedWalletBackupV2AfterRecovery } from "@/lib/encryptedWalletBackupDriver";
-import { WalletBackupPresentationProvider } from "@/hooks/WalletBackupPresentation";
 import { useNostrLogout, useOpenNostrSettings } from "@/hooks/useNostrLogout";
 import { NostrLogoutConfirmModal } from "@/components/shared/NostrLogoutConfirmModal";
 
@@ -87,12 +84,10 @@ function WizardRoutes() {
 export function ShellRoutes({
   canReadOrderStatus,
   nostrIdentityRestored,
-  walletBackupRecovery,
 }: {
   canReadOrderStatus: boolean;
   /** The startup restore of the stored Nostr identity has completed. */
   nostrIdentityRestored: boolean;
-  walletBackupRecovery?: EncryptedWalletBackupDriverState;
 }) {
   const navigate = useNavigate();
   const location = useLocation();
@@ -110,7 +105,9 @@ export function ShellRoutes({
   );
   const { requestLogout, confirmation: logoutConfirmation } = useNostrLogout();
   const openNostrSettings = useOpenNostrSettings();
-  const totalBalance = useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET });
+  const totalBalance = useWalletHeaderBalance(
+    useBalance(undefined, { baseAsset: DEFAULT_MARKET_BASE_ASSET }),
+  );
 
   const navigationItems = [
     {
@@ -151,9 +148,11 @@ export function ShellRoutes({
       }}
       onCreateClick={() => navigate("/creator")}
     >
-      {walletBackupRecovery && <EncryptedWalletBackupRecoveryStatus {...walletBackupRecovery} />}
-      <DurableWalletErrors />
-      <SettlementProgress canReadStatus={canReadOrderStatus} />
+      <ShellBanners>
+        <RecoveryIndexStatus />
+        <DurableWalletErrors />
+        <SettlementProgress canReadStatus={canReadOrderStatus} />
+      </ShellBanners>
       <Routes>
         <Route path="/" element={<MarketsPage />} />
         <Route path="/markets" element={<MarketsPage />} />
@@ -197,12 +196,9 @@ function AppRoutes() {
     mnemonic: walletMnemonic,
     mintUrls: walletMintUrls.split("\n").filter(Boolean),
   });
-  // Keep the legacy ownerless driver gated until owner-aware routes and local
-  // authority stores are connected. Signer revisions still cancel stale work.
-  const walletBackupRecovery = useEncryptedWalletBackupDriver(
-    nostrSignerReady && nostrSignerMode !== "none",
-  );
   useAssetMonitoringReporter(nostrSignerReady && nostrSignerMode !== "none");
+  // The backup is always on. It needs no account (ADR-034 recovery index amendment).
+  useBrowserRecoveryIndex(walletMnemonic);
 
   useEffect(() => {
     document.title = titleForPath(location.pathname);
@@ -255,7 +251,6 @@ function AppRoutes() {
         } while (!cancelled && rerunRequested);
       } finally {
         running = false;
-        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
       }
     };
     const onOnline = () => void runPass();
@@ -320,7 +315,6 @@ function AppRoutes() {
         retryRequired = true;
       } finally {
         running = false;
-        resumeBrowserEncryptedWalletBackupV2AfterRecovery(scopeId);
         if (retryRequired) schedule();
         if (rerunRequested && !cancelled) {
           rerunRequested = false;
@@ -409,7 +403,7 @@ function AppRoutes() {
 
   const isWizard = (WIZARD_PATHS as readonly string[]).includes(location.pathname);
   return (
-    <WalletBackupPresentationProvider value={walletBackupRecovery}>
+    <>
       {/* Every page, including the wizard, states the beta (ADR-048). */}
       <BetaNotice />
       {isWizard ? (
@@ -418,10 +412,9 @@ function AppRoutes() {
         <ShellRoutes
           canReadOrderStatus={nostrSignerReady && nostrSignerMode !== "none"}
           nostrIdentityRestored={nostrSignerReady}
-          walletBackupRecovery={walletBackupRecovery}
         />
       )}
-    </WalletBackupPresentationProvider>
+    </>
   );
 }
 

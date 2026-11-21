@@ -28,6 +28,7 @@ import {
   type CtfRangeOrderPreparationRecord,
 } from './ctfRangeOrderJournal.ts'
 import { assertOrderRouteBelongsToCondition } from './orderRoute.ts'
+import type { CtfRangeOrderAdmissionIdentity } from './ctfRangeOrderAdmission.ts'
 import { decodeOrderQuotePaymentBounds } from './tradeTicket.ts'
 import { decodeCanonicalMintOrigin, encodeBoundedDurableArtifact } from './durableCustody.ts'
 import { assertCanonicalNut02V2KeysetId } from './durableSeedDerivedPolicy.ts'
@@ -501,6 +502,29 @@ function rangeEntryAmounts(maximum: string): string[] {
   return amounts
 }
 
+/**
+ * The local facts that an admission-form response or an order lookup must
+ * match: the order identity and the digest of the local capability artifact.
+ */
+export function ctfRangeOrderAdmissionIdentity(
+  preparationValue: PersistedCtfRangeOrderPreparation,
+  operation: DurableCtfRangeOperation,
+): CtfRangeOrderAdmissionIdentity {
+  const preparation = decodePersistedCtfRangeOrderPreparation(preparationValue)
+  assertOperationMatchesPreparation(operation, preparation)
+  return {
+    rangeOperationId: preparation.operationId,
+    conditionId: preparation.conditionId,
+    clientOrderId: preparation.request.clientOrderId,
+    marketId: preparation.request.marketId,
+    artifactDigest: deriveSettlementCapabilityArtifactDigest(
+      createPoolSettlementCapabilityArtifact(operation),
+    ),
+    authorizationExpiresAtUnixSeconds: operation.expiry,
+  }
+}
+
+/** Old two-step path only: the stage-route response of a capability-requested record. */
 export function validateAndProjectCtfRangeSettlementCapabilityResponse(input: {
   readonly capability: SettlementCapabilityResponse
   readonly preparation: PersistedCtfRangeOrderPreparation

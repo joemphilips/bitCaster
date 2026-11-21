@@ -27,7 +27,11 @@ import {
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
-import { EngineClientError } from '@bitcaster-market/client-sdk/engineClient'
+import {
+  EngineClientError,
+  OrderQuoteRefreshWaitStopped,
+} from '@bitcaster-market/client-sdk/engineClient'
+import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import type {
   AssetMonitoringAssetsResponse,
   AssetMonitoringPortfolioResponse,
@@ -1777,7 +1781,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         const pendingDelivery = await dispatch(command, dispatchDeps)
         assert.equal(pendingDelivery.ok, false)
-        assert.match(pendingDelivery.error ?? '', /preparation is uncertain/)
+        assert.match(pendingDelivery.error ?? '', /preparation did not finish; no order was sent/)
         assert.ok(pendingDelivery.clientOrderId)
         assert.equal(deliveryStatusReads, 10)
         assert.deepEqual(deliveryRetryAttempts, [1, 2, 3, 4, 5, 6, 7, 8, 9])
@@ -1787,7 +1791,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         creditAvailable = true
         const pendingCredit = await dispatch(command, dispatchDeps)
         assert.equal(pendingCredit.ok, false)
-        assert.match(pendingCredit.error ?? '', /preparation is uncertain/)
+        assert.match(pendingCredit.error ?? '', /preparation did not finish; no order was sent/)
         assert.ok(pendingCredit.clientOrderId)
         const response = await dispatch(command, dispatchDeps)
 
@@ -1905,7 +1909,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
-      'order.submit prepares a capability and submits only its bound reference',
+      'order.submit prepares a capability and submits it in one admission-form request',
       async () => {
         const timeline: import('../src/orderTimeline.ts').OrderTimelineObservation[] = []
         await writeState(backedDaemonState('cond', 1_000_000))
@@ -1985,9 +1989,10 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             ['submitted-record', 'success'],
           ],
         )
-        assert.equal(
-          timeline.every(({ orderId }) => orderId === 'order-1'),
-          true,
+        // The engine assigns the order id in the response of the one request.
+        assert.deepEqual(
+          timeline.map(({ orderId }) => orderId),
+          [null, 'order-1'],
         )
         assert.equal(
           timeline.every(({ groupId }) => groupId === null),
@@ -1999,10 +2004,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
           nostrSecretKeyHex: secrets.nostrSecretKeyHex,
         })
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.match(
@@ -2101,10 +2105,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         assert.equal(response.ok, true, response.error)
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.equal(
@@ -2247,10 +2250,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
       assert.equal(response.ok, true)
       assert.deepEqual(capturedRequest, {
-        settlementCapability: {
-          artifactId: '00000000-0000-4000-8000-000000000001',
-          bindingDigest: 'ab'.repeat(32),
-        },
+        settlementCapabilityAdmission: testOrderAdmission(
+          capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+        ),
         comment: null,
       })
       assert.equal(
@@ -2389,6 +2391,76 @@ test('daemon dispatch persists wallet and order state', async (t) => {
     })
 
     await t.test(
+      'order.submit wakes recovery after a definitive refusal so the locked inputs are refunded',
+      async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder() {
+            throw new EngineClientError(
+              429,
+              '{"code":"settlement-capability-capacity-exhausted","limitCode":"condition-concurrency"}',
+              'settlement-capability-capacity-exhausted',
+            )
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
+        let markedRejected = false
+        let recoveryTriggers = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient() {
+              return engine
+            },
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-capacity-rejected',
+              undefined,
+              () => {
+                markedRejected = true
+              },
+            ),
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.equal(response.ok, false)
+        assert.equal(response.code, 'settlement-capability-capacity-exhausted')
+        assert.equal(response.error, 'Order submission was rejected')
+        assert.equal(markedRejected, true)
+        // The engine committed nothing, but the inputs stay locked until
+        // authorization expiry. Only a recovery pass schedules that refund.
+        assert.equal(recoveryTriggers, 1)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      },
+    )
+
+    await t.test(
       'order.submit reports a mint refusal that released the reserved funds',
       async () => {
         const priorState = await readState()
@@ -2428,7 +2500,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.equal(response.code, 'order-attempt-released')
         assert.equal(
           response.error,
-          'The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.',
+          'The mint refused the order (mint code 11008). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.',
         )
         assert.deepEqual(response.mintError, { code: 11008, detail: 'Duplicate outputs' })
         assert.ok(response.clientOrderId)
@@ -2495,6 +2567,59 @@ test('daemon dispatch persists wallet and order state', async (t) => {
       },
     )
 
+    for (const reason of ['mint-check-failed', 'attempts-exhausted'] as const) {
+      await t.test(`order.submit reports a failed order output check (${reason})`, async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let recoveryTriggers = 0
+        let submits = 0
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => ({
+              ...testOrderEngine(),
+              submitOrder: async () => {
+                submits += 1
+                throw new Error('a refused check must not submit an order')
+              },
+            }),
+            prepareSettlementCapability: async () => {
+              throw new CtfRangeOrderOutputCheckError(reason)
+            },
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
+            },
+          },
+        )
+
+        assert.deepEqual(
+          { ...response, clientOrderId: typeof response.clientOrderId },
+          {
+            ok: false,
+            code: 'order-output-check-failed',
+            error:
+              "The wallet could not check this order's outputs with the mint. No order was submitted.",
+            clientOrderId: 'string',
+          },
+        )
+        assert.equal(submits, 0)
+        // The check sent no mint request and left no funds to recover.
+        assert.equal(recoveryTriggers, 0)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      })
+    }
+
     await t.test('order.recovery reports halted and released range operations', async () => {
       const status = {
         pending: [
@@ -2557,86 +2682,104 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
     for (const failure of [
       {
-        status: 409,
-        code: undefined,
-        detail: 'Order book changed while submitting order; retry the request.',
+        label: '409 retryable conflict',
+        error: () =>
+          new EngineClientError(
+            409,
+            'Order book changed while submitting order; retry the request.',
+          ),
+        rejected: false,
       },
       {
-        status: 503,
-        code: 'order-processing-unavailable',
-        detail: 'Order processing is temporarily unavailable.',
+        label: '503 order-processing-unavailable',
+        error: () =>
+          new EngineClientError(
+            503,
+            'Order processing is temporarily unavailable.',
+            'order-processing-unavailable',
+            'Order processing is temporarily unavailable.',
+          ),
+        rejected: false,
+      },
+      // The in-flow resend stopped. Only refusals that commit nothing make it final.
+      {
+        label: 'a resend stopped after only refusals',
+        error: () => new OrderQuoteRefreshWaitStopped('budget', true, 'order-book-conflict'),
+        rejected: true,
+      },
+      {
+        label: 'a cancel during an attempt in flight',
+        error: () => new OrderQuoteRefreshWaitStopped('cancelled', false, 'order-book-conflict'),
+        rejected: false,
       },
     ])
-      await t.test(
-        `order.submit retains a prepared capability after ${failure.status} ${failure.code ?? 'retryable conflict'}`,
-        async () => {
-          const priorState = await readState()
-          await writeState(backedDaemonState())
-          let markedRejected = false
-          let recoveryTriggers = 0
-          const engine: EngineClientLike = {
-            ...scoreDisabledEngineMethods,
-            async submitOrder() {
-              throw new EngineClientError(
-                failure.status,
-                failure.detail,
-                failure.code,
-                failure.detail,
-              )
-            },
-            async getOrderStatus() {
-              return null
-            },
-            async cancelOrder() {
-              throw new Error('cancelOrder unused')
-            },
-            async getOrderBook() {
-              throw new Error('getOrderBook unused')
-            },
-            async queryMarkets() {
-              return { markets: [], nextCursor: null }
-            },
-          }
+      await t.test(`order.submit records the outcome after ${failure.label}`, async () => {
+        const priorState = await readState()
+        await writeState(backedDaemonState())
+        let markedRejected = false
+        let recoveryTriggers = 0
+        const engine: EngineClientLike = {
+          ...scoreDisabledEngineMethods,
+          async submitOrder() {
+            throw failure.error()
+          },
+          async getOrderStatus() {
+            return null
+          },
+          async cancelOrder() {
+            throw new Error('cancelOrder unused')
+          },
+          async getOrderBook() {
+            throw new Error('getOrderBook unused')
+          },
+          async queryMarkets() {
+            return { markets: [], nextCursor: null }
+          },
+        }
 
-          const response = await dispatch(
-            {
-              method: 'order.submit',
-              params: withFeeConsent({
-                marketId: 'cond-Bob',
-                outcomeId: 'Bob',
-                side: 'Buy',
-                price: 420,
-                amountSubunits: 1_000,
-                timeInForce: 'FOK',
-              }),
-            },
-            {
-              createEngineClient: () => engine,
-              prepareSettlementCapability: prepareSettlementCapability(
-                'order-retryable',
-                undefined,
-                () => {
-                  markedRejected = true
-                },
-              ),
-              triggerSettlementRecovery: () => {
-                recoveryTriggers += 1
+        const response = await dispatch(
+          {
+            method: 'order.submit',
+            params: withFeeConsent({
+              marketId: 'cond-Bob',
+              outcomeId: 'Bob',
+              side: 'Buy',
+              price: 420,
+              amountSubunits: 1_000,
+              timeInForce: 'FOK',
+            }),
+          },
+          {
+            createEngineClient: () => engine,
+            prepareSettlementCapability: prepareSettlementCapability(
+              'order-retryable',
+              undefined,
+              () => {
+                markedRejected = true
               },
+            ),
+            triggerSettlementRecovery: () => {
+              recoveryTriggers += 1
             },
-          )
+          },
+        )
 
-          assert.equal(response.ok, false)
-          assert.equal(response.code, undefined)
-          assert.match(response.error ?? '', /submission is uncertain/)
-          assert.ok(response.clientOrderId)
-          assert.equal(response.operationId, `range:${response.clientOrderId}`)
-          assert.equal(response.orderId, 'order-retryable')
-          assert.equal(markedRejected, false)
-          assert.equal(recoveryTriggers, 1)
-          assert.deepEqual((await readState())?.orders, {})
-          if (priorState) await writeState(priorState)
-        },
-      )
+        assert.equal(response.ok, false)
+        assert.equal(response.code, failure.rejected ? 'order-book-conflict' : undefined)
+        assert.match(
+          response.error ?? '',
+          failure.rejected ? /submission was rejected/ : /submission is uncertain/,
+        )
+        assert.ok(response.clientOrderId)
+        assert.equal(response.operationId, `range:${response.clientOrderId}`)
+        // The response never arrived, so no order id is known.
+        assert.equal(response.orderId, undefined)
+        assert.equal(markedRejected, failure.rejected)
+        // An uncertain order needs its lookup; a rejected one needs its refund at expiry.
+        assert.equal(recoveryTriggers, 1)
+        assert.deepEqual((await readState())?.orders, {})
+        if (priorState) await writeState(priorState)
+      })
 
     for (const enabled of [false, true]) {
       await t.test(
@@ -3217,10 +3360,9 @@ test('daemon dispatch persists wallet and order state', async (t) => {
 
         assert.equal(response.ok, true)
         assert.deepEqual(capturedRequest, {
-          settlementCapability: {
-            artifactId: '00000000-0000-4000-8000-000000000001',
-            bindingDigest: 'ab'.repeat(32),
-          },
+          settlementCapabilityAdmission: testOrderAdmission(
+            capturedPreparation as unknown as PrepareSettlementCapabilityInput,
+          ),
           comment: null,
         })
         assert.equal(
@@ -3536,7 +3678,7 @@ test('daemon dispatch persists wallet and order state', async (t) => {
         assert.match(response.error ?? '', /submission is uncertain/)
         assert.ok(response.clientOrderId)
         assert.equal(response.operationId, `range:${response.clientOrderId}`)
-        assert.equal(response.orderId, 'order-lost')
+        assert.equal(response.orderId, undefined)
         assert.equal(recoveryWakes, 1)
         assert.deepEqual((await readState())?.orders, {})
       },
@@ -4235,25 +4377,54 @@ function prepareSettlementCapability(
     return {
       operationId: `range:${input.clientOrderId}`,
       authorizationExpiresAtUnixSeconds: 1785542400,
-      markSubmitted: async () => undefined,
-      markRejected: async () => onRejected?.(),
-      consolidation: { operationIds: [], feeSubunits: 0 },
-      capability: {
-        reference: {
-          artifactId: '00000000-0000-4000-8000-000000000001',
-          bindingDigest: 'ab'.repeat(32),
-        },
-        orderId,
-        clientOrderId: input.clientOrderId,
-        marketId: input.marketId,
-        artifactDigest: 'cd'.repeat(32),
-        state: 'bound' as const,
-        version: 1,
-        authorizationExpiresAt: '2026-08-01T00:00:00.000Z',
-        stageExpiresAt: '2026-07-31T23:59:00.000Z',
-        settlementGroup: null,
+      admission: testOrderAdmission(input),
+      recordAccepted: async (response: { orderId: string }) => {
+        if (response.orderId !== orderId) throw new Error('engine returned a foreign order')
+        return {
+          reference: TEST_CAPABILITY_REFERENCE,
+          orderId,
+          clientOrderId: input.clientOrderId,
+          marketId: input.marketId,
+          artifactDigest: 'cd'.repeat(32),
+          state: 'bound' as const,
+          version: 1,
+          authorizationExpiresAt: '2026-08-01T00:00:00.000Z',
+          stageExpiresAt: '2026-07-31T23:59:00.000Z',
+          settlementGroup: null,
+        }
       },
+      recordRejected: async () => onRejected?.(),
+      consolidation: { operationIds: [], feeSubunits: 0 },
     }
+  }
+}
+
+const TEST_CAPABILITY_REFERENCE = {
+  artifactId: '00000000-0000-4000-8000-000000000001',
+  bindingDigest: 'ab'.repeat(32),
+}
+
+/** The one-step admission value that the fake coordinator prepares for `input`. */
+function testOrderAdmission(input: PrepareSettlementCapabilityInput) {
+  return {
+    stageIdempotencyKey: `authorization:${input.clientOrderId}`,
+    clientOrderId: input.clientOrderId,
+    marketId: input.marketId,
+    orderIntent: {
+      outcomeId: input.outcomeId,
+      tokenSide: input.tokenSide,
+      side: input.side,
+      price: input.price,
+      maxQuotePaymentSubunits: input.maxQuotePaymentSubunits,
+      minQuotePaymentSubunits: input.minQuotePaymentSubunits,
+      amountSubunits: input.amountSubunits,
+      minimumFillAmountSubunits: input.minimumFillAmountSubunits,
+      baseAsset: input.baseAsset,
+      collateralUnit: input.collateralUnit,
+      timeInForce: 'FOK' as const,
+      expiresAt: input.expiresAt,
+    },
+    artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
   }
 }
 

@@ -61,18 +61,25 @@ import type { ActiveCtfRangeMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrd
 import type { ConditionalKeysetSeedRecoveryAuthority } from "@bitcaster/client-sdk/conditionalKeysetSeedRecovery";
 import {
   recordSeedRestoreCondition,
+  isSeedRestoreScanCapped,
+  readSeedRestoreResyncRow,
   recordSeedRestoreDeferral,
   requestBrowserKeysetResync,
   seedRestoreDatabase,
   settleSeedRestoreDeferral,
 } from "@/stores/seed-restore-db";
-import { findLastSignedSeedCounter } from "@bitcaster/client-sdk/seedCounterGapScan";
+import {
+  SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
+  findLastSignedSeedCounter,
+  nextSeedCounterAfterLastSigned,
+} from "@bitcaster/client-sdk/seedCounterGapScan";
+import { scanSeedCountersForAdmission } from "@bitcaster/client-sdk/seedCounterAdmissionScan";
 import {
   admitBrowserReceivedProofs,
   admitBrowserReceivedProofsWithHeldProfileLock,
 } from "@/lib/browserCustodyProofReceive";
-import { requireBrowserWalletNewWritePermission } from "@/lib/browserWalletNewWritePermission";
 import { withWalletProfileLock } from "@/lib/walletProfileLock";
+import { reportBrowserWalletUsedElsewhere } from "@/lib/browserWalletUsedElsewhere";
 import { toSeed } from "@/lib/bip39";
 import {
   hydrateDurableWalletMintPreview,
@@ -90,6 +97,7 @@ import {
   DURABLE_CUSTODY_RECOVERY_PAGE_LIMIT_MAX,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
+  type DurableCustodyOwnerAuthorization,
 } from "@bitcaster/client-sdk/durableCustody";
 import { DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX } from "@bitcaster/client-sdk/durableCustodyProofImport";
 import {
@@ -278,11 +286,6 @@ async function mintAndStoreProofs(input: MintAndStoreProofsInput): Promise<Proof
   context.requireCapturedProfile();
   const prepared = await withWalletProfileLock(context.scopeId, async () => {
     let counters: OperationCounters | undefined;
-    context.requireCapturedProfile();
-    await requireBrowserWalletNewWritePermission({
-      database: context.database,
-      scopeId: context.scopeId,
-    });
     context.requireCapturedProfile();
     const preview = await wallet.prepareMint("bolt11", amount, quote, {
       onCountersReserved: (reserved) => {
@@ -712,11 +715,18 @@ export interface KeysetRecoveryResult {
   scannedKeysets: string[];
   complete: boolean;
   /**
-   * Keysets with a restored proof that the mint reports `PENDING`. Their
-   * counters advanced, but their recovery stays incomplete (ADR-033). A
-   * deferral marker at the pending counter backs off the next scan.
+   * Keysets whose recovery waits in a deferral marker. A restored proof that
+   * the mint reports `PENDING` keeps a marker at its counter and backs off the
+   * next scan (ADR-033). A scan that stopped at its counter budget keeps a
+   * marker where it stopped (`continuedKeysets`). Their counters advanced,
+   * but their recovery stays incomplete.
    */
   pendingKeysets?: string[];
+  /**
+   * The keysets of `pendingKeysets` whose scan stopped at its counter budget.
+   * A later pass continues the scan from the marker.
+   */
+  continuedKeysets?: string[];
   /** A keyset scan or the keyset discovery failed. A pending proof alone is not a failure. */
   failed?: boolean;
   /**
@@ -726,8 +736,8 @@ export interface KeysetRecoveryResult {
   postponedKeysets?: string[];
 }
 
-/** A deferral scan met custody work in flight at admission. */
-class CounterRecoveryPostponedError extends Error {}
+/** A recovery scan met custody work in flight at admission. The caller waits; it is no failure. */
+export class CounterRecoveryPostponedError extends Error {}
 
 type RecoverableMintKeyset = {
   id: string;
@@ -764,15 +774,26 @@ export class WalletKeysetCounterPendingError extends WalletKeysetCounterReadines
 
 const walletKeysetCounterReadiness = new Map<string, Promise<void>>();
 
+/**
+ * The wallet-profile lock state of a counter readiness caller. A caller that
+ * holds the lock names the custody owner that it claimed, or null when it
+ * claimed none. Recovered proofs are then admitted under that owner, because a
+ * second claim inside the same lock hold refuses a live owner of this page.
+ */
+export type WalletKeysetCounterReadinessLock =
+  | { profileLockHeld?: false; custodyOwner?: never }
+  | { profileLockHeld: true; custodyOwner: DurableCustodyOwnerAuthorization | null };
+
 /** Ensure one preparation-selected keyset has completed counter recovery. */
-export function ensureWalletKeysetCounterReady(input: {
-  scopeId: string;
-  mintUrl: string;
-  unit: "msat";
-  keyset: ActiveCtfRangeMintKeyset;
-  conditionalAsset?: { conditionId: string; outcomeCollection: string };
-  profileLockHeld?: boolean;
-}): Promise<void> {
+export function ensureWalletKeysetCounterReady(
+  input: {
+    scopeId: string;
+    mintUrl: string;
+    unit: "msat";
+    keyset: ActiveCtfRangeMintKeyset;
+    conditionalAsset?: { conditionId: string; outcomeCollection: string };
+  } & WalletKeysetCounterReadinessLock,
+): Promise<void> {
   let url: string;
   let conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   try {
@@ -793,6 +814,8 @@ export function ensureWalletKeysetCounterReady(input: {
     conditionalKeyset?.outcomeCollectionId ?? null,
     conditionalKeyset?.registeredAt ?? null,
     input.profileLockHeld === true,
+    input.custodyOwner?.incarnationId ?? null,
+    input.custodyOwner?.fencingEpoch ?? null,
   ]);
   const pending = walletKeysetCounterReadiness.get(coalescingKey);
   if (pending !== undefined) return pending;
@@ -804,6 +827,7 @@ export function ensureWalletKeysetCounterReady(input: {
     keysetId: input.keyset.id,
     conditionalKeyset,
     profileLockHeld: input.profileLockHeld === true,
+    custodyOwner: input.custodyOwner ?? null,
   }).catch((error: unknown) => {
     throw error instanceof WalletKeysetCounterPendingError
       ? error
@@ -822,7 +846,8 @@ export function ensureWalletKeysetCounterReady(input: {
 
 /**
  * Advance one selected keyset's counter past every output that the mint
- * signed for this seed, even after an earlier scan completed. Use it after
+ * signed for this seed and the 150 counters after it (ADR-051 cursor rule),
+ * even after an earlier scan completed. Use it after
  * the mint reports a reused output: another client with the same seed signed
  * outputs past this browser's cursor. It admits no proof, so it claims no
  * custody scope and can run while the caller owns that scope. The scan has a
@@ -850,6 +875,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
+  // The mint refused outputs that it already signed: another client of this
+  // seed used these counters (ADR-033, ADR-051 "Restore").
+  reportBrowserWalletUsedElsewhere(input.scopeId);
   const counters = selectedCounterStore(input.scopeId);
   try {
     const wallet = (await useWalletStore
@@ -877,6 +905,9 @@ export async function advanceWalletKeysetCounterPastMint(input: {
       counters,
       fromCounter: Math.min(input.plannedFromCounter ?? start, start),
       lastSigned,
+      // ADR-051 cursor rule: the next 150 counters stay unused.
+      nextCounter:
+        lastSigned === null ? null : lastSigned + 1 + SEED_COUNTER_SKIP_AFTER_LAST_SIGNED,
       deferred: lastSigned !== null || input.plannedFromCounter !== undefined,
     });
   } catch {
@@ -888,10 +919,11 @@ export async function advanceWalletKeysetCounterPastMint(input: {
 }
 
 /**
- * Advance one selected keyset's counter to `nextCounter` after a probe found
- * outputs that the mint signed from `fromCounter`. The caller already ran the
- * bounded gap scan. It admits no proof. It first writes the deferral marker,
- * so a later pass admits the skipped outputs (ADR-033).
+ * Advance one selected keyset's counter to `nextCounter` after the order
+ * output check found outputs that the mint signed from `fromCounter` to
+ * `lastSignedCounter`. The SDK already ran the bounded gap scan and the
+ * ADR-051 cursor rule. It admits no proof. It first writes the deferral
+ * marker, so a later pass admits the skipped outputs (ADR-033).
  */
 export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   scopeId: string;
@@ -900,24 +932,33 @@ export async function advanceWalletKeysetCounterPastSignedOutputs(input: {
   keyset: ActiveCtfRangeMintKeyset;
   conditionalAsset?: { conditionId: string; outcomeCollection: string };
   fromCounter: number;
+  lastSignedCounter: number;
   nextCounter: number;
 }): Promise<void> {
   let selected: ReturnType<typeof requireSelectedCounterRecovery>;
   try {
     selected = requireSelectedCounterRecovery(input);
     requireCounter(input.fromCounter);
-    if (!Number.isSafeInteger(input.nextCounter) || input.nextCounter <= input.fromCounter) {
-      throw new Error("next counter is invalid");
+    if (
+      !Number.isSafeInteger(input.lastSignedCounter) ||
+      input.lastSignedCounter < input.fromCounter ||
+      !Number.isSafeInteger(input.nextCounter) ||
+      input.nextCounter <= input.lastSignedCounter
+    ) {
+      throw new Error("signed counter range is invalid");
     }
   } catch {
     throw new WalletKeysetCounterReadinessError();
   }
+  // The order output check found outputs of another client of this seed.
+  reportBrowserWalletUsedElsewhere(input.scopeId);
   try {
     await deferAndAdvanceSelectedKeyset({
       ...input,
       url: selected.url,
       counters: selectedCounterStore(input.scopeId),
-      lastSigned: input.nextCounter - 1,
+      lastSigned: input.lastSignedCounter,
+      nextCounter: input.nextCounter,
       deferred: true,
     });
   } catch {
@@ -955,6 +996,8 @@ async function deferAndAdvanceSelectedKeyset(input: {
   counters: BrowserWalletCounterDexieStore;
   fromCounter: number;
   lastSigned: number | null;
+  /** The counter after the skipped outputs, or null when nothing is skipped. */
+  nextCounter: number | null;
   deferred: boolean;
 }): Promise<void> {
   if (input.deferred) {
@@ -969,11 +1012,15 @@ async function deferAndAdvanceSelectedKeyset(input: {
       nowMs: Date.now(),
     });
   }
-  if (input.lastSigned !== null) {
+  if (input.nextCounter !== null) {
     await input.counters.advanceToAtLeastInContext(
-      { mintUrl: input.url, unit: input.unit },
+      {
+        mintUrl: input.url,
+        unit: input.unit,
+        ...(input.conditionalAsset === undefined ? {} : { conditional: input.conditionalAsset }),
+      },
       input.keyset.id,
-      input.lastSigned + 1,
+      input.nextCounter,
       true,
     );
   }
@@ -1013,6 +1060,7 @@ async function recoverSelectedKeysetCounterReadiness(input: {
   keysetId: string;
   conditionalKeyset: ConditionalCounterRecoveryKeyset | undefined;
   profileLockHeld: boolean;
+  custodyOwner: DurableCustodyOwnerAuthorization | null;
 }): Promise<void> {
   if (input.conditionalKeyset !== undefined) {
     // A later deferral of this keyset can then find its keyset authority
@@ -1032,7 +1080,12 @@ async function recoverSelectedKeysetCounterReadiness(input: {
     keysetId: input.keysetId,
     conditionalKeyset: input.conditionalKeyset,
     profileLockHeld: input.profileLockHeld,
+    custodyOwner: input.custodyOwner,
   });
+  // A scan that stopped at its counter budget continues in a later pass.
+  if (result.continuedKeysets?.includes(input.keysetId) === true) {
+    throw new Error("counter recovery is incomplete");
+  }
   if (result.pendingKeysets?.includes(input.keysetId) === true) {
     throw new WalletKeysetCounterPendingError();
   }
@@ -1293,24 +1346,13 @@ type CounterRecoveryProofAsset =
       readonly outcomeCollection: string;
     };
 
+/** The asset of a recovered proof comes only from the authority of its keyset. */
 function counterRecoveryProofAsset(
   wallet: CashuWallet,
   keysetId: string,
-  proof: StoredProof,
 ): CounterRecoveryProofAsset {
   const keyset = wallet.getKeyset(keysetId);
-  const suppliedCondition = proof.conditionId ?? (proof as { condition_id?: unknown }).condition_id;
-  const suppliedOutcome =
-    proof.outcomeCollection ?? (proof as { outcome_collection?: unknown }).outcome_collection;
-  if ((suppliedCondition === undefined) !== (suppliedOutcome === undefined)) {
-    throw new Error("counter recovery proof metadata is incomplete");
-  }
-  if (!keyset.conditional) {
-    if (suppliedCondition !== undefined) {
-      throw new Error("counter recovery proof metadata conflicts with keyset");
-    }
-    return { kind: "regular" };
-  }
+  if (!keyset.conditional) return { kind: "regular" };
   const conditionId = keyset.conditional.conditionId;
   if (typeof conditionId !== "string" || !/^[0-9a-fA-F]{64}$/.test(conditionId)) {
     throw new Error("counter recovery keyset condition id is invalid");
@@ -1322,14 +1364,6 @@ function counterRecoveryProofAsset(
     outcomeCollection.length > 512
   ) {
     throw new Error("counter recovery keyset outcome collection is invalid");
-  }
-  if (
-    suppliedCondition !== undefined &&
-    (typeof suppliedCondition !== "string" ||
-      suppliedCondition.toLowerCase() !== conditionId.toLowerCase() ||
-      suppliedOutcome !== outcomeCollection)
-  ) {
-    throw new Error("counter recovery proof metadata conflicts with keyset");
   }
   return {
     kind: "conditional",
@@ -1350,7 +1384,7 @@ function expectedCounterRecoveryProofRow(
     normalizedMint: mintUrl,
     unit,
     proof,
-    asset: counterRecoveryProofAsset(wallet, proof.id, proof),
+    asset: counterRecoveryProofAsset(wallet, proof.id),
     receivedAtMs: 0,
   });
 }
@@ -1435,9 +1469,11 @@ function requireExactCounterRecoveryProofStates(
 }
 
 /**
- * Walk the mint's seen-outputs space (via cashu-ts `batchRestore`) for every
- * keyset of `mintUrl`, advance its authoritative cursor past the highest
+ * Walk the mint's seen-outputs space (via the SDK admitting NUT-09 scan) for
+ * every keyset of `mintUrl`, advance its authoritative cursor past the highest
  * signed output, and admit UNSPENT recovered proofs in the same transaction.
+ * One scan of a keyset asks about at most the SDK counter budget. A scan that
+ * stops at the budget keeps a deferral marker, and a later pass continues it.
  *
  * Returns the list of keyset IDs that were actually scanned so the caller
  * can decide whether a retry is worthwhile.
@@ -1514,6 +1550,8 @@ async function recoverKeysetCountersForMintCore(
     keysetId?: string;
     conditionalKeyset?: ConditionalCounterRecoveryKeyset;
     profileLockHeld?: boolean;
+    /** The custody owner of a lock holder. Recovered proofs are admitted under it. */
+    custodyOwner?: DurableCustodyOwnerAuthorization | null;
     /** The first counter to scan. A deferral scan starts at its marker. */
     startCounter?: number;
   } = {},
@@ -1597,7 +1635,10 @@ async function recoverKeysetCountersForMintCore(
   );
   const scanned: string[] = [];
   const pendingKeysets: string[] = [];
+  const continuedKeysets: string[] = [];
   const postponedKeysets: string[] = [];
+  // A scan that stopped at its counter budget did not finish its keyset.
+  let budgetStopped = false;
   // A deferral scan can start below counters that an operation of this
   // browser reserved. It must not admit that operation's outputs first.
   const deferralScan = opts.force === true && opts.startCounter !== undefined;
@@ -1635,32 +1676,64 @@ async function recoverKeysetCountersForMintCore(
           isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
         });
         if (!opts.force && recoveredBefore) continue;
-        // An earlier full scan found a PENDING proof. It recorded a marker at
-        // its counter, so the next scan starts there after a backoff.
+        // An earlier scan that covered every lower counter recorded a marker:
+        // at the counter of a PENDING proof, or where the scan stopped at its
+        // counter budget. The next scan starts there, after the marker's backoff.
         const deferral = await readCounterRecoveryDeferral(scopeId, url, keyset.id);
         const pendingFrom =
-          deferral?.waitReason === "pending-proof" ? deferral.pendingFromCounter : null;
+          deferral?.waitReason === "pending-proof" || deferral?.waitReason === "scan-budget"
+            ? deferral.pendingFromCounter
+            : null;
         let scanFrom = startCounter;
-        if (!opts.force && opts.startCounter === undefined && pendingFrom !== null) {
-          if (deferral!.nextAttemptAtMs > Date.now()) {
-            pendingKeysets.push(keyset.id);
-            continue;
-          }
-          scanFrom = pendingFrom;
+        const resumes = !opts.force && opts.startCounter === undefined && pendingFrom !== null;
+        // A continuation at its cap waits for Retry. A scan that would resume
+        // it sends no mint request.
+        const capped =
+          isSeedRestoreScanCapped(deferral) &&
+          (resumes || (opts.startCounter !== undefined && opts.startCounter >= pendingFrom!));
+        if (capped || (resumes && deferral!.nextAttemptAtMs > Date.now())) {
+          pendingKeysets.push(keyset.id);
+          if (deferral!.waitReason === "scan-budget") continuedKeysets.push(keyset.id);
+          continue;
         }
+        if (resumes) scanFrom = pendingFrom!;
         // Only a scan that covers every lower counter can complete the keyset.
         const coversLowerCounters =
           scanFrom === 0 || recoveredBefore || (pendingFrom !== null && scanFrom <= pendingFrom);
-        const { proofs, lastCounterWithSignature } = await wallet.batchRestore(
-          300,
-          100,
-          scanFrom,
-          keyset.id,
-        );
+        // One pass asks about at most the SDK counter budget. A mint that
+        // signs every queried output cannot hold the pass without end.
+        await wallet.keyChain.ensureKeysetKeys(keyset.id);
+        const scan = await scanSeedCountersForAdmission({
+          restore: (outputs) => wallet.mint.restore({ outputs }),
+          seed,
+          keyset: wallet.getKeyset(keyset.id),
+          startCounter: scanFrom,
+        });
+        const proofs = [...scan.proofs];
+        const lastCounterWithSignature = scan.lastCounterWithSignature ?? undefined;
+        // A scan that does not cover the lower counters keeps no continuation.
+        // The keyset stays incomplete, so a later full scan covers them.
+        const continueFrom =
+          scan.stop === "counter-budget" && coversLowerCounters ? scan.nextCounter : null;
+        // A PENDING proof that an earlier covering scan passed, below this scan,
+        // keeps the keyset incomplete until a later scan checks it again.
+        const passedPending = deferral === undefined ? null : deferral.pendingProofCounter;
+        const pendingBelow = passedPending !== null && passedPending < scanFrom;
         requireCapturedProfile();
         requireValidCounterRecoveryResult(lastCounterWithSignature);
-        const next = lastCounterWithSignature !== undefined ? lastCounterWithSignature + 1 : 0;
-        // CRITICAL: batchRestore returns ALL deterministic proofs the mint
+        // A keyset that an unfinished seed restore still owns, regular or
+        // conditional (an order readiness scan), gets the restore cursor rule
+        // (ADR-051): another browser's reserved counters after the last
+        // signed output stay unused.
+        const restoreOwned =
+          scanFrom === 0 && (await seedRestoreOwnsKeyset(scopeId, url, keyset.id));
+        const next =
+          lastCounterWithSignature === undefined
+            ? 0
+            : restoreOwned
+              ? nextSeedCounterAfterLastSigned(lastCounterWithSignature)
+              : lastCounterWithSignature + 1;
+        // CRITICAL: the scan returns ALL deterministic proofs the mint
         // ever signed for this seed, including SPENT ones. Persisting spent
         // proofs would inflate the displayed balance and cause spent-token
         // errors on the next spend. Filter via `groupProofsByState` and keep
@@ -1687,7 +1760,7 @@ async function recoverKeysetCountersForMintCore(
             baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
             unit,
           };
-          const asset = counterRecoveryProofAsset(wallet, keyset.id, recoveredProof);
+          const asset = counterRecoveryProofAsset(wallet, keyset.id);
           return {
             ...recoveredProof,
             ...(asset.kind === "conditional"
@@ -1721,126 +1794,52 @@ async function recoverKeysetCountersForMintCore(
               ].map(nut13Counter),
             )
           : null;
-        const persistRecoveredKeyset = async () => {
-          requireCapturedProfile();
-          await db.transaction("rw", db.tables, async () => {
-            requireCapturedProfile();
-            // Check again in the admission transaction: an operation can start
-            // after the caller's check and while this scan runs.
-            if (
-              deferralScan &&
-              (await db.custodyActiveWork
-                .where("[scopeId+operationId]")
-                .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
-                .count()) > 0
-            ) {
-              throw new CounterRecoveryPostponedError();
-            }
-            const cacheSafe: StoredProof[] = [];
-            for (
-              let pageStart = 0;
-              pageStart < stored.length;
-              pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
-            ) {
-              const page = stored.slice(
-                pageStart,
-                pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
-              );
-              const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
-              const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
-              const existingRows = await db.custodyProofs.bulkGet(keys);
-              const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
-              const freshPage: StoredProof[] = [];
-              const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
-              for (const [index, proof] of page.entries()) {
-                const locator = locators.get(proof.secret);
-                if (locator === undefined) {
-                  throw new Error("counter recovery proof locator is missing");
-                }
-                const proofId = proofIds[index]!;
-                const existingRow = existingRows[index];
-                const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
-                  backupAuthorities[index],
-                  [scopeId, proofId],
-                );
-                if (existingRow === undefined) {
-                  if (backupAuthority !== undefined) {
-                    throw new Error("counter recovery canonical backup authority is orphaned");
-                  }
-                  freshPage.push(proof);
-                  freshLocators.set(proof.secret, locator);
-                  cacheSafe.push(proof);
-                  continue;
-                }
-                let canonicalRow: BrowserCustodyProofRow;
-                try {
-                  canonicalRow = decodeBrowserCustodyProofRow(existingRow);
-                } catch {
-                  throw new Error("counter recovery canonical proof row is invalid");
-                }
-                requireMatchingCounterRecoveryProof(
-                  canonicalRow,
-                  expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
-                );
-                requireMatchingCounterRecoveryBackupAuthority(
-                  canonicalRow,
-                  backupAuthority,
-                  locator,
-                );
-              }
-              if (freshPage.length > 0) {
-                await admitBrowserReceivedProofsWithHeldProfileLock({
-                  seed,
-                  sourceOperationId: counterRecoverySourceOperationId(
-                    scopeId,
-                    url,
-                    unit,
-                    keyset.id,
-                    freshPage,
-                  ),
-                  mintUrl: url,
-                  unit,
-                  wallet,
-                  proofs: freshPage,
-                  derivationAuthority: null,
-                  proofLocators: freshLocators,
-                  database: db,
-                });
-              }
-            }
-            await restoreProofsAndAdvanceCounter({
-              proofs: cacheSafe,
-              scopeId,
-              mintUrl: url,
-              unit,
-              keysetId: keyset.id,
-              restoredNext: next,
-              recovery: coversLowerCounters && !proofPending ? "complete" : "incomplete",
-              isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
-            });
-            requireCapturedProfile();
+        const persistRecoveredKeyset = () =>
+          persistCounterRecoveryWindow({
+            scopeId,
+            mintUrl: url,
+            unit,
+            keysetId: keyset.id,
+            wallet,
+            seed,
+            stored,
+            locators,
+            restoredNext: next,
+            recovery:
+              coversLowerCounters && !proofPending && !pendingBelow && scan.stop === "gap-limit"
+                ? "complete"
+                : "incomplete",
+            conditional:
+              condition === null || keyset.id !== opts.conditionalKeyset?.id ? null : condition,
+            refuseWhileCustodyWork: deferralScan,
+            custodyOwner: opts.profileLockHeld === true ? (opts.custodyOwner ?? null) : null,
+            requireCapturedProfile,
           });
-        };
         if (opts.profileLockHeld === true) {
           await persistRecoveredKeyset();
         } else {
           await withWalletProfileLock(scopeId, persistRecoveredKeyset);
         }
         // The scan admitted the deferred outputs from `scanFrom`. A PENDING
-        // proof keeps a marker at its counter and backs off (ADR-033). The
-        // marker is a record that only saves mint work: without it, the
-        // incomplete keyset scans again from counter 0.
+        // proof keeps a marker at its counter and backs off (ADR-033). A
+        // budget stop keeps a marker where the scan stopped. The marker is a
+        // record that only saves mint work: without it, the incomplete keyset
+        // scans again from counter 0.
         await settleSeedRestoreDeferral({
           scopeId,
           mintUrl: url,
           keysetId: keyset.id,
           scannedFrom: scanFrom,
           pendingFrom: lowestPendingCounter,
+          continueFrom,
           condition,
           nowMs: Date.now(),
         }).catch(() => undefined);
         scanned.push(keyset.id);
-        if (proofPending) pendingKeysets.push(keyset.id);
+        budgetStopped ||= scan.stop === "counter-budget";
+        // A continuation goes on above a PENDING proof; the proof waits beside it.
+        if (proofPending || pendingBelow || continueFrom !== null) pendingKeysets.push(keyset.id);
+        if (continueFrom !== null) continuedKeysets.push(keyset.id);
       } catch (error) {
         if (error instanceof CounterRecoveryPostponedError) {
           postponedKeysets.push(keyset.id);
@@ -1853,11 +1852,261 @@ async function recoverKeysetCountersForMintCore(
   }
   return {
     scannedKeysets: scanned,
-    complete: !failed && pendingKeysets.length === 0 && postponedKeysets.length === 0,
+    complete:
+      !failed && !budgetStopped && pendingKeysets.length === 0 && postponedKeysets.length === 0,
     failed,
     ...(pendingKeysets.length === 0 ? {} : { pendingKeysets }),
+    ...(continuedKeysets.length === 0 ? {} : { continuedKeysets }),
     ...(postponedKeysets.length === 0 ? {} : { postponedKeysets }),
   };
+}
+
+/**
+ * Admit recovered proofs and move the counter of one keyset in one wallet
+ * transaction. The caller holds the wallet profile lock. An existing proof
+ * row must match the recovered proof exactly, so a repeated window admits
+ * nothing twice.
+ */
+async function persistCounterRecoveryWindow(input: {
+  readonly scopeId: string;
+  readonly mintUrl: string;
+  readonly unit: CashuProofUnit;
+  readonly keysetId: string;
+  readonly wallet: CashuWallet;
+  readonly seed: Uint8Array;
+  readonly stored: readonly StoredProof[];
+  readonly locators: ReadonlyMap<string, DurableWalletProofDerivationLocator>;
+  readonly restoredNext: number;
+  readonly recovery: "complete" | "incomplete";
+  readonly conditional: { readonly conditionId: string; readonly outcomeCollection: string } | null;
+  /** A scan below the cursor must not admit the outputs of an operation in flight. */
+  readonly refuseWhileCustodyWork: boolean;
+  readonly custodyOwner: DurableCustodyOwnerAuthorization | null;
+  readonly requireCapturedProfile: () => void;
+}): Promise<void> {
+  const { scopeId, mintUrl: url, unit, wallet } = input;
+  input.requireCapturedProfile();
+  await db.transaction("rw", db.tables, async () => {
+    input.requireCapturedProfile();
+    // Check again in the admission transaction: an operation can start
+    // after the caller's check and while this scan runs.
+    if (
+      input.refuseWhileCustodyWork &&
+      (await db.custodyActiveWork
+        .where("[scopeId+operationId]")
+        .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
+        .count()) > 0
+    ) {
+      throw new CounterRecoveryPostponedError();
+    }
+    const cacheSafe: StoredProof[] = [];
+    for (
+      let pageStart = 0;
+      pageStart < input.stored.length;
+      pageStart += DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX
+    ) {
+      const page = input.stored.slice(
+        pageStart,
+        pageStart + DURABLE_CUSTODY_PROOF_IMPORT_PAGE_PROOF_LIMIT_MAX,
+      );
+      const proofIds = page.map((proof) => recoveryProofId(scopeId, url, unit, proof));
+      const keys = proofIds.map((proofId) => [scopeId, proofId] as [string, string]);
+      const existingRows = await db.custodyProofs.bulkGet(keys);
+      const backupAuthorities = await db.custodyProofBackupAuthorities.bulkGet(keys);
+      const freshPage: StoredProof[] = [];
+      const freshLocators = new Map<string, DurableWalletProofDerivationLocator>();
+      for (const [index, proof] of page.entries()) {
+        const locator = input.locators.get(proof.secret);
+        if (locator === undefined) {
+          throw new Error("counter recovery proof locator is missing");
+        }
+        const proofId = proofIds[index]!;
+        const existingRow = existingRows[index];
+        const backupAuthority = requireBrowserLiveProofBackupAuthorityTableRow(
+          backupAuthorities[index],
+          [scopeId, proofId],
+        );
+        if (existingRow === undefined) {
+          if (backupAuthority !== undefined) {
+            throw new Error("counter recovery canonical backup authority is orphaned");
+          }
+          freshPage.push(proof);
+          freshLocators.set(proof.secret, locator);
+          cacheSafe.push(proof);
+          continue;
+        }
+        let canonicalRow: BrowserCustodyProofRow;
+        try {
+          canonicalRow = decodeBrowserCustodyProofRow(existingRow);
+        } catch {
+          throw new Error("counter recovery canonical proof row is invalid");
+        }
+        requireMatchingCounterRecoveryProof(
+          canonicalRow,
+          expectedCounterRecoveryProofRow(scopeId, url, unit, wallet, proof),
+        );
+        requireMatchingCounterRecoveryBackupAuthority(canonicalRow, backupAuthority, locator);
+      }
+      if (freshPage.length > 0) {
+        await admitBrowserReceivedProofsWithHeldProfileLock({
+          seed: input.seed,
+          sourceOperationId: counterRecoverySourceOperationId(
+            scopeId,
+            url,
+            unit,
+            input.keysetId,
+            freshPage,
+          ),
+          mintUrl: url,
+          unit,
+          wallet,
+          proofs: freshPage,
+          derivationAuthority: null,
+          proofLocators: freshLocators,
+          database: db,
+          ...(input.custodyOwner ? { custodyOwner: input.custodyOwner } : {}),
+        });
+      }
+    }
+    await restoreProofsAndAdvanceCounter({
+      proofs: cacheSafe,
+      scopeId,
+      mintUrl: url,
+      unit,
+      keysetId: input.keysetId,
+      restoredNext: input.restoredNext,
+      recovery: input.recovery,
+      ...(input.conditional === null ? {} : { conditional: { ...input.conditional } }),
+      isCurrentProfile: () => activeBrowserWalletScopeId() === scopeId,
+    });
+    input.requireCapturedProfile();
+  });
+}
+
+/** The keyset of one recovery index restore window. The SDK scan verified it with the mint keys. */
+export type BrowserRecoveryIndexWindowKeyset =
+  | { readonly kind: "regular"; readonly id: string }
+  | { readonly kind: "conditional"; readonly authority: ConditionalKeysetSeedRecoveryAuthority };
+
+/**
+ * Admit the verified UNSPENT proofs of one recovery index restore window and
+ * move the NUT-13 cursor to at least `next` (ADR-051 "Restore", ADR-039
+ * "Restore order"). The SDK scan checked the keyset, each DLEQ, and NUT-07.
+ * `recovery: "complete"` marks the counter association complete. The local
+ * cursor never moves back.
+ */
+export async function admitBrowserRecoveryIndexWindow(input: {
+  readonly scopeId: string;
+  /** The 64-byte BIP-39 seed of the scope. */
+  readonly seed: Uint8Array;
+  readonly mintUrl: string;
+  readonly keyset: BrowserRecoveryIndexWindowKeyset;
+  readonly proofs: readonly Proof[];
+  /** The NUT-13 counter of each proof, in the order of the proofs. */
+  readonly counters: readonly number[];
+  readonly next: number;
+  readonly recovery: "complete" | "incomplete";
+}): Promise<void> {
+  const url = normalizeUrl(input.mintUrl);
+  const { scopeId, seed } = input;
+  const requireCapturedProfile = () => {
+    if (activeBrowserWalletScopeId() !== scopeId) {
+      throw new Error("The wallet profile changed during the seed restore.");
+    }
+  };
+  if (input.proofs.length !== input.counters.length) {
+    throw new Error("seed restore window counters are invalid");
+  }
+  requireCounter(input.next);
+  const unit = "msat" as const;
+  const wallet = (await useWalletStore.getState().getWalletForUnit(url, unit)) as CashuWallet;
+  const keysetId = input.keyset.kind === "regular" ? input.keyset.id : input.keyset.authority.id;
+  let conditional: { conditionId: string; outcomeCollection: string } | null = null;
+  if (input.keyset.kind === "conditional") {
+    const { authority } = input.keyset;
+    if (authority.unit !== unit) throw new Error("seed restore keyset unit is invalid");
+    registerCounterRecoveryConditionalKeyset(wallet, {
+      canonicalMintUrl: url,
+      id: authority.id,
+      unit,
+      keys: { ...authority.keys },
+      inputFeePpk: authority.inputFeePpk,
+      finalExpiry: authority.finalExpiry,
+      active: authority.active,
+      conditionId: authority.conditionId,
+      outcomeCollection: authority.outcomeCollection,
+      outcomeCollectionId: authority.outcomeCollectionId,
+      registeredAt: authority.registeredAt,
+    });
+    conditional = {
+      conditionId: authority.conditionId.toLowerCase(),
+      outcomeCollection: authority.outcomeCollection,
+    };
+  }
+  await wallet.keyChain.ensureKeysetKeys(keysetId);
+  requireCapturedProfile();
+  validateRecoveredProofs(wallet, url, unit, keysetId, input.proofs);
+  const asset = counterRecoveryProofAsset(wallet, keysetId);
+  const stored: StoredProof[] = input.proofs.map((proof) => ({
+    ...proof,
+    mintUrl: url,
+    baseAsset: COLLATERAL_UNIT_REGISTRY[unit].baseAsset,
+    unit,
+    ...(asset.kind === "conditional"
+      ? { conditionId: asset.conditionId, outcomeCollection: asset.outcomeCollection }
+      : {}),
+  }));
+  const locators = new Map<string, DurableWalletProofDerivationLocator>();
+  for (const [index, proof] of stored.entries()) {
+    const counter = input.counters[index]!;
+    requireCounter(counter);
+    // The lineage check proves that the proof secret is the NUT-13 secret of its counter.
+    const lineage = locateSeedDerivedProofLineage({
+      seed,
+      keysetId,
+      counterStart: counter,
+      counterCount: 1,
+      proofs: [{ id: keysetId, secret: proof.secret }],
+    });
+    const located = lineage[0];
+    if (located === undefined) throw new Error("seed restore proof is outside its counter");
+    const { secret: _secret, ...locator } = located;
+    locators.set(proof.secret, locator);
+  }
+  await withWalletProfileLock(scopeId, () =>
+    persistCounterRecoveryWindow({
+      scopeId,
+      mintUrl: url,
+      unit,
+      keysetId,
+      wallet,
+      seed,
+      stored,
+      locators,
+      restoredNext: input.next,
+      recovery: input.recovery,
+      conditional,
+      // A scan from counter 0 must not admit the outputs of an operation of
+      // this browser before the operation records them.
+      refuseWhileCustodyWork: true,
+      custodyOwner: null,
+      requireCapturedProfile,
+    }),
+  );
+}
+
+/** Whether an unfinished seed restore still plans to scan this keyset. A read failure means no. */
+async function seedRestoreOwnsKeyset(
+  scopeId: string,
+  mintUrl: string,
+  keysetId: string,
+): Promise<boolean> {
+  try {
+    const row = await seedRestoreDatabase(scopeId).keysets.get([scopeId, mintUrl, keysetId]);
+    return row?.state === "queued";
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -1867,7 +2116,8 @@ async function recoverKeysetCountersForMintCore(
  */
 async function readCounterRecoveryDeferral(scopeId: string, mintUrl: string, keysetId: string) {
   try {
-    return await seedRestoreDatabase(scopeId).resync.get([scopeId, mintUrl, keysetId]);
+    const row = await seedRestoreDatabase(scopeId).resync.get([scopeId, mintUrl, keysetId]);
+    return row === undefined ? undefined : readSeedRestoreResyncRow(row);
   } catch {
     return undefined;
   }
@@ -2060,7 +2310,7 @@ export async function receiveAndStoreTokenRecoverably(
       unit,
       asset: "conditional",
       conditionalInputProofs,
-      ensureConditionalCounterReady: async (authority) => {
+      ensureConditionalCounterReady: async (authority, owner) => {
         const keyset: CtfRangeConditionalMintKeyset = {
           canonicalMintUrl: authority.normalizedMint,
           id: authority.keysetId,
@@ -2084,6 +2334,7 @@ export async function receiveAndStoreTokenRecoverably(
             outcomeCollection: authority.outcomeCollection,
           },
           profileLockHeld: true,
+          custodyOwner: owner,
         });
       },
       wallet,
@@ -2260,11 +2511,6 @@ export async function createMeltQuote(
   const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
   context.requireCapturedProfile();
   return withWalletProfileLock(context.scopeId, async () => {
-    context.requireCapturedProfile();
-    await requireBrowserWalletNewWritePermission({
-      database: context.database,
-      scopeId: context.scopeId,
-    });
     context.requireCapturedProfile();
     return wallet.createMeltQuote(invoice);
   });

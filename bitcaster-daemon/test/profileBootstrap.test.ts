@@ -17,6 +17,7 @@ import { mkdirSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'n
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
+import { release5aProfileSchemaSql } from '../src/profileSchemaUpgrade.ts'
 import { after, mock, test, type TestContext } from 'node:test'
 import {
   deriveDurableCustodyOperationId,
@@ -772,7 +773,7 @@ test('a missing Activity display table is refused without schema repair', async 
 test('production schema manifest is pinned and excludes source-only recovery authority', () => {
   assert.equal(finalProfileSchemaManifestDigest(), FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST)
   const manifest = getFinalProfileSchemaManifest()
-  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 16)
+  assert.equal(FINAL_PROFILE_SCHEMA_VERSION, 17)
   assert.equal(Object.isFrozen(manifest), true)
   assert.equal(Object.isFrozen(manifest.objects), true)
   const names = new Set(manifest.objects.map((object) => object.name))
@@ -1771,7 +1772,7 @@ function installUnixRpcMock(t: TestContext, firstErrorCode?: string) {
   return observed
 }
 
-test('exact v15 recovery jobs remain byte-identical and cannot enter a v16 writer', async () => {
+test('exact v15 recovery jobs remain byte-identical and cannot enter the current writer', async () => {
   const directory = await freshProfileDirectory('retained-v15-recovery')
   await bootstrap(directory)
   const path = join(directory, DAEMON_PROFILE_DATABASE)
@@ -1784,7 +1785,17 @@ test('exact v15 recovery jobs remain byte-identical and cannot enter a v16 write
       DROP TRIGGER seed_recovery_keysets_no_rekey;
       DROP TABLE seed_recovery_keysets;
       DROP TABLE seed_recovery_jobs;
-      DROP TABLE profile_schema_marker;`)
+      DROP TABLE profile_schema_marker;
+      DROP TABLE daemon_ctf_range_preparations;`)
+    // Version 15 had the version 16 order journal; no upgrade starts from it.
+    for (const statement of release5aProfileSchemaSql()) {
+      if (
+        statement.startsWith('CREATE TABLE daemon_ctf_range_preparations (') ||
+        statement.startsWith('CREATE INDEX daemon_ctf_range_active_recovery_idx') ||
+        statement.startsWith('CREATE UNIQUE INDEX daemon_ctf_range_active_client_order_idx')
+      )
+        database.exec(statement)
+    }
     database.exec(
       await readFile(new URL('./fixtures/seed-recovery-v15.sql', import.meta.url), 'utf8'),
     )

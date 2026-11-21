@@ -1,5 +1,5 @@
 import { deriveDurableWalletProofSecret } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   fixture,
   disposeFixtures,
@@ -8,14 +8,6 @@ import {
   SEED,
 } from "./fixtures/browserCtfRedeemFixture";
 
-const mocks = vi.hoisted(() => ({ requireNewWritePermission: vi.fn() }));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
-}));
-beforeEach(() => {
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
-});
 afterEach(async () => {
   await disposeFixtures();
 });

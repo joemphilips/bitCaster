@@ -55,7 +55,6 @@ import {
 import { storedProofFromCustodyRow, type BitcasterDB } from "../stores/proof-db";
 import { browserWalletScope } from "./browserCtfRangeOrderSource";
 import type { BrowserCtfRedeemLeg } from "./browserCtfRedeemSelection";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { withWalletProfileLock } from "./walletProfileLock";
 import { normalizeUrl } from "./url";
 
@@ -398,10 +397,6 @@ export async function bindBrowserCanonicalCtfRedeemLeg(
         if ((await input.adapter.readOperation(scope, custodyOperationId)) !== null) {
           throw new BrowserCtfClaimBoundaryError("persisted-recovery", custodyOperationId);
         }
-        await requireBrowserWalletNewWritePermission({
-          database: input.database,
-          scopeId: scope.scopeId,
-        });
         for (const row of input.leg.rows) {
           let persisted: Awaited<ReturnType<BrowserDurableCustodyAdapter["readProof"]>>;
           try {

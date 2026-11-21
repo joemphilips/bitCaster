@@ -29,9 +29,8 @@ Use `bitcaster-cli --help` to check the available commands.
 
 The browser app and protocol specifications are public. The matching engine
 is closed source. Your wallet stores Cashu ecash tokens in your browser.
-The web app can store an encrypted recovery copy that the server cannot
-decrypt. See [Encrypted wallet backup](/user-guide/getting-started/wallet-backup/)
-for its limits.
+The web app keeps an encrypted wallet backup that the server cannot decrypt.
+See [Wallet backup](/user-guide/getting-started/wallet-backup/) for its limits.
 
 For an overview of Cashu itself, see the [Bitcoin Design guide on ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/).
 
@@ -151,18 +150,18 @@ can be delayed. Holding your wallet keys does not remove this mint risk.
 
 Cashu protects token ownership from the mint at the protocol level. It does
 not make all app activity anonymous. The matching engine can associate your
-authenticated activity with your account. Encrypted backup protects wallet
-contents; it does not hide all account or activity metadata.
+authenticated activity with your account. The wallet backup is encrypted, but
+it does not hide all activity metadata.
 
 ## Your assets, your responsibility[^1]
 
 Your tokens are just signed data. The live wallet database is in your browser's
-local storage. The default web app also keeps an encrypted recovery copy whose
-contents the server cannot read.
+local storage. The web app also keeps an encrypted wallet backup at the matching
+engine. It lists the keysets that the wallet used and holds no ecash.
 
-This minimizes the wallet information held by the server. The encrypted-backup
-service can still observe limited account, size, and activity metadata. It
-cannot decrypt or spend your funds.
+This minimizes the wallet information held by the server. The matching engine
+can still observe the size of the backup and when the wallet reads or writes it.
+It cannot decrypt the backup or spend your funds.
 
 Like any other cryptocurrency wallet, you are responsible for managing your own
 keys. Back up your recovery phrase and keep it safe.
@@ -171,11 +170,14 @@ Before your first wallet action, choose Create wallet or Restore wallet.
 A new wallet is generated locally in your browser. To restore a wallet, enter
 a valid 12-word or 24-word recovery phrase. Enter each word in its numbered field,
 or paste the complete phrase into one field. Setup does not submit a payment automatically.
-After you restore a wallet, the app restores its funds and market positions
-from the mint. Portfolio shows **Restoring positions…** until the restore
-finishes. Let your trades finish in the old browser before you move. Use one
+After you restore a wallet, the app recovers its funds and market positions
+from the mint. A status row above the Portfolio tabs and on the Sell tab shows
+the progress. Portfolio shows **No funds** or **No active positions** only
+after the check finishes. See
+[Open your wallet in a new browser](/user-guide/getting-started/wallet-backup/#open-your-wallet-in-a-new-browser).
+Let your trades finish in the old browser before you move. Use one
 browser at a time: the app checks the mint for use in another browser after a
-mint refusal or a buy check that shows such use.
+mint refusal or an order check that shows such use.
 Recovery-phrase and backup controls are available only when a wallet exists.
 
 If no wallet exists, open Settings, then Cashu Settings, and select Create Wallet.
@@ -188,8 +190,8 @@ To use another wallet, open the wallet section in Settings and import its
 recovery phrase. This replaces the active wallet; it does not add a second
 named profile. First, back up the current recovery phrase in Seed Backup.
 Replacement waits until no order, refund, send, deposit, or withdrawal is
-unfinished. When encrypted backup is configured, the backup must also be
-complete. To use the old wallet again, restore it from its recovery phrase.
+unfinished. It also waits until the matching engine confirms the wallet
+backup. To use the old wallet again, restore it from its recovery phrase.
 Local records that the mint cannot restore, such as completed order history,
 do not come back. Your Nostr account does not change. Activity stays
 associated with the wallet that performed it.
@@ -266,19 +268,6 @@ profile. Keep the old profile while it has funds or unfinished work.
 Initialization imports keys; it does not recover funds.
 `wallet recover-seed` requires explicit acknowledgment of seed-candidate disclosure
 to the mint. See [CLI wallet and signer commands](/technical/#select-and-import-a-native-wallet-profile).
-
-### When wallet backup pauses an action
-
-Wait while **Preparing wallet backup** is shown. Do not keep pressing Continue.
-Top-up and other new wallet changes stay paused until backup preparation or recovery completes.
-If **Wallet backup stopped** is shown, use **Retry wallet backup**.
-If **Wallet actions are paused** is shown, follow its reason and use **Retry recovery**.
-Close an unused second wallet tab when the message asks you to do so.
-Log in or reload when the message says the backup driver is unavailable.
-Keep the page open while a retry is pending.
-Retrying does not guarantee that unresolved work or an unpaid invoice is cleared.
-The local wallet keeps its funds and unfinished work while recovery is incomplete.
-Do not delete wallet data or start another payment to bypass the pause.
 
 ## Switch between environments
 
@@ -386,7 +375,7 @@ display information, not proof of identity.
 ## Getting started
 
 Before you fund a wallet, read
-[Encrypted wallet backup](/user-guide/getting-started/wallet-backup/).
+[Wallet backup](/user-guide/getting-started/wallet-backup/).
 Keep your recovery phrase safe. Then review the market's question, oracle,
 and resolution rules before your first trade. Optional market creation and
 bot funding can wait until you understand the trading flow.

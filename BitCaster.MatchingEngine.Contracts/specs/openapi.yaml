@@ -296,6 +296,57 @@ paths:
               schema:
                 $ref: '#/components/schemas/ConditionAttestationProblem'
 
+  /api/v1/conditions/{conditionId}/orders/by-client-order-id:
+    get:
+      operationId: lookupOrderByClientOrderId
+      summary: Find an accepted order by client order id
+      security:
+        - nip98: []
+      description: >
+        Read-only recovery lookup. The server takes the owner only from the
+        authenticated subject and derives the order id from the owner, the
+        condition and clientOrderId. Found means an accepted submission
+        receipt. An order of another owner, a missing order and a capability
+        without an accepted order all give the same 404. The lookup never
+        stages, verifies, or accepts. It has its own per-subject rate limit
+        (order-lookup, 30 requests a minute).
+      parameters:
+        - $ref: '#/components/parameters/ConditionId'
+        - name: clientOrderId
+          in: query
+          required: true
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 128
+      responses:
+        '200':
+          description: The accepted order and its capability reference.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderLookupResponse'
+        '400':
+          description: order-invalid-request. The condition or clientOrderId is invalid.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '404':
+          description: order-not-found. No accepted order of the authenticated owner.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: The order-lookup rate limit.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/conditions/{conditionId}/orders/batch:
     post:
       operationId: batchSubmitOrders
@@ -459,14 +510,19 @@ paths:
       security:
         - nip98: []
       description: >
-        Submits the current settlement capability referenced by the request.
-        The server loads every immutable order term from the durable DCB
-        binding; the authenticated owner and route market must exactly match
-        that prebound intent. The reference is not bearer authority and is
-        rejected when it is foreign, stale, or no longer current. An exact
-        retry by the same authenticated owner for the same order, reference,
-        and fingerprint returns the prior accepted admission result even if
-        the capability has since become selected or terminal.
+        Submits an order in one of two body forms (see SubmitOrderRequest).
+        The reference form submits the current settlement capability that the
+        request references. The server loads every immutable order term from
+        the durable DCB binding; the authenticated owner and route market must
+        exactly match that prebound intent. The reference is not bearer
+        authority and is rejected when it is foreign, stale, or no longer
+        current. The admission form carries the capability artifact. One
+        durable commit binds the capability and accepts the order; a refusal
+        writes nothing and is not charged. An exact retry by the same
+        authenticated owner for the same order returns the prior accepted
+        admission result even if the capability has since become selected or
+        terminal, without a second verification or charge. The body limit is
+        400,000 bytes.
       parameters:
         - $ref: '#/components/parameters/MarketId'
       requestBody:
@@ -485,14 +541,29 @@ paths:
         '400':
           description: >
             Application validation failed with order-invalid-request or
-            order-invalid-comment. Framework input validation can return a
-            different body shape.
+            order-invalid-comment. In the admission form,
+            settlement-capability-policy-rejected means the capability does
+            not meet the admission policy, including an authorization that
+            expires less than 15 seconds after the request;
+            settlement-capability-invalid-artifact means the artifact is
+            invalid or unsupported; settlement-capability-invalid-request means
+            an invalid capability request field. Framework input validation
+            can return a different body shape.
           content:
             application/problem+json:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
         '401':
           description: Missing or invalid NIP-98 authentication
+        '402':
+          description: >
+            Admission form. settlement-capability-score-required means the
+            Participation Score balance is below the binding tariff. Nothing is
+            written and nothing is charged.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
         '403':
           description: >
             The application closed-market gate returns market-closed.
@@ -506,6 +577,8 @@ paths:
             order-market-not-found means the market is not registered.
             order-capability-not-found means the capability is absent,
             belongs to another owner, or its binding digest does not match.
+            In the admission form, settlement-capability-not-found means the
+            market of the capability is not registered.
           content:
             application/problem+json:
               schema:
@@ -518,7 +591,32 @@ paths:
             replay returns its prior result. order-book-conflict permits an
             unchanged request retry. order-processing-conflict and
             order-market-closed are distinct, definitive submission failures.
-            A submission failure alone does not authorize a refund.
+            In the admission form, order-capability-not-current also means that
+            the capability expired unbound or that the stage route bound it.
+            settlement-capability-conflict means that the stageIdempotencyKey,
+            the clientOrderId or a proof is already used by another operation
+            or route; nothing is written. settlement-capability-market-unavailable
+            means the market does not accept the capability now. A submission failure alone does not
+            authorize a refund.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '413':
+          description: >
+            The body exceeds 400,000 bytes; the server refuses it before
+            authentication, with no body. In the admission form,
+            settlement-capability-request-too-large means that the artifact
+            exceeds its limits.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '429':
+          description: >
+            The order-submit rate limit, or in the admission form an admission
+            capacity limit (settlement-capability-capacity-exhausted or
+            settlement-capability-admission-limited). Nothing is written.
           content:
             application/problem+json:
               schema:
@@ -537,7 +635,9 @@ paths:
             before both limits.
             Waiting can be stopped. Stopping or this refusal does not authorize
             custody release or prove that another copy cannot be accepted.
-            order-admission-unavailable, order-processing-unavailable, generic 503,
+            order-admission-unavailable, order-processing-unavailable,
+            settlement-capability-admission-unavailable (admission form: mint
+            authority or durable capability authority unavailable), generic 503,
             timeout and malformed problems do not permit this automatic retry.
             Retain the original operation for reconciliation and recovery.
           content:
@@ -782,6 +882,56 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+  /api/v1/{marketId}/orders/{orderId}/settlement-failure:
+    get:
+      operationId: getOrderSettlementFailure
+      summary: Read why the settlement of an order failed
+      security:
+        - nip98: []
+      description: >
+        Returns the recorded reason when the settlement of this order failed
+        because a settlement output was already used. The order status of
+        such an order stays `failed`, and its settlement group status stays
+        `DefinitivelyRejected`. `failure` is null when no such reason is
+        recorded, for example while the order settles, after a confirmed
+        settlement, or after a failure for another reason. Only the order's
+        owner may read it.
+      parameters:
+        - $ref: '#/components/parameters/MarketId'
+        - name: orderId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The order's unique identifier.
+      responses:
+        '200':
+          description: The recorded settlement failure of the order, or null
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderSettlementFailureResponse'
+        '400':
+          description: >
+            order-invalid-request. Application request validation failed.
+            Framework input validation can return a different body shape.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+        '403':
+          description: The order belongs to another authenticated owner.
+        '404':
+          description: >
+            order-not-found. The order is unavailable for this request.
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetails'
+
   /api/v1/{marketId}/orderbook:
     get:
       operationId: getOrderBook
@@ -868,7 +1018,10 @@ paths:
         A recorded charge keeps the rule that it was recorded under. The tariff
         is charged once for each successful capability binding. It is not a
         per-order, per-fill, or settlement-failure fee and is not returned by
-        this endpoint.
+        this endpoint. The reused-output penalty is a separate charge, not a
+        tariff: 100 Score, charged once when an output of the caller's order
+        was already used by another operation and the order is removed from
+        its settlement.
       responses:
         '200':
           description: Participation Score state for the authenticated pubkey
@@ -876,6 +1029,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ParticipationScoreResponse'
+        '401':
+          description: Missing or invalid NIP-98 authentication
+
+  /api/v1/participation-score/history:
+    get:
+      operationId: getParticipationScoreHistory
+      summary: Read the authenticated user's recent Participation Score changes
+      security:
+        - nip98: []
+      description: >
+        Returns the caller's Score balance and at most the 50 most recent
+        Score changes, newest first. Each entry has a kind, the signed Score
+        change and the balance after the change.
+      responses:
+        '200':
+          description: Recent Participation Score changes for the authenticated pubkey
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ParticipationScoreHistoryResponse'
         '401':
           description: Missing or invalid NIP-98 authentication
 
@@ -1665,6 +1838,176 @@ paths:
               schema:
                 $ref: '#/components/schemas/ProblemDetails'
 
+  /api/v1/recovery-index:
+    get:
+      operationId: getRecoveryIndex
+      summary: Read the encrypted recovery index of one request key
+      description: >
+        The engine stores one client-encrypted recovery index document for
+        each seed-derived request key. The route path is fixed. The request
+        key goes in a header. The route takes no account, Nostr key, or wallet
+        id, and it has no fee. A BIP340 signature by the request key
+        authenticates each request (see `RecoveryIndexSignature`). A read
+        signs version 0 and the SHA-256 digest of an empty body. The client
+        can send `If-None-Match` with the version that it holds. The engine
+        then returns 304 when that version is current. The client must refuse
+        a document whose embedded version differs from the returned version.
+        A refusal of a recovery index request never refuses a trade.
+      parameters:
+        - $ref: '#/components/parameters/RecoveryIndexKey'
+        - $ref: '#/components/parameters/RecoveryIndexIssuedAt'
+        - $ref: '#/components/parameters/RecoveryIndexSignature'
+        - name: If-None-Match
+          in: header
+          required: false
+          description: The strong entity tag of the version that the client holds, for example `"3"`.
+          schema:
+            type: string
+            pattern: '^"(0|[1-9][0-9]{0,15})"$'
+      responses:
+        '200':
+          description: >
+            The document and its version. The body is 2^k + 37 bytes, with k
+            from 12 to 16.
+          headers:
+            ETag:
+              $ref: '#/components/headers/RecoveryIndexEntityTag'
+            X-Recovery-Index-Version:
+              $ref: '#/components/headers/RecoveryIndexVersion'
+            Cache-Control:
+              $ref: '#/components/headers/RecoveryIndexNoStore'
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+                minLength: 4133
+                maxLength: 65573
+        '304':
+          description: The version in `If-None-Match` is current.
+          headers:
+            ETag:
+              $ref: '#/components/headers/RecoveryIndexEntityTag'
+            X-Recovery-Index-Version:
+              $ref: '#/components/headers/RecoveryIndexVersion'
+        '400':
+          $ref: '#/components/responses/RecoveryIndexInvalidRequest'
+        '401':
+          $ref: '#/components/responses/RecoveryIndexUnauthenticated'
+        '404':
+          $ref: '#/components/responses/RecoveryIndexNotFound'
+        '429':
+          $ref: '#/components/responses/RecoveryIndexLimited'
+        '503':
+          $ref: '#/components/responses/RecoveryIndexUnavailable'
+    put:
+      operationId: putRecoveryIndex
+      summary: Write the encrypted recovery index with compare-and-swap
+      description: >
+        Stores the document when the expected version equals the current
+        version of the document or of its tombstone, and increments the
+        version. Expected version 0 creates version 1 when the key has no
+        document and no tombstone. When the current version is the expected
+        version plus 1 and the stored document is byte-identical, the write is
+        an exact retry and succeeds with the current version. Every other
+        write gets 409 with the current version. The engine refuses a body
+        whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16,
+        before it reads the body. One client address can send one write at a
+        time. The engine reads the body at a minimum rate (16 KiB per second
+        after 2 seconds by default) and within a deadline (10 seconds by
+        default). A body that is slower gets 408 or a closed connection. A
+        minimum interval separates two accepted writes of one key. A refusal
+        of a recovery index request never refuses a trade.
+      parameters:
+        - $ref: '#/components/parameters/RecoveryIndexKey'
+        - $ref: '#/components/parameters/RecoveryIndexIssuedAt'
+        - $ref: '#/components/parameters/RecoveryIndexSignature'
+        - $ref: '#/components/parameters/RecoveryIndexExpectedVersion'
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+              minLength: 4133
+              maxLength: 65573
+      responses:
+        '200':
+          description: The document is stored, or the request is an exact retry.
+          headers:
+            X-Recovery-Index-Version:
+              $ref: '#/components/headers/RecoveryIndexVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexVersionResponse'
+        '400':
+          $ref: '#/components/responses/RecoveryIndexInvalidRequest'
+        '401':
+          $ref: '#/components/responses/RecoveryIndexUnauthenticated'
+        '408':
+          description: "The body did not arrive within the deadline. Application code: recovery-index-body-timeout. Send the write again."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+        '409':
+          $ref: '#/components/responses/RecoveryIndexConflict'
+        '411':
+          description: "The request has no `Content-Length`. Application code: recovery-index-length-required."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+        '413':
+          description: "The body is larger than 65,573 bytes. Application code: recovery-index-document-too-large."
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+        '429':
+          $ref: '#/components/responses/RecoveryIndexLimited'
+        '503':
+          $ref: '#/components/responses/RecoveryIndexUnavailable'
+    delete:
+      operationId: deleteRecoveryIndex
+      summary: Delete the encrypted recovery index with compare-and-swap
+      description: >
+        Replaces the document with a tombstone when the expected version is
+        the current version. The tombstone keeps the key and gets the next
+        version. The engine never removes a tombstone. A key with no document
+        gets 404, which the client treats as a completed delete. The request
+        has no body, and the signature covers the SHA-256 digest of an empty
+        body.
+      parameters:
+        - $ref: '#/components/parameters/RecoveryIndexKey'
+        - $ref: '#/components/parameters/RecoveryIndexIssuedAt'
+        - $ref: '#/components/parameters/RecoveryIndexSignature'
+        - $ref: '#/components/parameters/RecoveryIndexExpectedVersion'
+      responses:
+        '200':
+          description: The document is deleted. The response holds the tombstone version.
+          headers:
+            X-Recovery-Index-Version:
+              $ref: '#/components/headers/RecoveryIndexVersion'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RecoveryIndexVersionResponse'
+        '400':
+          $ref: '#/components/responses/RecoveryIndexInvalidRequest'
+        '401':
+          $ref: '#/components/responses/RecoveryIndexUnauthenticated'
+        '404':
+          $ref: '#/components/responses/RecoveryIndexNotFound'
+        '409':
+          $ref: '#/components/responses/RecoveryIndexConflict'
+        '429':
+          $ref: '#/components/responses/RecoveryIndexLimited'
+        '503':
+          $ref: '#/components/responses/RecoveryIndexUnavailable'
+
 components:
   securitySchemes:
     nip98:
@@ -1678,6 +2021,22 @@ components:
         authenticated identity. See https://github.com/nostr-protocol/nips/blob/master/98.md
 
   headers:
+    RecoveryIndexVersion:
+      description: The version of the document, of its tombstone, or 0 when the key has neither.
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        maximum: 9007199254740991
+    RecoveryIndexEntityTag:
+      description: The current version as a strong entity tag, for example `"3"`.
+      schema:
+        type: string
+    RecoveryIndexNoStore:
+      description: The response must not be stored.
+      schema:
+        type: string
+        enum: [no-store]
     AssetMonitoringNoStore:
       description: The authenticated private response must not be stored.
       schema:
@@ -1685,6 +2044,56 @@ components:
         enum: [no-store]
 
   parameters:
+    RecoveryIndexKey:
+      name: X-Recovery-Index-Key
+      in: header
+      required: true
+      description: >
+        The BIP340 x-only public key of the seed-derived request key, as 64
+        lowercase hexadecimal characters. It names the document.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{64}$'
+    RecoveryIndexIssuedAt:
+      name: X-Recovery-Index-Issued-At
+      in: header
+      required: true
+      description: >
+        The issue time of the request in Unix seconds. The engine accepts an
+        issue time within 60 seconds of its clock. A refusal returns the
+        engine time in `serverTime`, so the client can correct its clock
+        offset once.
+      schema:
+        type: string
+        pattern: '^(0|[1-9][0-9]{0,18})$'
+    RecoveryIndexSignature:
+      name: X-Recovery-Index-Signature
+      in: header
+      required: true
+      description: >
+        A BIP340 signature by the request key, as 128 lowercase hexadecimal
+        characters. The signed message is the BIP340 tagged hash with tag
+        `bitcaster/recovery-index/request/v1` of these bytes, in this order:
+        the realm, the method (`GET`, `PUT`, or `DELETE`), and the path
+        `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix;
+        the 32-byte request key; the 32-byte SHA-256 digest of the exact body;
+        the expected version (0 for a read) as an unsigned 64-bit big-endian
+        integer; and the issue time as an unsigned 64-bit big-endian integer.
+        The realm is the fixed string of the deployment environment that the
+        client also uses to derive its keys. The engine keeps no replay
+        nonce. The expected version and the tombstone make a replayed write or
+        delete repeat its result or conflict.
+      schema:
+        type: string
+        pattern: '^[0-9a-f]{128}$'
+    RecoveryIndexExpectedVersion:
+      name: X-Recovery-Index-Expected-Version
+      in: header
+      required: true
+      description: The version that the write or delete expects to replace. Use 0 for a key with no document.
+      schema:
+        type: string
+        pattern: '^(0|[1-9][0-9]{0,15})$'
     MarketId:
       name: marketId
       in: path
@@ -1728,6 +2137,82 @@ components:
         format: uuid
         pattern: '^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$'
       description: Lowercase canonical UUID delivery identifier. It must equal the required body deliveryId.
+
+  responses:
+    RecoveryIndexInvalidRequest:
+      description: >
+        A header is missing or malformed, a body has a length that is not
+        permitted or is shorter than its `Content-Length`, or a read or delete
+        has a body. Application code: recovery-index-invalid-request.
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+    RecoveryIndexUnauthenticated:
+      description: >
+        The signature does not verify (application code
+        recovery-index-unauthenticated), or the issue time is more than 60
+        seconds from the engine clock (application code
+        recovery-index-stale-request, with `serverTime`).
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+    RecoveryIndexNotFound:
+      description: >
+        The key has no document. `currentVersion` is the tombstone version,
+        or 0 when the key has no tombstone. The `X-Recovery-Index-Version`
+        header holds the same value. Application code:
+        recovery-index-not-found.
+      headers:
+        X-Recovery-Index-Version:
+          $ref: '#/components/headers/RecoveryIndexVersion'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+    RecoveryIndexConflict:
+      description: >
+        The expected version is not current. `currentVersion` is the current
+        version. Read the document, merge, and write again. Application code:
+        recovery-index-version-conflict.
+      headers:
+        X-Recovery-Index-Version:
+          $ref: '#/components/headers/RecoveryIndexVersion'
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+    RecoveryIndexLimited:
+      description: >
+        A recovery index limit refused the request. Retry after the
+        `Retry-After` seconds. `limitCode` names the limit:
+        recovery-index-ip-requests, recovery-index-ip-writes,
+        recovery-index-ip-write-concurrency, recovery-index-ip-new-keys,
+        recovery-index-global-new-keys, recovery-index-write-bytes,
+        recovery-index-read-bytes, recovery-index-write-concurrency,
+        recovery-index-write-interval, or recovery-index-storage-budget. The
+        storage budget refuses only writes that create or grow a document.
+        Reads, deletes, and writes that do not grow a document continue. A
+        write can also get 429 from the shared request body bound, with
+        `limitCode` request-body-concurrency and no `code`. Treat every other
+        `limitCode` as a temporary refusal and retry after `Retry-After`.
+      headers:
+        Retry-After:
+          description: Seconds before a retry can succeed.
+          schema:
+            type: integer
+            minimum: 1
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
+    RecoveryIndexUnavailable:
+      description: "The recovery index is temporarily unavailable. Application code: recovery-index-unavailable."
+      content:
+        application/problem+json:
+          schema:
+            $ref: '#/components/schemas/RecoveryIndexProblemDetails'
 
   schemas:
     DeploymentIdentityResponse:
@@ -3013,14 +3498,19 @@ components:
       enum:
         - Complementary
         - Mint
+        - Merge
       description: >
         How two orders were matched together. Terminology mirrors Polymarket
         CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same
         outcome (no split required); `Mint` pairs two Buys for complementary
         outcome sets and the maker supplies the complementary CTF side from
         exact inventory, primitive complement legs, or an at-match collateral
-        split. The
-        `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+        split; `Merge` pairs two Sells for complementary outcome sets, which
+        merge into collateral.
+        The engine does not send `Merge` yet. Until it does, it reports a Sell
+        matched against a Sell of the complementary set as `Complementary`,
+        with the taker's token side and execution price. Clients must accept
+        `Merge`, because a later engine version will send it.
 
     FillStatus:
       type: string
@@ -3291,20 +3781,37 @@ components:
       type: object
       additionalProperties: false
       required:
-        - settlementCapability
         - comment
       description: >
-        Reference-only order submission. The server loads all immutable order
-        identity and economic terms from the current durable DCB binding. The
-        authenticated owner and route market must exactly match that prebound
-        intent. This reference is not bearer authority.
+        Order submission. The body holds exactly one of settlementCapability
+        (reference form) and settlementCapabilityAdmission (admission form).
+        A body with both forms or with neither form gets 400
+        order-invalid-request. In the reference form the server loads all
+        immutable order identity and economic terms from the current durable
+        DCB binding. In the admission form the server verifies and stores the
+        capability, and one durable commit binds the capability and accepts
+        the order, or nothing is written. The authenticated owner and route
+        market must exactly match the order intent. A reference is not bearer
+        authority.
       properties:
         settlementCapability:
           $ref: '#/components/schemas/SettlementCapabilityReference'
           description: >
-            Current capability binding to submit. Possession does not authorize
+            Reference form. A current capability binding from
+            POST /api/v1/settlement-capabilities. Possession does not authorize
             use: the server verifies ownership, route identity, and current DCB
             authorization state.
+        settlementCapabilityAdmission:
+          $ref: '#/components/schemas/CreateSettlementCapabilityRequest'
+          description: >
+            Admission form. The capability artifact and order intent, with the
+            same fields and limits as POST /api/v1/settlement-capabilities. Its
+            marketId must equal the route marketId. The client operation
+            identity is the pair (stageIdempotencyKey, clientOrderId). An exact
+            retry sends the same value again; comment and walletId are not part
+            of that identity. A stageIdempotencyKey that the stage route used
+            conflicts here, and the reverse. A capability that the stage route
+            bound is accepted only through the reference form.
         comment:
           oneOf:
             - $ref: '#/components/schemas/NostrKind1Event'
@@ -3628,6 +4135,48 @@ components:
             - type: 'null'
           description: >
             Current nonterminal settlement group for this order, or null.
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityResponse'
+          description: >
+            Admission form only. The capability lifecycle of this order. It is
+            absent from a reference-form response, and from a stored result
+            whose capability the server no longer keeps.
+
+    OrderLookupResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - marketId
+        - status
+        - settlementCapability
+        - artifactDigest
+      description: >
+        One accepted order of the authenticated owner, found by condition and
+        client order id. Read the order details through
+        GET /api/v1/{marketId}/orders/{orderId}.
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        marketId:
+          type: string
+          description: Public market route of the order.
+        status:
+          type: string
+          enum:
+            - accepted
+            - processed
+          description: >
+            accepted: the order is accepted and its processing result is not
+            recorded yet. processed: its processing result is recorded.
+        settlementCapability:
+          $ref: '#/components/schemas/SettlementCapabilityReference'
+        artifactDigest:
+          $ref: '#/components/schemas/Sha256Digest'
+          description: >
+            Digest of the capability artifact. A client compares it with its
+            local artifact digest before it uses the reference.
 
     BatchSubmitOrdersRequest:
       type: object
@@ -4368,10 +4917,115 @@ components:
           type: integer
           format: int64
           minimum: 0
-          description: Total Score consumed by capability-admission and invalid-validation charges.
+          description: Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
         enabled:
           type: boolean
           description: Whether Participation Score purchase and payment is enabled by the engine.
+
+    ParticipationScoreHistoryKind:
+      type: string
+      enum:
+        - purchase
+        - capability-binding
+        - invalid-capability-validation
+        - reused-output-penalty
+      description: >
+        `purchase` credits purchased Score. `capability-binding` is the
+        admission charge of an order. `invalid-capability-validation` is the
+        charge for an invalid proof or DLEQ validation attempt.
+        `reused-output-penalty` is the 100 Score penalty for an order whose
+        output was already used by another operation, so that the order was
+        removed from its settlement.
+
+    ParticipationScoreHistoryEntry:
+      type: object
+      additionalProperties: false
+      required:
+        - kind
+        - amountScore
+        - balanceAfter
+        - occurredAt
+      properties:
+        kind:
+          $ref: '#/components/schemas/ParticipationScoreHistoryKind'
+        amountScore:
+          type: integer
+          format: int64
+          description: Signed Score change. A charge or a penalty is negative.
+        balanceAfter:
+          type: integer
+          format: int64
+          description: Score balance after this change. It can be negative.
+        occurredAt:
+          type: string
+          format: date-time
+
+    ParticipationScoreHistoryResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - balance
+        - entries
+      properties:
+        balance:
+          type: integer
+          format: int64
+          description: Current Participation Score balance. It can be negative.
+        entries:
+          type: array
+          maxItems: 50
+          items:
+            $ref: '#/components/schemas/ParticipationScoreHistoryEntry'
+          description: The most recent Score changes, newest first.
+
+    OrderSettlementFailureReason:
+      type: string
+      enum:
+        - OwnOutputReused
+        - GroupOutputReused
+      description: >
+        `OwnOutputReused`: an output of this order was already used by another
+        operation of the same wallet, for example in another browser. The
+        order was removed from its settlement, and the reused-output penalty
+        was charged. `GroupOutputReused`: an output in the same settlement was
+        already used, so this order did not settle. No penalty was charged for
+        this order. In both cases the order's funds
+        are not lost. The wallet recovers them as for another failed
+        settlement.
+
+    OrderSettlementFailure:
+      type: object
+      additionalProperties: false
+      required:
+        - groupId
+        - reason
+        - failedAt
+      properties:
+        groupId:
+          type: string
+          format: uuid
+          description: The settlement group that the order joined.
+        reason:
+          $ref: '#/components/schemas/OrderSettlementFailureReason'
+        failedAt:
+          type: string
+          format: date-time
+
+    OrderSettlementFailureResponse:
+      type: object
+      additionalProperties: false
+      required:
+        - orderId
+        - failure
+      properties:
+        orderId:
+          type: string
+          format: uuid
+        failure:
+          oneOf:
+            - $ref: '#/components/schemas/OrderSettlementFailure'
+            - type: 'null'
+          description: The recorded settlement failure, or null when none is recorded.
 
 
     LatestConfirmedTrade:
@@ -4663,3 +5317,31 @@ components:
         traceId:
           type: string
           description: Diagnostic correlation identifier, when provided.
+    RecoveryIndexVersionResponse:
+      type: object
+      additionalProperties: false
+      required: [version]
+      properties:
+        version:
+          type: integer
+          format: int64
+          minimum: 1
+          maximum: 9007199254740991
+          description: The version after the write, or the tombstone version after a delete.
+    RecoveryIndexProblemDetails:
+      description: Problem details of a recovery index refusal.
+      allOf:
+        - $ref: '#/components/schemas/ProblemDetails'
+        - type: object
+          properties:
+            currentVersion:
+              type: integer
+              format: int64
+              minimum: 0
+              maximum: 9007199254740991
+              description: The current version for a conflict or a missing document. 0 means no document and no tombstone.
+            serverTime:
+              type: integer
+              format: int64
+              minimum: 0
+              description: The engine clock in Unix seconds, for an issue-time refusal.

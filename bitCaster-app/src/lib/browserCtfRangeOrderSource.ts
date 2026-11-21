@@ -1,4 +1,5 @@
 import { Amount, type Proof } from "@cashu/cashu-ts";
+import { browserRangeCustodyOperationId } from "./browserRangeCustodyIdentity";
 import {
   deriveDurableCustodyOperationId,
   deriveDurableCustodyScopeId,
@@ -103,10 +104,7 @@ export function browserCustodyOperationId(
   scope: DurableCustodyScope,
   retainedOperationKey: string,
 ): string {
-  return deriveDurableCustodyOperationId(scope.scopeId, {
-    retainedOperationKey,
-    binding: { kind: "wallet", activityId: retainedOperationKey, stage: "send" },
-  });
+  return browserRangeCustodyOperationId(scope.scopeId, retainedOperationKey);
 }
 
 export function browserSourceCustodyOperationId(

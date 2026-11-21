@@ -144,6 +144,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/conditions/{conditionId}/orders/by-client-order-id": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Find an accepted order by client order id
+         * @description Read-only recovery lookup. The server takes the owner only from the authenticated subject and derives the order id from the owner, the condition and clientOrderId. Found means an accepted submission receipt. An order of another owner, a missing order and a capability without an accepted order all give the same 404. The lookup never stages, verifies, or accepts. It has its own per-subject rate limit (order-lookup, 30 requests a minute).
+         */
+        get: operations["lookupOrderByClientOrderId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/conditions/{conditionId}/orders/batch": {
         parameters: {
             query?: never;
@@ -199,7 +219,7 @@ export interface paths {
         put?: never;
         /**
          * Submit a new order
-         * @description Submits the current settlement capability referenced by the request. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. An exact retry by the same authenticated owner for the same order, reference, and fingerprint returns the prior accepted admission result even if the capability has since become selected or terminal.
+         * @description Submits an order in one of two body forms (see SubmitOrderRequest). The reference form submits the current settlement capability that the request references. The server loads every immutable order term from the durable DCB binding; the authenticated owner and route market must exactly match that prebound intent. The reference is not bearer authority and is rejected when it is foreign, stale, or no longer current. The admission form carries the capability artifact. One durable commit binds the capability and accepts the order; a refusal writes nothing and is not charged. An exact retry by the same authenticated owner for the same order returns the prior accepted admission result even if the capability has since become selected or terminal, without a second verification or charge. The body limit is 400,000 bytes.
          */
         post: operations["submitOrder"];
         delete?: never;
@@ -289,6 +309,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/{marketId}/orders/{orderId}/settlement-failure": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read why the settlement of an order failed
+         * @description Returns the recorded reason when the settlement of this order failed because a settlement output was already used. The order status of such an order stays `failed`, and its settlement group status stays `DefinitivelyRejected`. `failure` is null when no such reason is recorded, for example while the order settles, after a confirmed settlement, or after a failure for another reason. Only the order's owner may read it.
+         */
+        get: operations["getOrderSettlementFailure"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/{marketId}/orderbook": {
         parameters: {
             query?: never;
@@ -352,9 +392,29 @@ export interface paths {
         };
         /**
          * Read the authenticated user's participation Score
-         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint.
+         * @description Returns the caller's non-withdrawable Participation Score balance and ledger totals. Score is a sat-denominated engine-use credit, separate from market collateral units. When the server binds a capability, it applies its current tariff rule to the verified capability work facts. A recorded charge keeps the rule that it was recorded under. The tariff is charged once for each successful capability binding. It is not a per-order, per-fill, or settlement-failure fee and is not returned by this endpoint. The reused-output penalty is a separate charge, not a tariff: 100 Score, charged once when an output of the caller's order was already used by another operation and the order is removed from its settlement.
          */
         get: operations["getParticipationScore"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/participation-score/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the authenticated user's recent Participation Score changes
+         * @description Returns the caller's Score balance and at most the 50 most recent Score changes, newest first. Each entry has a kind, the signed Score change and the balance after the change.
+         */
+        get: operations["getParticipationScoreHistory"];
         put?: never;
         post?: never;
         delete?: never;
@@ -638,6 +698,34 @@ export interface paths {
          */
         post: operations["acknowledgeSettlementCapabilityResult"];
         delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/recovery-index": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read the encrypted recovery index of one request key
+         * @description The engine stores one client-encrypted recovery index document for each seed-derived request key. The route path is fixed. The request key goes in a header. The route takes no account, Nostr key, or wallet id, and it has no fee. A BIP340 signature by the request key authenticates each request (see `RecoveryIndexSignature`). A read signs version 0 and the SHA-256 digest of an empty body. The client can send `If-None-Match` with the version that it holds. The engine then returns 304 when that version is current. The client must refuse a document whose embedded version differs from the returned version. A refusal of a recovery index request never refuses a trade.
+         */
+        get: operations["getRecoveryIndex"];
+        /**
+         * Write the encrypted recovery index with compare-and-swap
+         * @description Stores the document when the expected version equals the current version of the document or of its tombstone, and increments the version. Expected version 0 creates version 1 when the key has no document and no tombstone. When the current version is the expected version plus 1 and the stored document is byte-identical, the write is an exact retry and succeeds with the current version. Every other write gets 409 with the current version. The engine refuses a body whose `Content-Length` is not 2^k + 37 bytes, with k from 12 to 16, before it reads the body. One client address can send one write at a time. The engine reads the body at a minimum rate (16 KiB per second after 2 seconds by default) and within a deadline (10 seconds by default). A body that is slower gets 408 or a closed connection. A minimum interval separates two accepted writes of one key. A refusal of a recovery index request never refuses a trade.
+         */
+        put: operations["putRecoveryIndex"];
+        post?: never;
+        /**
+         * Delete the encrypted recovery index with compare-and-swap
+         * @description Replaces the document with a tombstone when the expected version is the current version. The tombstone keeps the key and gets the next version. The engine never removes a tombstone. A key with no document gets 404, which the client treats as a completed delete. The request has no body, and the signature covers the SHA-256 digest of an empty body.
+         */
+        delete: operations["deleteRecoveryIndex"];
         options?: never;
         head?: never;
         patch?: never;
@@ -1185,10 +1273,10 @@ export interface components {
             frozenAt: string | null;
         };
         /**
-         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split. The `Merge` path (Sell vs Sell) is not yet supported in bitCaster.
+         * @description How two orders were matched together. Terminology mirrors Polymarket CTF Exchange V2: `Complementary` pairs a Buy against a Sell of the same outcome (no split required); `Mint` pairs two Buys for complementary outcome sets and the maker supplies the complementary CTF side from exact inventory, primitive complement legs, or an at-match collateral split; `Merge` pairs two Sells for complementary outcome sets, which merge into collateral. The engine does not send `Merge` yet. Until it does, it reports a Sell matched against a Sell of the complementary set as `Complementary`, with the taker's token side and execution price. Clients must accept `Merge`, because a later engine version will send it.
          * @enum {string}
          */
-        MatchPath: "Complementary" | "Mint";
+        MatchPath: "Complementary" | "Mint" | "Merge";
         /**
          * @description Lifecycle status of a fill-shaped order execution row. `Matched` means its atomic mint settlement group is not yet confirmed; `Filled` means settlement committed; `Failed` means the group was definitively rejected and this fill will not be retried.
          * @enum {string}
@@ -1309,10 +1397,12 @@ export interface components {
             /** @description Atomic settlement group that durably owns this fill reservation. */
             settlementGroup: components["schemas"]["SettlementGroupSummary"];
         };
-        /** @description Reference-only order submission. The server loads all immutable order identity and economic terms from the current durable DCB binding. The authenticated owner and route market must exactly match that prebound intent. This reference is not bearer authority. */
+        /** @description Order submission. The body holds exactly one of settlementCapability (reference form) and settlementCapabilityAdmission (admission form). A body with both forms or with neither form gets 400 order-invalid-request. In the reference form the server loads all immutable order identity and economic terms from the current durable DCB binding. In the admission form the server verifies and stores the capability, and one durable commit binds the capability and accepts the order, or nothing is written. The authenticated owner and route market must exactly match the order intent. A reference is not bearer authority. */
         SubmitOrderRequest: {
-            /** @description Current capability binding to submit. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
-            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
+            /** @description Reference form. A current capability binding from POST /api/v1/settlement-capabilities. Possession does not authorize use: the server verifies ownership, route identity, and current DCB authorization state. */
+            settlementCapability?: components["schemas"]["SettlementCapabilityReference"];
+            /** @description Admission form. The capability artifact and order intent, with the same fields and limits as POST /api/v1/settlement-capabilities. Its marketId must equal the route marketId. The client operation identity is the pair (stageIdempotencyKey, clientOrderId). An exact retry sends the same value again; comment and walletId are not part of that identity. A stageIdempotencyKey that the stage route used conflicts here, and the reverse. A capability that the stage route bound is accepted only through the reference form. */
+            settlementCapabilityAdmission?: components["schemas"]["CreateSettlementCapabilityRequest"];
             /** @description Optional signed Nostr kind-1 event to index as a verified trade comment once this order produces a fill. The event pubkey must match the NIP-98 submitter and include an `r` tag for the market detail URL. */
             comment: components["schemas"]["NostrKind1Event"] | null;
             /** @description Display-only wallet attribution. It does not authorize custody or settlement. */
@@ -1459,6 +1549,23 @@ export interface components {
             divisibility: 1000 | 1000000;
             /** @description Current nonterminal settlement group for this order, or null. */
             activeSettlementGroup: components["schemas"]["SettlementGroupSummary"] | null;
+            /** @description Admission form only. The capability lifecycle of this order. It is absent from a reference-form response, and from a stored result whose capability the server no longer keeps. */
+            settlementCapability?: components["schemas"]["SettlementCapabilityResponse"];
+        };
+        /** @description One accepted order of the authenticated owner, found by condition and client order id. Read the order details through GET /api/v1/{marketId}/orders/{orderId}. */
+        OrderLookupResponse: {
+            /** Format: uuid */
+            orderId: string;
+            /** @description Public market route of the order. */
+            marketId: string;
+            /**
+             * @description accepted: the order is accepted and its processing result is not recorded yet. processed: its processing result is recorded.
+             * @enum {string}
+             */
+            status: "accepted" | "processed";
+            settlementCapability: components["schemas"]["SettlementCapabilityReference"];
+            /** @description Digest of the capability artifact. A client compares it with its local artifact digest before it uses the reference. */
+            artifactDigest: components["schemas"]["Sha256Digest"];
         };
         BatchSubmitOrdersRequest: {
             orders: components["schemas"]["BatchSubmitOrderRequestItem"][];
@@ -1776,11 +1883,61 @@ export interface components {
             purchasedTotal: number;
             /**
              * Format: int64
-             * @description Total Score consumed by capability-admission and invalid-validation charges.
+             * @description Total Score consumed by capability-admission charges, invalid-validation charges and reused-output penalties.
              */
             consumedTotal: number;
             /** @description Whether Participation Score purchase and payment is enabled by the engine. */
             enabled: boolean;
+        };
+        /**
+         * @description `purchase` credits purchased Score. `capability-binding` is the admission charge of an order. `invalid-capability-validation` is the charge for an invalid proof or DLEQ validation attempt. `reused-output-penalty` is the 100 Score penalty for an order whose output was already used by another operation, so that the order was removed from its settlement.
+         * @enum {string}
+         */
+        ParticipationScoreHistoryKind: "purchase" | "capability-binding" | "invalid-capability-validation" | "reused-output-penalty";
+        ParticipationScoreHistoryEntry: {
+            kind: components["schemas"]["ParticipationScoreHistoryKind"];
+            /**
+             * Format: int64
+             * @description Signed Score change. A charge or a penalty is negative.
+             */
+            amountScore: number;
+            /**
+             * Format: int64
+             * @description Score balance after this change. It can be negative.
+             */
+            balanceAfter: number;
+            /** Format: date-time */
+            occurredAt: string;
+        };
+        ParticipationScoreHistoryResponse: {
+            /**
+             * Format: int64
+             * @description Current Participation Score balance. It can be negative.
+             */
+            balance: number;
+            /** @description The most recent Score changes, newest first. */
+            entries: components["schemas"]["ParticipationScoreHistoryEntry"][];
+        };
+        /**
+         * @description `OwnOutputReused`: an output of this order was already used by another operation of the same wallet, for example in another browser. The order was removed from its settlement, and the reused-output penalty was charged. `GroupOutputReused`: an output in the same settlement was already used, so this order did not settle. No penalty was charged for this order. In both cases the order's funds are not lost. The wallet recovers them as for another failed settlement.
+         * @enum {string}
+         */
+        OrderSettlementFailureReason: "OwnOutputReused" | "GroupOutputReused";
+        OrderSettlementFailure: {
+            /**
+             * Format: uuid
+             * @description The settlement group that the order joined.
+             */
+            groupId: string;
+            reason: components["schemas"]["OrderSettlementFailureReason"];
+            /** Format: date-time */
+            failedAt: string;
+        };
+        OrderSettlementFailureResponse: {
+            /** Format: uuid */
+            orderId: string;
+            /** @description The recorded settlement failure, or null when none is recorded. */
+            failure: components["schemas"]["OrderSettlementFailure"] | null;
         };
         /** @description One settlement-confirmed execution used by the public market-price projection. It does not represent a quote, order insertion, funding payment, or registration-time value. */
         LatestConfirmedTrade: {
@@ -1910,9 +2067,96 @@ export interface components {
             /** @description Diagnostic correlation identifier, when provided. */
             traceId?: string;
         };
+        RecoveryIndexVersionResponse: {
+            /**
+             * Format: int64
+             * @description The version after the write, or the tombstone version after a delete.
+             */
+            version: number;
+        };
+        /** @description Problem details of a recovery index refusal. */
+        RecoveryIndexProblemDetails: components["schemas"]["ProblemDetails"] & {
+            /**
+             * Format: int64
+             * @description The current version for a conflict or a missing document. 0 means no document and no tombstone.
+             */
+            currentVersion?: number;
+            /**
+             * Format: int64
+             * @description The engine clock in Unix seconds, for an issue-time refusal.
+             */
+            serverTime?: number;
+        };
     };
-    responses: never;
+    responses: {
+        /** @description A header is missing or malformed, a body has a length that is not permitted or is shorter than its `Content-Length`, or a read or delete has a body. Application code: recovery-index-invalid-request. */
+        RecoveryIndexInvalidRequest: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The signature does not verify (application code recovery-index-unauthenticated), or the issue time is more than 60 seconds from the engine clock (application code recovery-index-stale-request, with `serverTime`). */
+        RecoveryIndexUnauthenticated: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The key has no document. `currentVersion` is the tombstone version, or 0 when the key has no tombstone. The `X-Recovery-Index-Version` header holds the same value. Application code: recovery-index-not-found. */
+        RecoveryIndexNotFound: {
+            headers: {
+                "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The expected version is not current. `currentVersion` is the current version. Read the document, merge, and write again. Application code: recovery-index-version-conflict. */
+        RecoveryIndexConflict: {
+            headers: {
+                "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description A recovery index limit refused the request. Retry after the `Retry-After` seconds. `limitCode` names the limit: recovery-index-ip-requests, recovery-index-ip-writes, recovery-index-ip-write-concurrency, recovery-index-ip-new-keys, recovery-index-global-new-keys, recovery-index-write-bytes, recovery-index-read-bytes, recovery-index-write-concurrency, recovery-index-write-interval, or recovery-index-storage-budget. The storage budget refuses only writes that create or grow a document. Reads, deletes, and writes that do not grow a document continue. A write can also get 429 from the shared request body bound, with `limitCode` request-body-concurrency and no `code`. Treat every other `limitCode` as a temporary refusal and retry after `Retry-After`. */
+        RecoveryIndexLimited: {
+            headers: {
+                /** @description Seconds before a retry can succeed. */
+                "Retry-After"?: number;
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+        /** @description The recovery index is temporarily unavailable. Application code: recovery-index-unavailable. */
+        RecoveryIndexUnavailable: {
+            headers: {
+                [name: string]: unknown;
+            };
+            content: {
+                "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+            };
+        };
+    };
     parameters: {
+        /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+        RecoveryIndexKey: string;
+        /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+        RecoveryIndexIssuedAt: string;
+        /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+        RecoveryIndexSignature: string;
+        /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+        RecoveryIndexExpectedVersion: string;
         /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
         MarketId: string;
         /** @description The condition identifier (hex string derived from the oracle announcement). */
@@ -1924,6 +2168,12 @@ export interface components {
     };
     requestBodies: never;
     headers: {
+        /** @description The version of the document, of its tombstone, or 0 when the key has neither. */
+        RecoveryIndexVersion: number;
+        /** @description The current version as a strong entity tag, for example `"3"`. */
+        RecoveryIndexEntityTag: string;
+        /** @description The response must not be stored. */
+        RecoveryIndexNoStore: "no-store";
         /** @description The authenticated private response must not be stored. */
         AssetMonitoringNoStore: "no-store";
     };
@@ -2250,6 +2500,65 @@ export interface operations {
             };
         };
     };
+    lookupOrderByClientOrderId: {
+        parameters: {
+            query: {
+                clientOrderId: string;
+            };
+            header?: never;
+            path: {
+                /** @description The condition identifier (hex string derived from the oracle announcement). */
+                conditionId: components["parameters"]["ConditionId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The accepted order and its capability reference. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderLookupResponse"];
+                };
+            };
+            /** @description order-invalid-request. The condition or clientOrderId is invalid. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description order-not-found. No accepted order of the authenticated owner. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The order-lookup rate limit. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     batchSubmitOrders: {
         parameters: {
             query?: never;
@@ -2454,7 +2763,7 @@ export interface operations {
                     "application/json": components["schemas"]["SubmitOrderResponse"];
                 };
             };
-            /** @description Application validation failed with order-invalid-request or order-invalid-comment. Framework input validation can return a different body shape. */
+            /** @description Application validation failed with order-invalid-request or order-invalid-comment. In the admission form, settlement-capability-policy-rejected means the capability does not meet the admission policy, including an authorization that expires less than 15 seconds after the request; settlement-capability-invalid-artifact means the artifact is invalid or unsupported; settlement-capability-invalid-request means an invalid capability request field. Framework input validation can return a different body shape. */
             400: {
                 headers: {
                     [name: string]: unknown;
@@ -2470,6 +2779,15 @@ export interface operations {
                 };
                 content?: never;
             };
+            /** @description Admission form. settlement-capability-score-required means the Participation Score balance is below the binding tariff. Nothing is written and nothing is charged. */
+            402: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
             /** @description The application closed-market gate returns market-closed. Framework authorization failures can return a different body. */
             403: {
                 headers: {
@@ -2479,7 +2797,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. */
+            /** @description order-market-not-found means the market is not registered. order-capability-not-found means the capability is absent, belongs to another owner, or its binding digest does not match. In the admission form, settlement-capability-not-found means the market of the capability is not registered. */
             404: {
                 headers: {
                     [name: string]: unknown;
@@ -2488,7 +2806,7 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. A submission failure alone does not authorize a refund. */
+            /** @description order-capability-route-mismatch means the route differs from the bound intent. order-capability-not-current means no current capability or matching accepted replay exists. An exact accepted replay returns its prior result. order-book-conflict permits an unchanged request retry. order-processing-conflict and order-market-closed are distinct, definitive submission failures. In the admission form, order-capability-not-current also means that the capability expired unbound or that the stage route bound it. settlement-capability-conflict means that the stageIdempotencyKey, the clientOrderId or a proof is already used by another operation or route; nothing is written. settlement-capability-market-unavailable means the market does not accept the capability now. A submission failure alone does not authorize a refund. */
             409: {
                 headers: {
                     [name: string]: unknown;
@@ -2497,7 +2815,25 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
-            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds and ends no later than the wait and expiry limits; preserve shorter caller limits. Start an attempt only while time remains before both limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
+            /** @description The body exceeds 400,000 bytes; the server refuses it before authentication, with no body. In the admission form, settlement-capability-request-too-large means that the artifact exceeds its limits. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description The order-submit rate limit, or in the admission form an admission capacity limit (settlement-capability-capacity-exhausted or settlement-capability-admission-limited). Nothing is written. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description order-quotes-refreshing with type /errors/order-quotes-refreshing and status 503 means this attempt was refused before acceptance. Clients may automatically retry only this exact problem with the identical serialized request, capability and signed comment. Authentication headers may be refreshed. Bound waiting to 60 seconds from first submission, at most 30 attempts and the original authorization expiry. Use a 1-second first delay and 2-second later delays. Each attempt is at most 30 seconds and ends no later than the wait and expiry limits; preserve shorter caller limits. Start an attempt only while time remains before both limits. Waiting can be stopped. Stopping or this refusal does not authorize custody release or prove that another copy cannot be accepted. order-admission-unavailable, order-processing-unavailable, settlement-capability-admission-unavailable (admission form: mint authority or durable capability authority unavailable), generic 503, timeout and malformed problems do not permit this automatic retry. Retain the original operation for reconciliation and recovery. */
             503: {
                 headers: {
                     [name: string]: unknown;
@@ -2765,6 +3101,63 @@ export interface operations {
             };
         };
     };
+    getOrderSettlementFailure: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                /** @description The primitive outcome book to trade on, in the format "{conditionId}-{outcomeName}" (e.g. "deadbeef…abc-Alice"). Public market IDs never contain finite outcome-set separators such as "|"; use SettlementOrderIntent.tokenSide during capability creation to choose the primitive outcome token or its one-vs-rest complement. Binary YES/NO markets expose only the YES route ("{conditionId}-YES"); NO is traded as tokenSide=Complement on that YES route, and "{conditionId}-NO" is not a valid market ID. */
+                marketId: components["parameters"]["MarketId"];
+                /** @description The order's unique identifier. */
+                orderId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The recorded settlement failure of the order, or null */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OrderSettlementFailureResponse"];
+                };
+            };
+            /** @description order-invalid-request. Application request validation failed. Framework input validation can return a different body shape. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The order belongs to another authenticated owner. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description order-not-found. The order is unavailable for this request. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["ProblemDetails"];
+                };
+            };
+        };
+    };
     getOrderBook: {
         parameters: {
             query?: never;
@@ -2875,6 +3268,33 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ParticipationScoreResponse"];
+                };
+            };
+            /** @description Missing or invalid NIP-98 authentication */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
+    getParticipationScoreHistory: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Recent Participation Score changes for the authenticated pubkey */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ParticipationScoreHistoryResponse"];
                 };
             };
             /** @description Missing or invalid NIP-98 authentication */
@@ -3736,6 +4156,154 @@ export interface operations {
                     "application/problem+json": components["schemas"]["ProblemDetails"];
                 };
             };
+        };
+    };
+    getRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The strong entity tag of the version that the client holds, for example `"3"`. */
+                "If-None-Match"?: string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document and its version. The body is 2^k + 37 bytes, with k from 12 to 16. */
+            200: {
+                headers: {
+                    ETag: components["headers"]["RecoveryIndexEntityTag"];
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    "Cache-Control": components["headers"]["RecoveryIndexNoStore"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description The version in `If-None-Match` is current. */
+            304: {
+                headers: {
+                    ETag: components["headers"]["RecoveryIndexEntityTag"];
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            404: components["responses"]["RecoveryIndexNotFound"];
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
+        };
+    };
+    putRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+                "X-Recovery-Index-Expected-Version": components["parameters"]["RecoveryIndexExpectedVersion"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": string;
+            };
+        };
+        responses: {
+            /** @description The document is stored, or the request is an exact retry. */
+            200: {
+                headers: {
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryIndexVersionResponse"];
+                };
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            /** @description The body did not arrive within the deadline. Application code: recovery-index-body-timeout. Send the write again. */
+            408: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+                };
+            };
+            409: components["responses"]["RecoveryIndexConflict"];
+            /** @description The request has no `Content-Length`. Application code: recovery-index-length-required. */
+            411: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+                };
+            };
+            /** @description The body is larger than 65,573 bytes. Application code: recovery-index-document-too-large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/problem+json": components["schemas"]["RecoveryIndexProblemDetails"];
+                };
+            };
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
+        };
+    };
+    deleteRecoveryIndex: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description The BIP340 x-only public key of the seed-derived request key, as 64 lowercase hexadecimal characters. It names the document. */
+                "X-Recovery-Index-Key": components["parameters"]["RecoveryIndexKey"];
+                /** @description The issue time of the request in Unix seconds. The engine accepts an issue time within 60 seconds of its clock. A refusal returns the engine time in `serverTime`, so the client can correct its clock offset once. */
+                "X-Recovery-Index-Issued-At": components["parameters"]["RecoveryIndexIssuedAt"];
+                /** @description A BIP340 signature by the request key, as 128 lowercase hexadecimal characters. The signed message is the BIP340 tagged hash with tag `bitcaster/recovery-index/request/v1` of these bytes, in this order: the realm, the method (`GET`, `PUT`, or `DELETE`), and the path `/api/v1/recovery-index`, each as UTF-8 with a one-byte length prefix; the 32-byte request key; the 32-byte SHA-256 digest of the exact body; the expected version (0 for a read) as an unsigned 64-bit big-endian integer; and the issue time as an unsigned 64-bit big-endian integer. The realm is the fixed string of the deployment environment that the client also uses to derive its keys. The engine keeps no replay nonce. The expected version and the tombstone make a replayed write or delete repeat its result or conflict. */
+                "X-Recovery-Index-Signature": components["parameters"]["RecoveryIndexSignature"];
+                /** @description The version that the write or delete expects to replace. Use 0 for a key with no document. */
+                "X-Recovery-Index-Expected-Version": components["parameters"]["RecoveryIndexExpectedVersion"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description The document is deleted. The response holds the tombstone version. */
+            200: {
+                headers: {
+                    "X-Recovery-Index-Version": components["headers"]["RecoveryIndexVersion"];
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RecoveryIndexVersionResponse"];
+                };
+            };
+            400: components["responses"]["RecoveryIndexInvalidRequest"];
+            401: components["responses"]["RecoveryIndexUnauthenticated"];
+            404: components["responses"]["RecoveryIndexNotFound"];
+            409: components["responses"]["RecoveryIndexConflict"];
+            429: components["responses"]["RecoveryIndexLimited"];
+            503: components["responses"]["RecoveryIndexUnavailable"];
         };
     };
 }

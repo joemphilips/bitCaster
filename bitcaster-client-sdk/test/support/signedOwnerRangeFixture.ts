@@ -272,17 +272,27 @@ export function signedOwnerRangeFixture(
     id?: string
     offerStart?: number
     receiveStart?: number
+    /** Face value in msat; defaults to one share. */
+    amountSubunits?: number
+    /** Price per 1,000 face value; defaults to 2. */
+    price?: number
   } = {},
 ) {
   const seed = options.seed ?? new Uint8Array(64).fill(7)
   const side = options.side ?? 'Buy'
   const id = options.id ?? 'owner-range'
+  const amountSubunits = options.amountSubunits ?? 1_000
+  const price = options.price ?? 2
+  const quotePaymentSubunits = (price * amountSubunits) / 1_000
   const base = buildPersistedCtfRangeOrderPreparation({
     request: {
       ...rangeOrderRequest(),
       side,
-      maxQuotePaymentSubunits: side === 'Buy' ? 2 : null,
-      minQuotePaymentSubunits: side === 'Sell' ? 2 : null,
+      price,
+      amountSubunits,
+      minimumFillAmountSubunits: amountSubunits,
+      maxQuotePaymentSubunits: side === 'Buy' ? quotePaymentSubunits : null,
+      minQuotePaymentSubunits: side === 'Sell' ? quotePaymentSubunits : null,
     },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,
     mintFacts: reviewedMintFacts(),

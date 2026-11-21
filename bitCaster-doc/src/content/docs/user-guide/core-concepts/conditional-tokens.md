@@ -32,6 +32,12 @@ exchanges ordinary ecash for conditional tokens. Selling exchanges a position
 for ordinary ecash if matching liquidity is available. You can submit a sell
 order before the event result is known. A sale is not guaranteed.
 
+When you sell to the market-making bot, the bot can use the value that your
+sale gives back in the same settlement. Its bids are not limited to its cash.
+A large sale can need more than one order. If the preview refuses a large
+sale, sell a smaller amount first and then sell the rest. While an earlier bot
+trade in the same market is still settling, the bot can buy less.
+
 The Sell form shows the shares available for the selected outcome. Shares
 already in use by a pending transaction are not available. Percentage buttons
 use this holding and round down to whole shares. The order still needs enough

@@ -1,5 +1,8 @@
 import type { Notification, NotificationKind } from "@/stores/notifications";
-import type { OrderLifecycleStatus } from "@bitcaster/client-sdk/engineClient";
+import type {
+  OrderLifecycleStatus,
+  OrderSettlementFailureResponse,
+} from "@bitcaster/client-sdk/engineClient";
 import type { components } from "@/generated/api";
 import { generateNip98Header } from "@/lib/markets";
 import { resolveApiSigningUrl } from "@/lib/hubUrl";
@@ -88,6 +91,18 @@ export async function fetchOrderStatus(
     baseUrl: window.location.origin,
     authorization: ({ url, method }) => generateNip98Header(resolveApiSigningUrl(url), method),
   }).getOrderStatus(marketId, orderId, signal)) as OrderStatusResponse | null;
+}
+
+/** The recorded settlement failure of one owned order, or null when the engine does not find the order. */
+export async function fetchOrderSettlementFailure(
+  marketId: string,
+  orderId: string,
+  signal?: AbortSignal,
+): Promise<OrderSettlementFailureResponse | null> {
+  return new BitcasterEngineClient({
+    baseUrl: window.location.origin,
+    authorization: ({ url, method }) => generateNip98Header(resolveApiSigningUrl(url), method),
+  }).getOrderSettlementFailure(marketId, orderId, signal);
 }
 
 export function buildOrderStatusNotifications(

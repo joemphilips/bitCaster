@@ -7,8 +7,13 @@ import { LoaderCircle } from "lucide-react";
 
 interface StatsRowProps {
   stats: PortfolioStats;
-  /** A seed restore runs or failed, so the total and a zero position value are not known. */
+  /** A seed restore runs or failed, so the total is not known. */
   positionsRestoring?: boolean;
+  /**
+   * A zero value or a zero count is not final: a seed restore runs or failed,
+   * or it completed with limited coverage. The default is `positionsRestoring`.
+   */
+  zeroUnknown?: boolean;
 }
 
 function StatCard({
@@ -58,12 +63,37 @@ function formatTotals(
   );
 }
 
-export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
+function totalsAreZero(totals: AmountByUnit[] | undefined, fallbackSats: number): boolean {
+  return fallbackSats === 0 && !(totals ?? []).some((entry) => entry.amount !== 0);
+}
+
+/**
+ * Whether the total value is known. While a seed restore runs or failed, the
+ * total also needs the positions, so a partial number would mislead. A zero
+ * total that is not final is not known either.
+ */
+export function shownTotalValueKnown(
+  stats: PortfolioStats,
+  positionsRestoring: boolean,
+  zeroUnknown: boolean,
+): boolean | undefined {
+  if (positionsRestoring) return false;
+  if (zeroUnknown && totalsAreZero(stats.totalValueByUnit, stats.totalValueSats)) return false;
+  return stats.totalValueKnown;
+}
+
+export function StatsRow({
+  stats,
+  positionsRestoring = false,
+  zeroUnknown = positionsRestoring,
+}: StatsRowProps) {
   const { t } = useTranslation();
-  // While a seed restore runs or failed, show a zero position value as
-  // unknown. A value above zero is already restored, so it stays.
-  const known = (value: number, valueKnown: boolean | undefined) =>
-    positionsRestoring && value === 0 ? false : valueKnown;
+  // Show a zero that is not final as unknown. A value above zero is already
+  // restored, so it stays.
+  const positionsValueKnown =
+    zeroUnknown && totalsAreZero(stats.positionsValueByUnit, stats.positionsValueSats)
+      ? false
+      : stats.positionsValueKnown;
   return (
     <div className="flex items-stretch divide-x divide-slate-200 dark:divide-slate-700 bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
       <StatCard
@@ -72,8 +102,7 @@ export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
         value={formatTotals(
           stats.totalValueByUnit,
           stats.totalValueSats,
-          // The total also needs the positions, so a partial number would mislead.
-          positionsRestoring ? false : stats.totalValueKnown,
+          shownTotalValueKnown(stats, positionsRestoring, zeroUnknown),
         )}
       />
       <StatCard
@@ -82,15 +111,13 @@ export function StatsRow({ stats, positionsRestoring = false }: StatsRowProps) {
         value={formatTotals(
           stats.positionsValueByUnit,
           stats.positionsValueSats,
-          known(stats.positionsValueSats, stats.positionsValueKnown),
+          positionsValueKnown,
         )}
       />
       <StatCard
         label={t("portfolio.predictions")}
         value={
-          positionsRestoring && stats.predictionsCount === 0
-            ? "—"
-            : stats.predictionsCount.toString()
+          zeroUnknown && stats.predictionsCount === 0 ? "—" : stats.predictionsCount.toString()
         }
       />
     </div>

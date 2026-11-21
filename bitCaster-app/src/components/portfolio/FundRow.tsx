@@ -4,13 +4,17 @@ import { InlineAmount } from "@/components/shared/InlineAmount";
 
 interface FundRowProps {
   fund: Fund;
+  /** The amount is the display-only projection, not the local wallet. */
+  provisional?: boolean;
+  /** The local read that replaces the projection is loading. */
+  busy?: boolean;
 }
 
-export function FundRow({ fund }: FundRowProps) {
+export function FundRow({ fund, provisional = false, busy = false }: FundRowProps) {
   const mintHostname = new URL(fund.mintUrl).hostname;
 
   return (
-    <li className="flex items-center gap-3 rounded-lg p-3">
+    <li className="flex items-center gap-3 rounded-lg p-3" data-amount-subunits={fund.amount}>
       {/* Icon */}
       <div className="w-10 h-10 rounded-lg bg-slate-100 dark:bg-slate-700 flex items-center justify-center shrink-0">
         <Coins className="w-5 h-5 text-amber-500" />
@@ -24,9 +28,15 @@ export function FundRow({ fund }: FundRowProps) {
         </p>
       </div>
 
-      {/* Amount */}
+      {/* Amount: muted while provisional, then a short fade to the normal style. */}
       <div className="text-right shrink-0">
-        <div className="text-sm font-mono font-medium text-slate-900 dark:text-white">
+        <div
+          data-testid="fund-amount"
+          aria-busy={busy ? true : undefined}
+          className={`text-sm font-mono font-medium transition-colors duration-300 motion-reduce:transition-none ${
+            provisional ? "text-slate-500 dark:text-slate-400" : "text-slate-900 dark:text-white"
+          }`}
+        >
           <InlineAmount amountSubunits={fund.amount} baseAsset="sat" />
         </div>
       </div>

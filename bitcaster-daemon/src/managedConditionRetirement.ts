@@ -1,4 +1,5 @@
 import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparation.ts'
+import { boundedErrorText } from './mintErrorText.ts'
 import { isDeepStrictEqual } from 'node:util'
 import { withDurableCustodyFencedRead } from './durableCustodyUnitOfWork.ts'
 import { profileDir } from './profile.ts'
@@ -101,10 +102,7 @@ export async function retireResolvedDaemonConditions(input: {
       })
       results.push({ conditionId, error: null })
     } catch (error) {
-      results.push({
-        conditionId,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      results.push({ conditionId, error: boundedErrorText(error) })
     }
   }
   return results
@@ -133,10 +131,7 @@ export async function resumeDaemonConditionRetirements(input: {
       })
       results.push({ conditionId: binding.conditionId, error: null })
     } catch (error) {
-      results.push({
-        conditionId: binding.conditionId,
-        error: error instanceof Error ? error.message : String(error),
-      })
+      results.push({ conditionId: binding.conditionId, error: boundedErrorText(error) })
     }
   }
   return results

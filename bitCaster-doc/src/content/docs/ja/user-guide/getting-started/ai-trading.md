@@ -148,17 +148,24 @@ daemon は注文を送信する前に、ミントで注文の資金を準備し�
 ミントの拒否の中には、準備が完了しておらず、今後も完了しないことを証明するものがあります。
 このような拒否の後、daemon は予約した資金をもう一度確認し、注文の試行を終了します。
 このとき `order submit` はコード `order-attempt-released` で失敗し、`mintError` にミントのコードを含めます。
-`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds are available again.」です。
+`error` のテキストは、例えば「The mint refused the order (mint code 11008). No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.」です。
 別の操作が資金の一部を使っていた場合、daemon は残りの資金だけを解放します。新しい注文を送信できます。
 
 その他の失敗では資金は予約されたままで、daemon は結果をもう一度確認します。
 確認に失敗するたびに間隔が長くなり、最大 15 分になります。
 `order recovery` は、daemon がまだ回復している注文の操作と、ミントの拒否で終了した注文の試行を表示します。
-ミントが同じ確認を 5 回拒否すると、daemon は自動の確認を停止します。
+ミントが同じリクエストを同じコードで 5 回拒否すると、daemon は自動の確認を停止します。
 その項目には `"halted": true`、ミントのコード、`retryCommand`(例: `bitcaster-cli order retry <operation-id>`)が表示されます。
-そのコマンドを実行すると、確認をもう一度だけ送信します。daemon を再起動しても、自動の確認が再開します。
+返金の現在の出力プランの出力ではなく、その返金の以前の出力プランの出力をミントが保持しているときも、返金はすぐに停止します。
+daemon はそれらの出力を返金として使いません。
+その項目には `"halted": true` と `retryCommand` が表示されますが、`mintError` は表示されません。
+`retryCommand` を実行すると、確認をもう一度だけ送信します。daemon を再起動した場合も、自動の確認が再開します。
 `order retry` は `--dry-run` に対応しています。
 同じマーケットの前の売り注文が資金を準備している間、`order submit` はそのマーケットの新しい売り注文をコード `order-sell-preparation-pending` で拒否し、資金を予約しません。
+
+ほかのウォレットのコマンドがミントの応答で失敗したとき、`error` のテキストは固定です。
+コード付きの拒否では「mint request was refused (mint code 11001)」と表示し、`mintError` にコードと短い詳細を含めます。
+その他のミントの HTTP 応答では「mint request failed (HTTP 502)」と表示します。
 
 ## 資金を安全に保つ
 

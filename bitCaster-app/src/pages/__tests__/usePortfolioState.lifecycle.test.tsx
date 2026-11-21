@@ -46,10 +46,19 @@ vi.mock("@/stores/settings", () => ({
 vi.mock("@/stores/activity-log", () => ({
   useActivityLogStore: (selector: (state: object) => unknown) => selector(mocks.activity),
 }));
+const activations = vi.hoisted(() => new Map<string, { scopeId: string; epoch: number }>());
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletIdFromMnemonic: () => mocks.walletId,
   browserWalletScopeIdFromMnemonic: () => `custody:wallet:${mocks.walletId}`,
   activeBrowserWalletScopeId: () => `custody:wallet:${mocks.walletId}`,
+  // One stable activation for each wallet. The tag of a holdings read needs it (#161).
+  activeBrowserWalletActivation: () => {
+    const scopeId = `custody:wallet:${mocks.walletId}`;
+    const activation = activations.get(scopeId) ?? { scopeId, epoch: activations.size + 1 };
+    activations.set(scopeId, activation);
+    return activation;
+  },
+  subscribeBrowserWalletActivation: () => () => {},
 }));
 vi.mock("@/lib/nostr", () => ({
   getNostrSignerRevision: () => 0,

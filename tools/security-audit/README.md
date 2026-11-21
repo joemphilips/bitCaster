@@ -126,7 +126,7 @@ The default scan has no dispositions. A workflow can pass one explicit
 `--reviewed-findings` repository-relative path. The runner reads the regular
 blob from the verified candidate Git tree. Uncommitted files do not apply.
 The closed format has `schema_version: 2` and `findings`.
-It is limited to 128 rows and 64 KiB.
+It is limited to 512 rows and 256 KiB.
 Each row requires `RuleID`, full `Blob`, `File`, `StartLine`, `EndLine`,
 `StartColumn`, `EndColumn`, `rationale` and `review`. `Blob` is the Git blob
 ID of `File` in the commit of the finding. The runner takes it from the changed
@@ -147,3 +147,39 @@ Review each data change like detector code. Add real-scanner negative tests for 
 new credential at the same path and an unrelated credential beside a disposition.
 A disposition records nonsecret data or a public fixture; it does not accept a
 new credential exposure or authorize a risk. Preserve the original failing receipt.
+
+### Release 5 fixture dispositions
+
+PR #126's first secret-check run, `44698399246`, found 284 candidates in
+61 commits. The exact failing synthetic merge was
+`b571ef39f17d5b89b5ca08b59e2388d90d6ebc2a`, with base
+`4fe7f6e6c08fab430f9ed5e050d1821ab8af2ed5` and topic head
+`e6a7b349ef39ecfda1d246b7f3c6e64794926c1f`. The local pinned scanner reproduced
+the same result. These findings contain 275 unique blob/path/location tuples:
+
+- `bitcaster-client-sdk/test/fixtures/recovery-index-v1.json`: 266 locations
+  across two historical blobs. Sixteen locations contain deterministic test
+  cryptographic keys. The other 250 contain deterministic keyset identifiers.
+  Both commit-matched versions of
+  `scripts/generate-recovery-index-v1-vectors.py` reproduce every parsed JSON
+  value from fixed public inputs. Serialization differs; this is parsed-value
+  equality, not byte-for-byte generator output. These keys are deliberately
+  public test vectors and must not be used for live custody.
+- `bitCaster-app/src/stores/__tests__/fixtures/release4-wallet-databases.json`:
+  nine locations in one historical blob, reported twice in the range. Seven
+  contain public keyset identifiers. Two contain fingerprints of public keyset
+  metadata. `deriveDurableCustodyKeysetFingerprint` in `durableCustody.ts` derives the
+  fingerprint from public identity, unit, curve and denomination/public-key
+  entries. The original fixture-generator export was unavailable. The review
+  classified these exact fields; it did not reproduce the whole wallet fixture.
+
+The manifest retains the two earlier RFC WebSocket fixture dispositions and
+adds these 275 exact tuples. It contains no matched values. The 512-row and
+256-KiB bounds accommodate this inventory without changing detector rules,
+the scan range, or exact matching. They are resource bounds, not a fixture
+directory exemption.
+
+The real-scanner regression runs at both fixture paths. A new adjacent
+credential, changed content, or unrelated path remains actionable. Merge and
+squash tests preserve only an unchanged reviewed blob. Separate boundary tests
+accept the maximum valid row and byte counts and reject one more.

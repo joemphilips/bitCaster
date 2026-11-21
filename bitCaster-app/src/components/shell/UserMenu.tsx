@@ -18,7 +18,7 @@ import { LANGUAGES } from "@/i18n";
 import { EnvironmentLink } from "./EnvironmentLink";
 
 interface UserMenuProps {
-  user: { name: string; avatarUrl?: string; balance?: number };
+  user: { name: string; avatarUrl?: string; balance?: number | null };
   /** A Nostr signer is connected. */
   isLoggedIn: boolean;
   onLogin?: () => void;
@@ -67,7 +67,12 @@ export function UserMenu({
             {user.name}
           </div>
           <div className="text-xs text-amber-400 font-mono">
-            <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
+            {/* Null: the wallet recovery has not settled the balance. */}
+            {user.balance === null ? (
+              "—"
+            ) : (
+              <InlineAmount amountSubunits={user.balance ?? 0} baseAsset="sat" />
+            )}
           </div>
         </div>
 

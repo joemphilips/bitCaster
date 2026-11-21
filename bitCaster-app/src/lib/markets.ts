@@ -13,7 +13,6 @@ import {
   createTradeCommentTemplate,
   tradeCommentToWire,
 } from "@bitcaster/client-sdk";
-import type { WalletId } from "@bitcaster/client-sdk/durableCustody";
 import type { MarketSnapshotReadOptions } from "@bitcaster/client-sdk/engineClient";
 import {
   marketUnitLabel,
@@ -42,10 +41,6 @@ export { CreateMarketError };
 
 // Types from generated OpenAPI spec
 
-export type SubmitOrderRequest = Omit<components["schemas"]["SubmitOrderRequest"], "walletId"> & {
-  walletId?: WalletId;
-};
-export type SubmitOrderResponse = components["schemas"]["SubmitOrderResponse"];
 export type OrderBookSnapshot = components["schemas"]["OrderBookSnapshot"];
 export type LevelDto = components["schemas"]["LevelDto"];
 export type Fill = components["schemas"]["Fill"];
@@ -893,16 +888,6 @@ export async function fetchOrderBook(
   return mapSnapshotToOrderBook(snapshot as OrderBookSnapshot);
 }
 
-export async function submitOrder(
-  marketId: string,
-  params: SubmitOrderRequest,
-): Promise<SubmitOrderResponse> {
-  return (await createAuthenticatedBrowserEngineClient().submitOrder(
-    marketId,
-    params,
-  )) as unknown as SubmitOrderResponse;
-}
-
 export async function signTradeComment(
   conditionId: string,
   content: string,
@@ -1112,6 +1097,8 @@ export function getMarketThumbnail(market: {
 }
 
 export type ParticipationScoreResponse = components["schemas"]["ParticipationScoreResponse"];
+export type ParticipationScoreHistoryResponse =
+  components["schemas"]["ParticipationScoreHistoryResponse"];
 
 /** Submit one exact durable Cashu delivery. The response never exposes the token. */
 export async function submitDurableCashuDelivery(
@@ -1130,6 +1117,13 @@ export async function getDurableCashuDeliveryStatus(
 
 export async function getParticipationScore(): Promise<ParticipationScoreResponse> {
   return createAuthenticatedBrowserEngineClient().getParticipationScore();
+}
+
+/** The caller's Score balance and its most recent changes, newest first. */
+export async function getParticipationScoreHistory(
+  signal?: AbortSignal,
+): Promise<ParticipationScoreHistoryResponse> {
+  return createAuthenticatedBrowserEngineClient().getParticipationScoreHistory(signal);
 }
 
 /**

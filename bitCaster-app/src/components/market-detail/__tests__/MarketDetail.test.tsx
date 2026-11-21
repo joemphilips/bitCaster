@@ -206,7 +206,7 @@ describe("MarketDetail", () => {
       />,
     );
     expect(screen.getByTestId("mobile-trade-bar")).toBe(bar);
-    expect(bar).toHaveTextContent("Waiting for fresh quotes");
+    expect(bar).toHaveTextContent("Waiting for the order book");
     fireEvent.click(within(bar).getByRole("button", { name: "Stop waiting" }));
     expect(stop).toHaveBeenCalledTimes(1);
     rerender(

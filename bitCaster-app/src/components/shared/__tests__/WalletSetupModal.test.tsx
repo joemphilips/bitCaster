@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 
@@ -39,6 +39,81 @@ describe("WalletSetupModal", () => {
     await userEvent.click(screen.getByRole("button", { name: "Replace Wallet" }));
 
     expect(onImportSeed).toHaveBeenCalledWith(validSeedPhrase.split(" "));
+  });
+
+  it("shows a counter gap as an amber alert above the backup warning, with the command as code", () => {
+    const command = "bitcaster wallet recover-seed --gap-limit 401";
+    render(
+      <WalletSetupModal
+        mode="replace"
+        warning={{ code: "counter-gap", command }}
+        confirmWarning
+        onClose={vi.fn()}
+        onCreateNew={vi.fn()}
+        onImportSeed={vi.fn()}
+      />,
+    );
+
+    // A proceedable warning is not an error: it uses the amber warning box,
+    // and a screen reader hears why the action became Replace Anyway.
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(
+      /^A restore in another browser can miss some funds of this wallet\. To find them, use bitcaster wallet recover-seed --gap-limit 401\.$/,
+    );
+    const box = alert.parentElement!;
+    expect(box).toHaveClass("border-amber-200", "bg-amber-50");
+    expect(alert.nextElementSibling).toHaveTextContent(/back up your current seed phrase/i);
+    expect(document.querySelector(".border-rose-200")).toBeNull();
+    const code = within(alert).getByText((_, element) => element?.tagName === "CODE");
+    expect(code).toHaveTextContent(command);
+    expect(code).toHaveClass("font-mono");
+    // A line breaks only between the command tokens, never inside a flag.
+    expect(Array.from(code.children).map((token) => [token.textContent, token.className])).toEqual(
+      command.split(" ").map((token) => [token, "whitespace-nowrap"]),
+    );
+    expect(screen.getByRole("button", { name: "Replace Anyway" })).toBeInTheDocument();
+  });
+
+  it("shows the partial backup warning with its command as code", () => {
+    render(
+      <WalletSetupModal
+        mode="replace"
+        warning={{
+          code: "backup-partial",
+          command: "bitcaster wallet recover-seed --all-conditions",
+        }}
+        onClose={vi.fn()}
+        onCreateNew={vi.fn()}
+        onImportSeed={vi.fn()}
+      />,
+    );
+
+    const alert = screen.getByRole("alert");
+    expect(alert).toHaveTextContent(
+      "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
+    );
+    expect(alert.parentElement).toHaveClass("border-amber-200");
+    expect(alert.querySelector("code")).toHaveTextContent(
+      "bitcaster wallet recover-seed --all-conditions",
+    );
+  });
+
+  it("keeps a real error in the rose error box", () => {
+    render(
+      <WalletSetupModal
+        mode="replace"
+        error="A wallet operation is unfinished."
+        onClose={vi.fn()}
+        onCreateNew={vi.fn()}
+        onImportSeed={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("A wallet operation is unfinished.")).toHaveClass(
+      "border-rose-200",
+      "bg-rose-50",
+    );
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("keeps an empty or incomplete phrase from being imported", async () => {
