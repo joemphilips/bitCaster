@@ -393,6 +393,65 @@ test('asset-monitoring reporter does not submit an unchanged accepted snapshot a
   assert.equal(calls, 1)
 })
 
+test(
+  'asset-monitoring reporter holds a report until the host lets it go',
+  { timeout: 10_000 },
+  async (t) => {
+    // The host holds each report while a hint read has not finished. A held
+    // report builds nothing, sends nothing and schedules no retry. The next
+    // request after the hold ends sends it.
+    let allowed = false
+    const checks: boolean[] = []
+    const firstCheck = deferred<boolean>()
+    const firstCheckCalled = deferred<void>()
+    const submitted = deferred<boolean>()
+    let builds = 0
+    let submits = 0
+    let retries = 0
+    const reporter = new AssetMonitoringReporter({
+      walletId,
+      mayReport: async () => {
+        if (checks.length === 0) {
+          checks.push(false)
+          firstCheckCalled.resolve()
+          return firstCheck.promise
+        }
+        checks.push(allowed)
+        return allowed
+      },
+      buildHoldings: async () => {
+        builds += 1
+        return holdings
+      },
+      remote: {
+        submitAssetMonitoringReport: async () => {
+          submits += 1
+          submitted.resolve(allowed)
+        },
+      },
+      hasPendingSubmittedOrder: async () => false,
+      isCurrent: () => true,
+      retryDelayMs: () => {
+        retries += 1
+        return 1
+      },
+    })
+    t.after(() => reporter.stop())
+
+    reporter.request()
+    await Promise.race([firstCheckCalled.promise, submitted.promise])
+    firstCheck.resolve(false)
+    allowed = true
+    reporter.request()
+
+    assert.equal(await submitted.promise, true, 'a held report was sent')
+    assert.deepEqual(checks, [false, true])
+    assert.equal(builds, 1)
+    assert.equal(submits, 1)
+    assert.equal(retries, 0)
+  },
+)
+
 test('asset-monitoring catalogue bounds pages', async () => {
   const ids = Array.from({ length: 51 }, (_, index) => index.toString(16).padStart(64, '0'))
   const urls: URL[] = []
@@ -439,6 +498,14 @@ test('asset-monitoring catalogue rejects duplicate outcome labels', async () => 
     }),
   )
 })
+
+function deferred<T>() {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((done) => {
+    resolve = done
+  })
+  return { promise, resolve }
+}
 
 async function waitFor(predicate: () => boolean): Promise<void> {
   for (let index = 0; index < 100; index += 1) {

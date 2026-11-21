@@ -125,64 +125,55 @@ export interface BrowserSeedPositionRestoreInput {
   readonly counterBudget?: number;
 }
 
-const reportGates = new Map<
-  string,
-  { promise: Promise<void>; resolve: () => void; released: boolean }
->();
-
-function reportGate(scopeId: string) {
-  let gate = reportGates.get(scopeId);
-  if (gate === undefined) {
-    let resolve!: () => void;
-    const promise = new Promise<void>((done) => {
-      resolve = done;
-    });
-    gate = { promise, resolve, released: false };
-    reportGates.set(scopeId, gate);
-  }
-  return gate;
-}
+const hintListeners = new Map<string, Set<() => void>>();
 
 /**
- * True when the first asset-monitoring report of this wallet can go: this
- * profile generated the seed, or each wallet mint read the earlier report
- * with a signer. A read that keeps failing settles after a bound, so a broken
- * read does not hold the report forever.
+ * True when an asset-monitoring report of this wallet can go (ADR-039). The
+ * engine keeps only the latest report, and the restore of each wallet mint
+ * reads the earlier report as a hint. So a report waits until this profile
+ * generated the seed, or each wallet mint read the earlier report with a
+ * signer. A mint that the user added later waits too: a mint without a
+ * restore record has not read it. A read that keeps failing settles after a
+ * bound, so a broken read does not hold the report forever.
  */
-export async function browserSeedPositionRestoreHintsSettled(scopeId: string): Promise<boolean> {
+export async function browserSeedPositionRestoreHintsSettled(
+  scopeId: string,
+  walletMintUrls: readonly string[],
+): Promise<boolean> {
   if (!(await browserSeedRestoreRuns(scopeId, db))) return true;
-  const states = await statesOfScope(scopeId);
-  return states.length > 0 && states.every(hintsSettled);
+  const mintUrls = [...new Set(walletMintUrls.map(normalizeUrl))];
+  if (mintUrls.length === 0) return false;
+  const states = await seedRestoreDatabase(scopeId).states.bulkGet(
+    mintUrls.map((mintUrl): [string, string] => [scopeId, mintUrl]),
+  );
+  return states.every((state) => state !== undefined && hintsSettled(state));
 }
 
 function hintsSettled(state: SeedRestoreStateRow): boolean {
   return state.hintsDone || state.hintFailures >= SEED_RESTORE_PERSISTENT_FAILURES;
 }
 
-/** Releases the asset-monitoring report gate of this wallet for this page load. */
-export function releaseBrowserSeedPositionRestoreGate(scopeId: string): void {
-  const gate = reportGate(scopeId);
-  gate.released = true;
-  gate.resolve();
+/** Tells each held asset-monitoring report of this wallet that a pass settled the hints of its mints. */
+export function publishBrowserSeedPositionRestoreHintsSettled(scopeId: string): void {
+  for (const listener of [...(hintListeners.get(scopeId) ?? [])]) listener();
 }
 
-/**
- * The asset-monitoring report gate of one wallet scope. The engine keeps only
- * the latest report, and the restore reads the earlier report as a hint. So
- * the first report of a new profile waits until the hints are settled.
- */
-export function browserSeedPositionRestoreGate(scopeId: string): {
-  readonly released: boolean;
-  readonly wait: Promise<void>;
-} {
-  const gate = reportGate(scopeId);
-  if (gate.released) return { released: true, wait: Promise.resolve() };
-  return {
-    released: false,
-    wait: (async () => {
-      if (await browserSeedPositionRestoreHintsSettled(scopeId)) return;
-      await gate.promise;
-    })(),
+/** Calls the listener after each recovery pass that settled the hints of its mints. */
+export function subscribeBrowserSeedPositionRestoreHintsSettled(
+  scopeId: string,
+  listener: () => void,
+): () => void {
+  let listeners = hintListeners.get(scopeId);
+  if (listeners === undefined) {
+    listeners = new Set();
+    hintListeners.set(scopeId, listeners);
+  }
+  listeners.add(listener);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && hintListeners.get(scopeId) === listeners) {
+      hintListeners.delete(scopeId);
+    }
   };
 }
 
@@ -981,20 +972,24 @@ async function keysetRows(scopeId: string, mintUrl: string): Promise<SeedRestore
 
 /** Adds the markets that a hint names. Their keysets come from the mint listing of each market. */
 async function addConditions(
-  context: PassContext,
+  scopeId: string,
+  mintUrl: string,
   conditionIds: ReadonlySet<string>,
 ): Promise<void> {
   if (conditionIds.size === 0) return;
-  const database = seedRestoreDatabase(context.scopeId);
+  const database = seedRestoreDatabase(scopeId);
   await database.transaction("rw", database.conditions, async () => {
-    const existing = await conditionRows(context);
+    const existing = await database.conditions
+      .where("[scopeId+mintUrl]")
+      .equals([scopeId, mintUrl])
+      .toArray();
     const known = new Set(existing.map(({ conditionId }) => conditionId));
     let order = existing.reduce((highest, row) => Math.max(highest, row.order + 1), 0);
     for (const conditionId of conditionIds) {
       if (known.has(conditionId)) continue;
       await database.conditions.put({
-        scopeId: context.scopeId,
-        mintUrl: context.mintUrl,
+        scopeId,
+        mintUrl,
         conditionId,
         schemaVersion: 3,
         order,
@@ -1011,13 +1006,18 @@ async function addConditions(
 /**
  * Reads the conditions of the earlier asset-monitoring report, before this
  * profile reports. The result is "read" only after a read with a signer.
+ *
+ * It keeps the markets of every mint in the report, also of a mint that is
+ * not a wallet mint yet. The first report of this profile replaces the
+ * earlier report, so a mint that the user adds later can read only this
+ * record. The restore lists a market only at a wallet mint.
  */
 async function addAssetMonitoringHints(
   context: PassContext,
 ): Promise<"read" | "no-signer" | "failed"> {
   const signer = getNdk().signer;
   if (!signer || context.walletId === null) return "no-signer";
-  const conditionIds = new Set<string>();
+  const conditionIdsByMint = new Map<string, Set<string>>();
   try {
     const client = createAuthenticatedBrowserEngineClient(signer);
     let cursor: string | undefined;
@@ -1028,12 +1028,14 @@ async function addAssetMonitoringHints(
         ...(cursor === undefined ? {} : { cursor }),
       });
       for (const { asset } of response.assets) {
-        if (
-          asset.kind === "conditional" &&
-          normalizeUrl(asset.canonicalMintUrl) === context.mintUrl
-        ) {
-          conditionIds.add(asset.conditionId);
+        if (asset.kind !== "conditional") continue;
+        const mintUrl = normalizeUrl(asset.canonicalMintUrl);
+        let conditionIds = conditionIdsByMint.get(mintUrl);
+        if (conditionIds === undefined) {
+          conditionIds = new Set();
+          conditionIdsByMint.set(mintUrl, conditionIds);
         }
+        conditionIds.add(asset.conditionId);
       }
       if (!response.nextCursor) break;
       cursor = response.nextCursor;
@@ -1042,7 +1044,9 @@ async function addAssetMonitoringHints(
     // A hint is optional: the index and the regular keysets still restore.
     return "failed";
   }
-  await addConditions(context, conditionIds);
+  for (const [mintUrl, conditionIds] of conditionIdsByMint) {
+    await addConditions(context.scopeId, mintUrl, conditionIds);
+  }
   return "read";
 }
 
@@ -1056,7 +1060,7 @@ async function addActivityLogHints(context: PassContext): Promise<void> {
       conditionIds.add(conditionId);
     }
   }
-  await addConditions(context, conditionIds);
+  await addConditions(context.scopeId, context.mintUrl, conditionIds);
 }
 
 export interface BrowserKeysetResyncResult {

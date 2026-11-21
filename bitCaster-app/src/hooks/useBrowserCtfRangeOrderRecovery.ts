@@ -16,7 +16,7 @@ import {
   listenForBrowserCtfRangeRecoveryWake,
 } from "@/lib/browserCtfRangeOrderRecoveryWake";
 import {
-  releaseBrowserSeedPositionRestoreGate,
+  publishBrowserSeedPositionRestoreHintsSettled,
   resyncBrowserKeysetsInUse,
   runBrowserSeedPositionRestorePass,
 } from "@/lib/browserSeedPositionRestore";
@@ -327,8 +327,8 @@ export function useBrowserCtfRangeOrderRecovery(input: {
         }
         if (!isCurrent()) return;
         passRan = true;
-        // The first asset-monitoring report waits for the earlier report's hints.
-        if (hintsSettled) releaseBrowserSeedPositionRestoreGate(scopeId);
+        // A held asset-monitoring report waits for the earlier report's hints.
+        if (hintsSettled) publishBrowserSeedPositionRestoreHintsSettled(scopeId);
       } finally {
         running = false;
         // A pass that stopped early is dropped with every summary write.

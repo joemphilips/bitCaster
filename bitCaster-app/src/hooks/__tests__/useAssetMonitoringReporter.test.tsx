@@ -11,7 +11,10 @@ const mocks = vi.hoisted(() => {
     ["updating", new Set()],
     ["deleting", new Set()],
   ]);
-  const walletState = { mnemonic: "wallet-a" };
+  const walletState = {
+    mnemonic: "wallet-a",
+    mints: [{ url: "https://mint-a.example" }] as { url: string }[],
+  };
   const signerSubscribers = new Set<() => void>();
   const state = {
     activeScopeId: "scope-wallet-a" as string | null,
@@ -28,6 +31,7 @@ const mocks = vi.hoisted(() => {
       readonly input: {
         isCurrent: () => boolean;
         buildHoldings: () => Promise<unknown>;
+        mayReport?: () => Promise<boolean>;
         onAccepted?: () => void;
       },
     ) {
@@ -57,6 +61,7 @@ const mocks = vi.hoisted(() => {
     publishPortfolioInvalidation: vi.fn(),
     reset: () => {
       walletState.mnemonic = "wallet-a";
+      walletState.mints = [{ url: "https://mint-a.example" }];
       state.activeScopeId = "scope-wallet-a";
       state.signer = {};
       state.signerRevision = 0;
@@ -131,17 +136,25 @@ vi.mock("@/stores/wallet", () => ({
   ),
 }));
 
-// The seed restore gate is open unless a test holds it.
-const restoreGate = vi.hoisted(() => ({
-  current: { released: true, wait: Promise.resolve() } as {
-    released: boolean;
-    wait: Promise<void>;
-  },
+// Each wallet mint read the earlier report unless a test says otherwise.
+const restoreHints = vi.hoisted(() => ({
+  unread: new Set<string>(),
+  listeners: new Set<() => void>(),
+  settled: vi.fn(),
 }));
 
 vi.mock("@/lib/browserSeedPositionRestore", () => ({
-  browserSeedPositionRestoreGate: () => restoreGate.current,
+  browserSeedPositionRestoreHintsSettled: restoreHints.settled,
+  subscribeBrowserSeedPositionRestoreHintsSettled: (_scopeId: string, listener: () => void) => {
+    restoreHints.listeners.add(listener);
+    return () => restoreHints.listeners.delete(listener);
+  },
 }));
+
+/** The recovery pass reports that the hints of its mints settled. */
+function publishHintsSettled(): void {
+  for (const listener of [...restoreHints.listeners]) listener();
+}
 
 vi.mock("@/lib/portfolioInvalidation", () => ({
   publishPortfolioInvalidation: mocks.publishPortfolioInvalidation,
@@ -152,7 +165,13 @@ const { subscribeToCommittedProofChanges, useAssetMonitoringReporter } =
 
 beforeEach(() => {
   mocks.reset();
-  restoreGate.current = { released: true, wait: Promise.resolve() };
+  restoreHints.unread.clear();
+  restoreHints.listeners.clear();
+  restoreHints.settled
+    .mockReset()
+    .mockImplementation(async (_scopeId: string, mintUrls: readonly string[]) =>
+      mintUrls.every((url) => !restoreHints.unread.has(url)),
+    );
 });
 afterEach(() => vi.clearAllMocks());
 
@@ -176,25 +195,58 @@ describe("useAssetMonitoringReporter", () => {
     expect(mocks.state.reporters[0]!.request).toHaveBeenCalledOnce();
   });
 
-  it("holds every report of a new profile until its first seed restore pass ends", async () => {
-    let endFirstPass!: () => void;
-    restoreGate.current = {
-      released: false,
-      wait: new Promise<void>((resolve) => {
-        endFirstPass = resolve;
-      }),
-    };
+  it("holds each report until every wallet mint read the earlier report", async () => {
+    restoreHints.unread.add("https://mint-a.example");
     renderHook(() => useAssetMonitoringReporter(true));
     const reporter = mocks.state.reporters[0]!;
-    // A proof that the restore admits must not report an incomplete snapshot.
-    const restored = transaction();
-    trigger("creating", restored);
-    complete(restored);
-    expect(reporter.request).not.toHaveBeenCalled();
 
-    await act(async () => endFirstPass());
+    // The engine keeps only the latest report, so a report waits for the read.
+    expect(await reporter.input.mayReport!()).toBe(false);
+    expect(restoreHints.settled).toHaveBeenLastCalledWith("scope-wallet-a", [
+      "https://mint-a.example",
+    ]);
+    reporter.request.mockClear();
+
+    restoreHints.unread.clear();
+    act(() => publishHintsSettled());
 
     expect(reporter.request).toHaveBeenCalledOnce();
+    expect(await reporter.input.mayReport!()).toBe(true);
+  });
+
+  it("holds a report again for a mint that the user adds after the gate opened", async () => {
+    renderHook(() => useAssetMonitoringReporter(true));
+    const reporter = mocks.state.reporters[0]!;
+    expect(await reporter.input.mayReport!()).toBe(true);
+    // No report waits, so a settled notice requests nothing.
+    act(() => publishHintsSettled());
+    expect(reporter.request).toHaveBeenCalledOnce();
+
+    // The restore of the added mint has not read the earlier report yet.
+    mocks.walletState.mints = [
+      { url: "https://mint-a.example" },
+      { url: "https://mint-b.example" },
+    ];
+    restoreHints.unread.add("https://mint-b.example");
+
+    expect(await reporter.input.mayReport!()).toBe(false);
+    expect(restoreHints.settled).toHaveBeenLastCalledWith("scope-wallet-a", [
+      "https://mint-a.example",
+      "https://mint-b.example",
+    ]);
+
+    restoreHints.unread.clear();
+    act(() => publishHintsSettled());
+
+    expect(reporter.request).toHaveBeenCalledTimes(2);
+    expect(await reporter.input.mayReport!()).toBe(true);
+  });
+
+  it("holds a report when the hint state cannot be read", async () => {
+    restoreHints.settled.mockRejectedValue(new Error("IndexedDB is unavailable"));
+    renderHook(() => useAssetMonitoringReporter(true));
+
+    expect(await mocks.state.reporters[0]!.input.mayReport!()).toBe(false);
   });
 
   it("does not report when canonical custody authority is unavailable", async () => {

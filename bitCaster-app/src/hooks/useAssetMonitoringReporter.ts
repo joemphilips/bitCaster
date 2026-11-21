@@ -25,7 +25,10 @@ import {
 } from "@/stores/proof-db";
 import { useWalletStore } from "@/stores/wallet";
 import { publishPortfolioInvalidation } from "@/lib/portfolioInvalidation";
-import { browserSeedPositionRestoreGate } from "@/lib/browserSeedPositionRestore";
+import {
+  browserSeedPositionRestoreHintsSettled,
+  subscribeBrowserSeedPositionRestoreHintsSettled,
+} from "@/lib/browserSeedPositionRestore";
 
 /** Mounts fail-open asset-monitoring reports for the active wallet profile. */
 export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
@@ -61,6 +64,11 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
         getNdk().signer === signer
       );
     };
+    // The engine keeps only the latest report, and the seed restore of each
+    // wallet mint reads the earlier report as a hint (ADR-039). Each report
+    // waits until every current wallet mint read it, also a mint that the
+    // user added later. A hint state that cannot be read holds the report.
+    let held = false;
     const reporter = new AssetMonitoringReporter({
       walletId,
       remote: createAuthenticatedBrowserEngineClient(signer),
@@ -74,31 +82,26 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
       onAccepted: () => {
         if (isCurrent()) publishPortfolioInvalidation({ walletId });
       },
+      mayReport: async () => {
+        // A notice during this read asks for a new read.
+        held = true;
+        const mintUrls = useWalletStore.getState().mints.map(({ url }) => url);
+        const settled = await browserSeedPositionRestoreHintsSettled(scopeId, mintUrls).catch(
+          () => false,
+        );
+        held = !settled;
+        return settled;
+      },
     });
-    // The engine keeps only the latest report. A new profile reports nothing
-    // until its first seed restore pass read the earlier report (ADR-039).
-    const gate = browserSeedPositionRestoreGate(scopeId);
-    let released = gate.released;
-    let stopped = false;
-    const request = () => {
-      if (released) reporter.request();
-    };
-    const unsubscribe = subscribeToCommittedProofChanges(database, request);
-    if (released) {
-      reporter.request();
-    } else {
-      void gate.wait
-        .catch(() => undefined)
-        .then(() => {
-          if (stopped) return;
-          released = true;
-          reporter.request();
-        });
-    }
+    const unsubscribeHints = subscribeBrowserSeedPositionRestoreHintsSettled(scopeId, () => {
+      if (held) reporter.request();
+    });
+    const unsubscribe = subscribeToCommittedProofChanges(database, () => reporter.request());
+    reporter.request();
 
     return () => {
-      stopped = true;
       reporter.stop();
+      unsubscribeHints();
       unsubscribe();
     };
   }, [mnemonic, nostrSignerReady, signerRevision]);
