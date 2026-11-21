@@ -10,12 +10,16 @@ import {
   applyNativeSettingOverrides,
   type NativeSettingOverrides,
 } from '@bitcaster-market/daemon/nativeConfigLayers'
-import { readConfig, updateConfig } from './config.ts'
+import { configFilePath, readConfig, updateConfig } from './config.ts'
 
 let trustEngineUrlOption = false
 let dryRun = false
 
-/** The global `--trust-engine-url` and `--dry-run` options of this command. */
+/**
+ * The global `--trust-engine-url` and `--dry-run` options of this command. A
+ * command that writes the config passes no trust option here: its option
+ * trusts only the URL that it writes, through `trustWrittenEngineUrl`.
+ */
 export function configureEngineUrlTrust(options: {
   readonly trustEngineUrl: boolean
   readonly dryRun: boolean
@@ -24,8 +28,9 @@ export function configureEngineUrlTrust(options: {
   dryRun = options.dryRun
 }
 
-export function engineUrlTrustRequested(): boolean {
-  return trustEngineUrlOption
+/** `config set --engine-url <url> --trust-engine-url` trusts exactly the written URL. */
+export function trustWrittenEngineUrl(engineUrl: string): void {
+  saveTrustedEngineUrl(engineUrl)
 }
 
 /**
@@ -60,11 +65,19 @@ async function trustEngineUrl(engineUrl: string, purpose: string): Promise<void>
     refuse(untrustedEngineUrlMessage(engineUrl))
   }
   if (dryRun) return
+  saveTrustedEngineUrl(engineUrl)
+}
+
+/** Name each saved URL: the option skips the prompt that shows the URL. */
+function saveTrustedEngineUrl(engineUrl: string): void {
   const normalized = normalizeEndpointUrl(engineUrl, 'trusted engine URL')
   updateConfig((current) => ({
     ...current,
     trustedEngineUrls: Array.from(new Set([...current.trustedEngineUrls, normalized])),
   }))
+  process.stderr.write(
+    `Trusted engine URL: ${normalized}. Saved it in cli.trustedEngineUrls of ${configFilePath()}.\n`,
+  )
 }
 
 /** Without a terminal, refuse at once: an agent run never waits for an answer. */

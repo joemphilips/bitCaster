@@ -115,6 +115,8 @@ CLI は、値を設定している最も上の層の値を使います。層は�
 いずれかの層に無効な値があると、コマンドは停止します。エラーは設定と層の名前を示します。
 エンジンの URL の確認は、どの層の URL にも適用されます。例えば、マーケットの作成には、
 信頼済みの https またはループバックのエンジンの URL が必要です。
+エンジンとミントの URL には、表示可能な ASCII 文字だけを使えます。空白や、ホストの前の
+ユーザー名とパスワードは使えません。
 
 `bitcaster-cli config set` は `config.json` だけに書き込みます。設定のオプションを
 指定してください。例: `bitcaster-cli config set --engine-url <url>`。
@@ -139,9 +141,12 @@ URL、または `config.json` の `trustedEngineUrls` にある URL です。CLI
 起動または再起動する前に、デーモンのエンジンの URL をどの層の値でも確認します。
 それ以外の URL では、CLI はその URL を信頼するか確認します。確認なしで信頼するには、
 グローバルオプション `--trust-engine-url` を付けてください。CLI はその URL を
-`trustedEngineUrls` に保存します。端末がない場合、CLI は確認しません。終了コード 3 で
-停止し、エラーは URL を示します。URL の設定と信頼を 1 つのコマンドで行うには、
-`bitcaster-cli config set --engine-url <url> --trust-engine-url` を使います。
+`trustedEngineUrls` に保存し、保存した URL を標準エラーに書き込みます。端末がない場合、
+CLI は確認しません。終了コード 3 で停止し、エラーは URL を示します。URL の設定と信頼を
+1 つのコマンドで行うには、`bitcaster-cli config set --engine-url <url> --trust-engine-url`
+を使います。`config set` では、このオプションはそのコマンドが書き込む URL だけを信頼する
+ため、`--engine-url` が必要です。`BITCASTER_ENGINE_URL` がその URL に優先する場合、
+次のデーモンの起動では環境変数の URL を確認します。
 デーモンも、信頼されていないエンジンの URL では起動しません。
 
 ### ネイティブウォレットのプロファイルを選択・インポートする

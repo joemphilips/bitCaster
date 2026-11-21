@@ -60,6 +60,7 @@ test('the trust option saves the engine URL before the daemon starts, and a save
     assert.equal(trusted.log.length, 1)
     assert.equal(trusted.log[0]!.action, 'spawn')
     assert.ok(trusted.log[0]!.args!.includes(`--engine-url=${UNTRUSTED}`))
+    assert.ok(trusted.stderr.includes(trustedNotice(home, UNTRUSTED)), trusted.stderr)
     assert.deepEqual(await trustedEngineUrls(home), [TRUSTED, UNTRUSTED])
 
     const saved = await runCli(home, ['--engine-url', UNTRUSTED, 'health'])
@@ -87,36 +88,15 @@ test('the trust option saves the engine URL before the daemon starts, and a save
 test('daemon restart refuses an untrusted engine URL before it stops the running daemon', async () => {
   if (process.platform === 'win32') return
   const home = await profile(TRUSTED, [TRUSTED])
-  // The CLI stops only a process with the command line of a daemon that it started.
-  const daemonMain = join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist', 'main.js')
-  await mkdir(join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist'), {
-    recursive: true,
-  })
-  await writeFile(daemonMain, "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)\n")
-  const running = spawn(process.execPath, [daemonMain, `--datadir=${home}`, 'run'], {
-    stdio: ['ignore', 'pipe', 'ignore'],
-  })
   try {
-    // Wait for the process to run its own code, so that its command line is final.
-    const [ready] = (await once(running.stdout!, 'data')) as [Buffer]
-    assert.equal(ready.toString(), 'ready\n')
-    const pidPath = join(home, 'daemon-autostart.pid')
-    const pidFile = `${JSON.stringify({ pid: running.pid, daemonMain, dataDir: home })}\n`
-    await writeFile(pidPath, pidFile, { mode: 0o600 })
-
-    const result = await runCli(home, ['--engine-url', UNTRUSTED, 'daemon', 'restart'])
-    assert.equal(result.code, 3, result.stderr)
-    assert.match(result.stderr, /Engine URL is not trusted: https:\/\/untrusted\.example\./)
-    assert.deepEqual(result.log, [])
-    assert.equal(running.exitCode, null)
-    assert.equal(running.signalCode, null)
-    assert.equal(await readFile(pidPath, 'utf8'), pidFile)
+    await withRunningDaemon(home, async (assertStillRunning) => {
+      const result = await runCli(home, ['--engine-url', UNTRUSTED, 'daemon', 'restart'])
+      assert.equal(result.code, 3, result.stderr)
+      assert.match(result.stderr, /Engine URL is not trusted: https:\/\/untrusted\.example\./)
+      assert.deepEqual(result.log, [])
+      await assertStillRunning()
+    })
   } finally {
-    if (running.exitCode === null && running.signalCode === null) {
-      const exited = once(running, 'exit')
-      running.kill('SIGKILL')
-      await exited
-    }
     await rm(home, { recursive: true, force: true })
   }
 })
@@ -137,6 +117,7 @@ test('config set with the trust option saves the trust of the engine URL that it
       'https://new.example',
     ])
     assert.deepEqual(await trustedEngineUrls(home), [TRUSTED, 'https://new.example'])
+    assert.ok(trusted.stderr.includes(trustedNotice(home, 'https://new.example')), trusted.stderr)
 
     // Without the option, config set does not ask. The next daemon start asks.
     const untrusted = await runCli(home, ['config', 'set', '--engine-url', UNTRUSTED])
@@ -144,10 +125,127 @@ test('config set with the trust option saves the trust of the engine URL that it
     assert.doesNotMatch(untrusted.stderr, /About to use engine URL/)
     assert.deepEqual(await trustedEngineUrls(home), [TRUSTED, 'https://new.example'])
     assert.deepEqual([...trusted.log, ...untrusted.log], [])
+
+    // The option trusts only an engine URL that the command writes.
+    const before = await readFile(join(home, 'config.json'), 'utf8')
+    const noEngine = await runCli(home, [
+      'config',
+      'set',
+      '--mint-url',
+      'https://mint2.example',
+      '--trust-engine-url',
+    ])
+    assert.equal(noEngine.code, 2, noEngine.stderr)
+    assert.match(noEngine.stderr, /config set --trust-engine-url needs --engine-url/)
+    assert.equal(await readFile(join(home, 'config.json'), 'utf8'), before)
   } finally {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('config set trusts the written engine URL, not an environment URL that replaces it', async () => {
+  const environment = { BITCASTER_ENGINE_URL: 'https://evil.example' }
+  const write = ['config', 'set', '--engine-url', 'https://good.example', '--trust-engine-url']
+  const home = await profile(TRUSTED, [TRUSTED])
+  try {
+    const result = await runCli(home, write, environment)
+    assert.equal(result.code, 0, result.stderr)
+    assert.ok(result.stderr.includes(trustedNotice(home, 'https://good.example')), result.stderr)
+    assert.match(result.stderr, /BITCASTER_ENGINE_URL overrides engineUrl of the config file/)
+    assert.doesNotMatch(result.stderr, /evil\.example/)
+    assert.deepEqual(await trustedEngineUrls(home), [TRUSTED, 'https://good.example'])
+
+    // The next daemon start checks the effective URL, which is still not trusted.
+    const start = await runCli(home, ['health'], environment)
+    assert.equal(start.code, 3, start.stderr)
+    assert.match(start.stderr, /Engine URL is not trusted: https:\/\/evil\.example\./)
+    assert.deepEqual([...result.log, ...start.log], [])
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+  if (process.platform === 'win32') return
+  // The restart of a running daemon checks the effective URL without the option.
+  const running = await profile(TRUSTED, [TRUSTED])
+  try {
+    await withRunningDaemon(running, async (assertStillRunning) => {
+      const result = await runCli(running, write, environment)
+      assert.equal(result.code, 3, result.stderr)
+      assert.ok(result.stderr.includes(trustedNotice(running, 'https://good.example')))
+      assert.match(result.stderr, /Engine URL is not trusted: https:\/\/evil\.example\./)
+      assert.deepEqual(result.log, [])
+      assert.deepEqual(await trustedEngineUrls(running), [TRUSTED, 'https://good.example'])
+      await assertStillRunning()
+    })
+  } finally {
+    await rm(running, { recursive: true, force: true })
+  }
+})
+
+test('an engine URL with user info or a control character is refused at its layer, before any prompt', async () => {
+  const home = await profile(TRUSTED, [TRUSTED])
+  try {
+    for (const [args, env, layer] of [
+      [
+        ['health'],
+        { BITCASTER_ENGINE_URL: 'https://evil.example/\x1b[1A\x1b[2Khttps://good.example' },
+        /^environment variable BITCASTER_ENGINE_URL: Invalid engineUrl: the URL must contain only printable ASCII characters, with no space or control character$/m,
+      ],
+      [
+        ['--engine-url', 'https://good.example@evil.example', 'health'],
+        {},
+        /^option --engine-url: Invalid engineUrl: the URL must not contain a user name or password$/m,
+      ],
+    ] as const) {
+      const result = await runCli(home, args, env)
+      assert.equal(result.code, 2, result.stderr)
+      assert.match(result.stderr, layer)
+      assert.doesNotMatch(result.stderr, /About to use engine URL|\x1b/)
+      assert.deepEqual(result.log, [])
+    }
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
+/** The notice that the CLI prints when it saves the trust of an engine URL. */
+function trustedNotice(home: string, engineUrl: string): string {
+  return `Trusted engine URL: ${engineUrl}. Saved it in cli.trustedEngineUrls of ${join(home, 'config.json')}.\n`
+}
+
+/** Run a process that the CLI takes for a daemon that it started, and stop it after `use`. */
+async function withRunningDaemon(
+  home: string,
+  use: (assertStillRunning: () => Promise<void>) => Promise<void>,
+): Promise<void> {
+  // The CLI stops only a process with the command line of a daemon that it started.
+  const daemonMain = join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist', 'main.js')
+  await mkdir(join(home, 'node_modules', '@bitcaster-market', 'daemon', 'dist'), {
+    recursive: true,
+  })
+  await writeFile(daemonMain, "process.stdout.write('ready\\n'); setInterval(() => {}, 1000)\n")
+  const running = spawn(process.execPath, [daemonMain, `--datadir=${home}`, 'run'], {
+    stdio: ['ignore', 'pipe', 'ignore'],
+  })
+  try {
+    // Wait for the process to run its own code, so that its command line is final.
+    const [ready] = (await once(running.stdout!, 'data')) as [Buffer]
+    assert.equal(ready.toString(), 'ready\n')
+    const pidPath = join(home, 'daemon-autostart.pid')
+    const pidFile = `${JSON.stringify({ pid: running.pid, daemonMain, dataDir: home })}\n`
+    await writeFile(pidPath, pidFile, { mode: 0o600 })
+    await use(async () => {
+      assert.equal(running.exitCode, null)
+      assert.equal(running.signalCode, null)
+      assert.equal(await readFile(pidPath, 'utf8'), pidFile)
+    })
+  } finally {
+    if (running.exitCode === null && running.signalCode === null) {
+      const exited = once(running, 'exit')
+      running.kill('SIGKILL')
+      await exited
+    }
+  }
+}
 
 async function profile(engineUrl: string, trusted: string[]): Promise<string> {
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-trust-'))

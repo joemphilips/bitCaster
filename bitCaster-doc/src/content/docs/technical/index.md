@@ -119,6 +119,8 @@ variable, and the option. For example, `BITCASTER_ENGINE_URL` replaces
 An invalid value in a layer stops the command. The error names the setting and
 the layer. The engine URL checks apply to the URL of each layer. For example,
 market creation needs an https or loopback engine URL that you trust.
+An engine or mint URL can contain only printable ASCII characters. It cannot
+contain a space or a user name and password before the host.
 
 `bitcaster-cli config set` writes only `config.json`. Give it the setting
 options, for example `bitcaster-cli config set --engine-url <url>`.
@@ -143,9 +145,13 @@ URL, or a URL in `trustedEngineUrls` of `config.json`. Before the CLI starts or
 restarts the daemon, it checks the engine URL of the daemon, from any layer.
 For another URL, the CLI asks you to trust it. Add the global option
 `--trust-engine-url` to trust it without the question. The CLI then saves the
-URL in `trustedEngineUrls`. Without a terminal, the CLI does not ask. It stops
-with exit code 3, and the error names the URL. To set and trust a URL in one
-command, use `bitcaster-cli config set --engine-url <url> --trust-engine-url`.
+URL in `trustedEngineUrls` and writes the saved URL to standard error. Without a
+terminal, the CLI does not ask. It stops with exit code 3, and the error names
+the URL. To set and trust a URL in one command, use
+`bitcaster-cli config set --engine-url <url> --trust-engine-url`. With
+`config set`, the option trusts only the URL that the command writes, so it
+needs `--engine-url`. If `BITCASTER_ENGINE_URL` replaces that URL, the next
+daemon start checks the URL of the environment variable.
 The daemon also refuses to start with an engine URL that is not trusted.
 
 ### Select and import a native wallet profile
