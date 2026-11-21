@@ -28,6 +28,7 @@ import {
 } from "@/lib/walletRecoveryPassSummary";
 import { db, type BrowserWalletCounterAssociationRow } from "@/stores/proof-db";
 import {
+  isSeedRestoreOperationWaitShown,
   isSeedRestoreScanCapped,
   readBrowserSeedRestoreRuns,
   readSeedRestoreResyncRow,
@@ -281,12 +282,21 @@ function resyncObservations(
     if (row.pendingFromCounter === null) continue;
     const source = `resync ${mintUrl} ${row.keysetId}`;
     const retryAtMs = dueAt(row.nextAttemptAtMs);
+    // A deferral that waited long for an operation of this browser shows that wait.
+    const waitsLong = isSeedRestoreOperationWaitShown(row);
+    const pending = (reason: WalletRecoveryPendingReason) =>
+      stages.push({
+        stage: source,
+        state: "pending",
+        reason: waitsLong ? "operation-wait" : reason,
+        retryAtMs,
+      });
     switch (row.waitReason) {
       case "pending-proof":
-        stages.push({ stage: source, state: "pending", reason: "proof-pending", retryAtMs });
+        pending("proof-pending");
         break;
       case "scan-budget":
-        stages.push({ stage: source, state: "pending", reason: "scan-continues", retryAtMs });
+        pending("scan-continues");
         // At the continuation cap, only Retry continues the scan.
         persistentFailures.push({
           source,
@@ -297,12 +307,12 @@ function resyncObservations(
         });
         break;
       case "admission-failed":
-        stages.push({ stage: source, state: "pending", reason: "backoff", retryAtMs });
+        pending("backoff");
         persistentFailures.push({ source, consecutiveFailures: row.failures, retryAtMs });
         break;
       case null:
         // A marker that a probe hit wrote. The next re-sync admits it.
-        stages.push({ stage: source, state: "pending", reason: "scan-continues", retryAtMs });
+        pending("scan-continues");
         break;
       default:
         throw new Error(`unknown seed restore deferral wait: ${JSON.stringify(row.waitReason)}`);

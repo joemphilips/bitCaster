@@ -77,6 +77,8 @@ describe("walletRecoveryDisplay", () => {
     ["scan-continues", 5_000, "recovering"],
     ["probe-due", 5_000, "recovering"],
     ["proof-pending", null, "waitingForMint"],
+    // A deferral that waited long for an operation of this browser.
+    ["operation-wait", 5_000, "waitingForMint"],
     ["start-limit", 9_000, "resumesAt"],
     ["backoff", 9_000, "resumesAt"],
     // Without a known time, a wait shows as recovery in progress.

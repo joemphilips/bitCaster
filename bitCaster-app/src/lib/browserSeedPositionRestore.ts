@@ -40,6 +40,7 @@ import { getNdk } from "@/lib/nostr";
 import { normalizeUrl } from "@/lib/url";
 import {
   admitBrowserRecoveryIndexWindow,
+  browserCustodyWorkTouchesKeyset,
   CounterRecoveryPostponedError,
   restoreBrowserConditionalKeyset,
   rescanBrowserRegularKeyset,
@@ -1235,24 +1236,27 @@ async function admitDueDeferrals(input: {
     if (row.nextAttemptAtMs <= input.now()) due.push(row);
     else await advancePastHit(row);
   }
-  if (due.length === 0) return;
-  if (await hasCustodyWorkInFlight(input.scopeId)) {
-    // A scan below the cursor could admit outputs of an operation of this
-    // browser before the operation records them. The operation would then
-    // stay stuck. Wait for it. The wait is not an admission failure.
-    for (const row of due) {
-      await advancePastHit(row);
-      await postponeSeedRestoreDeferral({
-        scopeId: input.scopeId,
-        mintUrl: input.mintUrl,
-        keysetId: row.keysetId,
-        nextAttemptAtMs: input.now() + seedRestoreBackoffMs(1),
-      });
-    }
-    return;
-  }
-  const regularIds = new Set((await input.wallet.mint.getKeySets()).keysets.map(({ id }) => id));
+  // A scan below the cursor could admit outputs of an operation of this
+  // browser before the operation records them. The operation would then stay
+  // stuck. A deferral waits for each operation with an output on its keyset.
+  // The wait is not an admission failure.
+  const admissible: SeedRestoreResyncRow[] = [];
   for (const row of due) {
+    if (!(await browserCustodyWorkTouchesKeyset(input.scopeId, row.keysetId))) {
+      admissible.push(row);
+      continue;
+    }
+    await advancePastHit(row);
+    await postponeSeedRestoreDeferral({
+      scopeId: input.scopeId,
+      mintUrl: input.mintUrl,
+      keysetId: row.keysetId,
+      nextAttemptAtMs: input.now() + seedRestoreBackoffMs(1),
+    });
+  }
+  if (admissible.length === 0) return;
+  const regularIds = new Set((await input.wallet.mint.getKeySets()).keysets.map(({ id }) => id));
+  for (const row of admissible) {
     if (!input.isCurrentProfile()) return;
     const start = row.pendingFromCounter!;
     let result: KeysetRecoveryResult | null = null;
@@ -1311,15 +1315,6 @@ async function resyncRows(scopeId: string, mintUrl: string): Promise<SeedRestore
     .resync.where("[scopeId+mintUrl]")
     .equals([scopeId, mintUrl])
     .toArray();
-}
-
-async function hasCustodyWorkInFlight(scopeId: string): Promise<boolean> {
-  return (
-    (await db.custodyActiveWork
-      .where("[scopeId+operationId]")
-      .between([scopeId, Dexie.minKey], [scopeId, Dexie.maxKey], true, true)
-      .count()) > 0
-  );
 }
 
 async function mintConditionalAuthority(

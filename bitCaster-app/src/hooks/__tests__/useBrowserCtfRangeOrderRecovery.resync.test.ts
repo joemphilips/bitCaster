@@ -26,6 +26,12 @@ await vi.hoisted(async () => {
 import { renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  createDurableProofOperationFacts,
+  prepareDurableCustodyExactArtifact,
+} from "@bitcaster/client-sdk/durableCustody";
+import type { DurableCustodyProofOperationInput } from "@bitcaster/client-sdk/durableCustodyProofOperation";
+import { createDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import {
   browserWalletIdFromMnemonic,
   setActiveBrowserWalletProfile,
 } from "@/lib/browserWalletProfile";
@@ -34,6 +40,7 @@ import { BrowserWalletCounterDexieStore } from "@/stores/browser-wallet-counter-
 import {
   recordGeneratedBrowserSeed,
   requestBrowserKeysetResync,
+  SEED_RESTORE_OPERATION_WAITS_SHOWN,
   seedRestoreDatabase,
   type SeedRestoreDB,
 } from "@/stores/seed-restore-db";
@@ -54,6 +61,7 @@ import {
   regularKeyset,
   scopeId,
   selectableHoldings,
+  type FakeKeyset,
 } from "@/test/seedRestoreFakeMint";
 
 // Another client with the same seed can sign outputs above this browser's
@@ -214,6 +222,114 @@ function resync(now: number) {
     mnemonic: MNEMONIC,
     mintUrl: MINT_URL,
     now: () => now,
+  });
+}
+
+/**
+ * A refused order planned counters 1 and 2 of the regular keyset, and another
+ * browser had signed counter 1. The counter-only advance keeps a deferral
+ * marker at counter 1.
+ */
+async function deferSignedOutput(mint: FakeMint, regular: FakeKeyset): Promise<void> {
+  await counters().advanceToAtLeastInContext(
+    { mintUrl: MINT_URL, unit: "msat" },
+    regular.id,
+    3,
+    false,
+  );
+  mint.sign({ keyset: regular, counter: 1, amount: 2, state: "UNSPENT" });
+  await advanceWalletKeysetCounterPastMint({
+    scopeId: scopeId(),
+    mintUrl: MINT_URL,
+    unit: "msat",
+    keyset: activeKeyset(regular),
+    plannedFromCounter: 1,
+  });
+}
+
+/**
+ * Records an operation of this browser in flight, as its custody dispatch
+ * intent does: it spends one proof of `input` and plans one output on `output`.
+ */
+async function operationInFlight(
+  operationId: string,
+  keysets: { readonly input: FakeKeyset; readonly output: FakeKeyset },
+): Promise<void> {
+  const scope = {
+    scopeKind: "wallet" as const,
+    walletId: browserWalletIdFromMnemonic(MNEMONIC)!,
+    scopeId: scopeId(),
+  };
+  const operation: DurableCustodyProofOperationInput = {
+    operationId,
+    kind: "wallet-send",
+    mintUrl: MINT_URL,
+    inputs: [
+      {
+        id: keysets.input.id,
+        amount: 1 as never,
+        secret: `${operationId}:input`,
+        C: `02${"22".repeat(32)}`,
+      },
+    ],
+    outputs: {
+      authorization: [
+        {
+          blindedMessage: { amount: 1, id: keysets.output.id, B_: `02${"33".repeat(32)}` },
+          blindingFactor: "7",
+          secret: `${operationId}:output`,
+        },
+      ],
+      keep: [],
+    },
+    metadata: { unit: "msat" },
+  };
+  const keyset = (fake: FakeKeyset, inputs: boolean) => ({
+    keysetId: fake.id,
+    unit: "msat",
+    curve: "secp256k1" as const,
+    publicKeys: fake.keys,
+    keysetExpiryMs: null,
+    requireDleq: false,
+    usedByInputs: inputs,
+    usedByOutputs: !inputs,
+  });
+  const record = createDurableCustodyProofOperation({
+    scope,
+    operation,
+    facts: createDurableProofOperationFacts({
+      unit: "msat",
+      binding: { kind: "wallet", activityId: operationId, stage: "send" },
+      horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
+      hasOutputs: true,
+      inputKeysetRequirement: "required",
+      keysets: [keyset(keysets.input, true), keyset(keysets.output, false)],
+    }),
+    inventoryAccountId: null,
+    exactBoundary: {
+      method: "POST",
+      path: "/v1/swap",
+      idempotencyKey: operationId,
+      requestBody: prepareDurableCustodyExactArtifact(operation),
+      output: prepareDurableCustodyExactArtifact(operation.outputs),
+      privateMaterial: prepareDurableCustodyExactArtifact(operation),
+    },
+  });
+  const { operationId: custodyOperationId } = record.operation;
+  await db.custodyOperations.put({
+    scopeId: scope.scopeId,
+    operationId: custodyOperationId,
+    revision: record.revision,
+    operationState: record.operation.state,
+    nextAttemptAtMs: record.operation.retry.nextAttemptAtMs,
+    estimatedBytes: 0,
+    record,
+  });
+  await db.custodyActiveWork.put({
+    scopeId: scope.scopeId,
+    operationId: custodyOperationId,
+    nextAttemptAtMs: 0,
+    estimatedBytes: 0,
   });
 }
 
@@ -688,6 +804,97 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await resync(waiting.retryAtMs!);
 
     expect(await amounts()).toEqual([2, 8]);
+  });
+
+  it("admits a deferral while an operation of this browser plans outputs only on another keyset", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await deferSignedOutput(mint, regular);
+    // A Lightning payment of this browser waits at the mint. Its change uses
+    // the YES keyset, so a scan of the regular keyset cannot admit its outputs.
+    await operationInFlight("melt-pending", { input: regular, output: market.yes });
+
+    await resync(Date.now());
+
+    expect(await amounts()).toEqual([2, 8]);
+    expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(null);
+  });
+
+  it("waits with a deferral scan while an operation of this browser plans an output on its keyset", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await deferSignedOutput(mint, regular);
+    await operationInFlight("melt-pending", { input: market.yes, output: regular });
+    const start = Date.now();
+    const scans = mint.restoredOutputs().length;
+
+    const waiting = await resync(start);
+
+    expect(mint.restoredOutputs().slice(scans).flat()).not.toContain(blindedOutput(regular, 1));
+    expect(await amounts()).toEqual([8]);
+    expect(await resyncRow(regular.id)).toMatchObject({ pendingFromCounter: 1, failures: 0 });
+    expect(waiting.retryAtMs).toBeGreaterThan(start);
+  });
+
+  it("admits a deferral when an operation on another keyset starts during the scan", async () => {
+    const regular = regularKeyset();
+    const market = binaryMarket("ab".repeat(32));
+    const mint = new FakeMint(regular, [market.yes, market.no]);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await deferSignedOutput(mint, regular);
+    // The admission checks the work in flight again. A buy of YES starts while the scan runs.
+    mint.onCheckstate = () =>
+      operationInFlight("buy-during-scan", { input: regular, output: market.yes });
+
+    await resync(Date.now());
+
+    expect(await amounts()).toEqual([2, 8]);
+    expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(null);
+  });
+
+  it("shows the wait after a bound while an operation holds a deferral", async () => {
+    const regular = regularKeyset();
+    const mint = new FakeMint(regular, []);
+    mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
+    vi.stubGlobal("fetch", mint.fetch);
+    await runStartupPass();
+    await deferSignedOutput(mint, regular);
+    // An operation of this browser whose output plan is not known holds the deferral.
+    await db.custodyActiveWork.put({
+      scopeId: scopeId(),
+      operationId: "unknown-plan",
+      nextAttemptAtMs: 0,
+    } as never);
+    const status = () => durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] });
+    let nowMs = Date.now();
+
+    for (let wait = 1; wait < SEED_RESTORE_OPERATION_WAITS_SHOWN; wait += 1) {
+      nowMs = (await resync(nowMs)).retryAtMs!;
+      expect(await status()).toMatchObject({ kind: "pending", reason: "scan-continues" });
+    }
+    nowMs = (await resync(nowMs)).retryAtMs!;
+
+    // The wallet still recovers, and the status now says what it waits for.
+    expect(await status()).toMatchObject({ kind: "pending", reason: "operation-wait" });
+    expect(await amounts()).toEqual([8]);
+
+    await db.custodyActiveWork.clear();
+    await resync(nowMs);
+
+    expect(await amounts()).toEqual([2, 8]);
+    expect(await status()).toMatchObject({ kind: "completed" });
+    // The scan ran, so a later marker of this keyset starts a new wait count.
+    expect(await resyncRow(regular.id)).toMatchObject({ operationWaits: 0 });
   });
 
   it("waits for the probe backoff before it probes again on evidence", async () => {

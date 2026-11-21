@@ -36,6 +36,8 @@ export interface WalletRecoveryTag {
 /**
  * Why a recovery stage waits.
  * - `operation`: a wallet operation is in progress or waits for the mint.
+ * - `operation-wait`: a recovery step waited longer than its bound for a
+ *   wallet operation that waits for the mint.
  * - `proof-pending`: a proof is PENDING at the mint.
  * - `scan-continues`: a budgeted scan has more work.
  * - `start-limit`: the start limit of the scan denied a start until a time.
@@ -44,6 +46,7 @@ export interface WalletRecoveryTag {
  */
 export type WalletRecoveryPendingReason =
   | 'operation'
+  | 'operation-wait'
   | 'proof-pending'
   | 'scan-continues'
   | 'start-limit'
