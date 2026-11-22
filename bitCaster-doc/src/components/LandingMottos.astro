@@ -116,4 +116,8 @@ const { label, items } = Astro.props
     text-decoration-thickness: 2px;
     text-underline-offset: 0.2em;
   }
+
+  .closing :global(p + p) {
+    margin-top: 0.75rem;
+  }
 </style>
