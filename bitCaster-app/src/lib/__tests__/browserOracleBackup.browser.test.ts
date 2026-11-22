@@ -1096,6 +1096,32 @@ it.each(["created", "imported"] as const)(
   },
 );
 
+it.each(["created", "imported"] as const)(
+  "reads ready for a nonce-free core restored from the terminal backup of a %s owner, and stages nothing",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    const attempt = engineOutagePublication(f, owner);
+    await attempt("down");
+    const relayed = await attempt("up");
+    const terminal = buildTerminalOracleBackupRecord({
+      binding: f.binding,
+      announcementTlvHex: f.prepared.artifactHex,
+      destinations: f.record.destinations,
+      publication: relayed,
+    });
+    // Another browser of the same key restores the terminal backup, which holds no nonce.
+    await emptyPrivateTestStore();
+    await owner.getState().clear();
+    await importBrowserOracleBackup(terminal, owner);
+
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+    expect(
+      await (await getKormir([])).staged_enum_publication(f.record.oracleEventId),
+    ).toBeUndefined();
+  },
+);
+
 it("requires authenticated retry for incomplete import even with valid private authority", async () => {
   const f = await fixture();
   await deliveryOwner("imported", f);

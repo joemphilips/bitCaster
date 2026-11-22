@@ -9,9 +9,10 @@ import {
   type OracleEnumAuthoritySummary,
   type MarketCreationPreparation,
 } from "@bitcaster/client-sdk";
-import type {
-  OraclePublicationBinding,
-  OraclePublicationRecord,
+import {
+  oraclePublicationTerminal,
+  type OraclePublicationBinding,
+  type OraclePublicationRecord,
 } from "@bitcaster/client-sdk/oraclePublication";
 import {
   buildTerminalOracleBackupRecord,
@@ -423,22 +424,42 @@ async function readLockedBrowserOracleAuthorityReadiness(
   if (binding.oraclePubkey !== admission.publicKey) return "unavailable";
   // This exact event lookup distinguishes absence from a corrupt nonce or invalid export.
   // JsError.NotFound (2) here means the event is absent, not a validation failure.
+  let stage: string | undefined;
   try {
-    await core.staged_enum_publication(binding.oracleEventId);
+    stage = await core.staged_enum_publication(binding.oracleEventId);
     guard();
   } catch (error) {
     return error === 2 ? "needs-restore" : "unavailable";
   }
   if (!destinations) return "unavailable";
   guard();
-  // Check only the authority of the core. The export stages a supplied saved
-  // result in the core, and only a reconcile drains a stage. A read that staged
-  // the saved result would conflict with later saved progress.
+  // A core restored from a terminal backup holds no nonce. It exports only with its
+  // terminal result, so supply the saved result when the core has no stage. The export
+  // stages a supplied result, and later saved progress would conflict with that stage,
+  // so acknowledge it at once. A read that completes leaves no stage. An interrupted
+  // read can leave one: the next read then supplies nothing, and a reconcile or an
+  // import drains it.
+  const publication = stage === undefined ? await locked.read(conditionId) : null;
+  guard();
+  const supplied =
+    publication !== null && oraclePublicationTerminal(publication)
+      ? JSON.stringify(publication)
+      : undefined;
   const dto = await core.export_enum_authority_v2(
     binding.oracleEventId,
     binding.announcementEventJson,
+    supplied,
   );
   guard();
+  if (supplied !== undefined) {
+    // The core keeps its own encoding of the supplied result. The core had no stage
+    // before this export, and this read holds the oracle locks.
+    const written = await core.staged_enum_publication(binding.oracleEventId);
+    guard();
+    if (written !== undefined)
+      await core.acknowledge_enum_publication(binding.oracleEventId, written);
+    guard();
+  }
   let summary: OracleEnumAuthoritySummary | undefined;
   const authority = await decodeOraclePrivateAuthority(dto, binding.oraclePubkey, {
     async validateAuthority(json, publicKey) {
