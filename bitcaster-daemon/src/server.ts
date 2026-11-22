@@ -138,6 +138,7 @@ import type {
   DaemonCommand,
   DaemonHealth,
   DaemonResponse,
+  DaemonWarning,
   OrderDraftParams,
   OrderFeeConsent,
   ProtectedOrderConsentRequest,
@@ -147,7 +148,8 @@ import type {
 } from './protocol.ts'
 import type { NativeWalletPaymentOps } from './nativeWalletPaymentOps.ts'
 import type { NativeWalletPaymentRecoveryScan } from './nativeWalletPaymentRecovery.ts'
-import { profileDir, readProfile } from './profile.ts'
+import { isMissingDaemonProfileError, profileDir, readProfile } from './profile.ts'
+import { readDaemonConditionalKeysetExpiryWarnings } from './conditionalKeysetExpiryWarnings.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets, readSelectedDaemonSigner, hasUnfinishedDaemonAccountWork } from './secrets.ts'
 import {
@@ -625,12 +627,49 @@ function retirementPending(
     }))
 }
 
+/**
+ * A command that shows or uses the held funds carries the final expiry
+ * warnings of the held conditional keysets. The daemon reads them before the
+ * command, so a failed read stops the command before any effect. The read
+ * can then not hide the result of an order submission. An unsupported public
+ * order is refused first, before any local read.
+ */
 export async function dispatch(
   command: DaemonCommand,
   deps: DispatchDependencies = {},
 ): Promise<DaemonResponse> {
   const unsupportedPublicOrder = rejectUnsupportedPublicOrder(command)
   if (unsupportedPublicOrder !== null) return unsupportedPublicOrder
+  const warnings = carriesHeldKeysetWarnings(command.method) ? await readHeldKeysetWarnings() : []
+  const response = await dispatchCommand(command, deps)
+  return warnings.length === 0 ? response : { ...response, warnings }
+}
+
+function carriesHeldKeysetWarnings(method: DaemonCommand['method']): boolean {
+  return (
+    method === 'health' ||
+    method === 'daemon.status' ||
+    method === 'wallet.balance' ||
+    method === 'wallet.positions' ||
+    method === 'wallet.portfolio' ||
+    method === 'order.submit'
+  )
+}
+
+async function readHeldKeysetWarnings(): Promise<DaemonWarning[]> {
+  try {
+    return await readDaemonConditionalKeysetExpiryWarnings(profileDir(), Date.now())
+  } catch (error) {
+    // A daemon without a profile holds no keyset.
+    if (await isMissingDaemonProfileError(error)) return []
+    throw error
+  }
+}
+
+async function dispatchCommand(
+  command: DaemonCommand,
+  deps: DispatchDependencies,
+): Promise<DaemonResponse> {
   if (deps.isCustodyReady?.() === false && requiresReadyCustody(command.method)) {
     return {
       ok: false,

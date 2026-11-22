@@ -312,6 +312,44 @@ bitcaster-cli wallet assets --cursor <nextCursor> --page-size 100
 名前が `Sats` で終わるフィールドの単位は sats です。`Msat` で終わるものは msat です。
 金額を合計する前に単位をそろえてください。1,000 msat は 1 sat です。
 
+### 最終期限の警告
+
+条件付きキーセットには、NUT-02 の `final_expiry` を設定できます。
+この時刻の後、ミントはそのキーセットの proof に応じる義務がありません。
+ウォレットがキーセットの未使用の proof を持つとき、そのキーセットを保有しています。
+未約定の注文や保留中の返金がロックしている proof も含みます。
+保有するキーセットの `final_expiry` まで 7 日未満のとき、または過ぎているとき、
+次の結果は `warnings` 配列を含みます。
+`health`、`daemon status`、`wallet balance`、`wallet positions`、
+`wallet portfolio`、`order submit`。
+
+```json
+{
+  "ok": true,
+  "result": {},
+  "warnings": [
+    {
+      "code": "conditional-keyset-final-expiry-soon",
+      "conditionId": "<condition-id>",
+      "keysetId": "<keyset-id>",
+      "finalExpiryAt": "2026-11-30T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+`code` は変わりません。`finalExpiryAt` は ISO 8601 形式の UTC 時刻です。
+警告は金額も proof の秘密も含みません。
+CLI は、警告ごとに 1 行を標準エラー出力にも書きます。
+警告がない結果は `warnings` フィールドを持ちません。
+結果に含まれる警告は最大 32 件で、期限の早いものから並びます。
+
+CLI は、この警告にウォレットのデータだけを使います。ミントにもエンジンにも要求を送りません。
+条件の注文は、その条件の各キーセットの `final_expiry` を記録します。
+1 つのキーセットだけを使う操作、例えばトークンの受け取りや注文の返金も、これを記録します。
+完全セットへの分割だけで得たキーセットには、警告が出ません。
+`finalExpiryAt` より前に、ポジションを売るか償還してください。
+
 ### Wallet Activity を読む
 
 選択中のウォレットに保存された表示用履歴を取得します。

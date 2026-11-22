@@ -105,6 +105,7 @@ import {
 import { registerSignerCommands } from './signerCommands.ts'
 import { registerLikedMarketCommands } from './likedMarketCommands.ts'
 import {
+  CONDITIONAL_KEYSET_FINAL_EXPIRY_WARNING_CODE,
   DAEMON_ACTIVITY_PAGE_SIZE_MAX,
   DAEMON_MARKET_WATCH_CONDITIONS_MAX,
   validateDaemonWatchCommand,
@@ -117,6 +118,7 @@ import { readCliVersion } from './version.ts'
 import type {
   DaemonCommand,
   DaemonResponse,
+  DaemonWarning,
   MarketCloseParams,
   MarketCreateParams,
   MarketCreateNativeParams,
@@ -3870,9 +3872,35 @@ function errorMessage(value: unknown): string {
 async function printDaemonResult<T>(promise: Promise<T>): Promise<void> {
   const result = await promise
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+  writeDaemonWarnings(result)
   if (isDaemonFailure(result)) {
     process.exitCode = 1
   }
+}
+
+/** The JSON on stdout keeps each warning. A person reads one line for each on stderr. */
+function writeDaemonWarnings(value: unknown): void {
+  if (typeof value !== 'object' || value === null || !('warnings' in value)) return
+  const warnings = (value as DaemonResponse).warnings
+  if (!Array.isArray(warnings)) throw new Error('daemon warnings are invalid')
+  for (const warning of warnings) process.stderr.write(`${daemonWarningText(warning)}\n`)
+}
+
+function daemonWarningText(warning: DaemonWarning): string {
+  switch (warning.code) {
+    case CONDITIONAL_KEYSET_FINAL_EXPIRY_WARNING_CODE:
+      return (
+        `Warning: conditional keyset ${warning.keysetId} of condition ${warning.conditionId} ` +
+        `reaches its final expiry at ${warning.finalExpiryAt}. After that time, the mint does ` +
+        'not have to honor its proofs.'
+      )
+    default:
+      return assertNeverDaemonWarning(warning.code)
+  }
+}
+
+function assertNeverDaemonWarning(code: never): never {
+  throw new Error(`Unknown daemon warning: ${String(code)}`)
 }
 
 function printDaemonNotReachable(error: DaemonNotReachableError): void {

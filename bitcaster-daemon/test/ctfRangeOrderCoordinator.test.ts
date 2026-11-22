@@ -2826,6 +2826,7 @@ for (const [acknowledgementLost, resultDeleted] of [
           assert.equal(completion[0]!.outcome, 'success')
           assert.equal(acknowledgementCalls, 1)
           assert.equal((await readState())?.orders[ORDER_ID]?.clientOrderId, request.clientOrderId)
+          await assertBoughtKeysetExpiryWarning(directory)
           const recorded = observations.length
           assert.deepEqual(await coordinator.recover(WALLET_SEED_HEX, client), {
             recovered: [],
@@ -7245,6 +7246,34 @@ async function assertExactTargetAndCanonicalReservations(
       assert.equal(target.targetState, 'reserved')
       assert.equal(target.targetReservationId, reservationId)
     }
+  } finally {
+    database.close()
+  }
+}
+
+/** A bought and held position warns with the final expiry of its own keyset. */
+async function assertBoughtKeysetExpiryWarning(directory: string): Promise<void> {
+  const { readConditionalKeysetExpiryWarnings } =
+    await import('../src/conditionalKeysetExpiryWarnings.ts')
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const held = database
+      .prepare(
+        `SELECT DISTINCT keyset_id AS keysetId FROM target_wallet_proofs
+         WHERE asset_kind = 'outcome' AND retired_by_operation_id IS NULL`,
+      )
+      .all()
+      .map((row) => row.keysetId)
+    assert.deepEqual(held, [RECEIVE_KEYSET_ID])
+    // The test clock is 10 seconds after the epoch, before the fixture expiry.
+    assert.deepEqual(readConditionalKeysetExpiryWarnings(database, 10_000), [
+      {
+        code: 'conditional-keyset-final-expiry-soon',
+        conditionId: CONDITION_ID,
+        keysetId: RECEIVE_KEYSET_ID,
+        finalExpiryAt: new Date(FINAL_EXPIRY * 1_000).toISOString(),
+      },
+    ])
   } finally {
     database.close()
   }

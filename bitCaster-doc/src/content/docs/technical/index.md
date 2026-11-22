@@ -315,6 +315,43 @@ Keep the cursor unchanged. Stop when `nextCursor` is `null`.
 Fields ending in `Sats` use sats. Fields ending in `Msat` use msat.
 Convert units before combining amounts. 1,000 msat is 1 sat.
 
+### Final expiry warnings
+
+A conditional keyset can have a NUT-02 `final_expiry`. After that time, the
+mint does not have to honor the proofs of the keyset. The wallet holds a
+keyset when it has an unspent proof of it, also a proof that an open order or
+a pending refund locks. When a held keyset reaches its `final_expiry` in less
+than 7 days, or is past it, these results contain a `warnings` array:
+`health`, `daemon status`, `wallet balance`, `wallet positions`,
+`wallet portfolio`, and `order submit`.
+
+```json
+{
+  "ok": true,
+  "result": {},
+  "warnings": [
+    {
+      "code": "conditional-keyset-final-expiry-soon",
+      "conditionId": "<condition-id>",
+      "keysetId": "<keyset-id>",
+      "finalExpiryAt": "2026-11-30T00:00:00.000Z"
+    }
+  ]
+}
+```
+
+`code` is stable. `finalExpiryAt` is an ISO 8601 UTC time. A warning holds no
+amount and no proof secret. The CLI also writes one line to standard error for
+each warning. A result without a warning has no `warnings` field. A result
+shows at most 32 warnings, the earliest first.
+
+The CLI uses only the wallet data for these warnings. It sends no mint or
+engine request. An order on a condition records the `final_expiry` of each
+keyset of that condition. An operation that uses only one keyset, for example
+a token receive or an order refund, also records it. A keyset that the wallet
+got only from a complete-set split gets no warning. Sell or claim the position
+before `finalExpiryAt`.
+
 ### Read Wallet Activity
 
 Read retained display history for the selected wallet:

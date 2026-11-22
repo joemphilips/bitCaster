@@ -863,6 +863,9 @@ function importKeysets(
       unit: keyset.unit,
       curve: 'secp256k1' as const,
       publicKeys: keyset.keys,
+      // This value is the NUT-02 `final_expiry` in Unix seconds, not milliseconds.
+      // The import resume compares the stored record exactly, so the unit stays.
+      // The final expiry warning reader converts it (conditionalKeysetExpiryWarnings.ts).
       keysetExpiryMs: keyset.finalExpiry,
       requireDleq: true,
       inputFeePpk: keyset.inputFeePpk,

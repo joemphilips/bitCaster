@@ -528,7 +528,27 @@ export interface DaemonResponse<T = unknown> {
   clientOrderId?: string
   operationId?: string
   orderId?: string
+  /** Warnings about the held funds of the profile. A response with no warning omits it. */
+  warnings?: DaemonWarning[]
 }
+
+/** The warning code of a held conditional keyset whose final expiry is near. */
+export const CONDITIONAL_KEYSET_FINAL_EXPIRY_WARNING_CODE = 'conditional-keyset-final-expiry-soon'
+
+/**
+ * A held conditional keyset reaches its NUT-02 `final_expiry` in less than
+ * 7 days, or is past it. After that time the mint does not have to honor its
+ * proofs. The warning holds no amount and no proof secret.
+ */
+export interface ConditionalKeysetFinalExpiryWarning {
+  code: typeof CONDITIONAL_KEYSET_FINAL_EXPIRY_WARNING_CODE
+  conditionId: string
+  keysetId: string
+  /** The `final_expiry` of the keyset as an ISO 8601 UTC time. */
+  finalExpiryAt: string
+}
+
+export type DaemonWarning = ConditionalKeysetFinalExpiryWarning
 
 export interface DaemonHealth {
   status: 'ok'
