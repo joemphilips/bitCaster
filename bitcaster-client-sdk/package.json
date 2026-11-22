@@ -291,6 +291,10 @@
       "types": "./dist/seedRecoveryPhraseFile.d.ts",
       "import": "./dist/seedRecoveryPhraseFile.js"
     },
+    "./marketThumbnailFile": {
+      "types": "./dist/marketThumbnailFile.d.ts",
+      "import": "./dist/marketThumbnailFile.js"
+    },
     "./emergencySeedRecovery": {
       "types": "./dist/emergencySeedRecovery.d.ts",
       "import": "./dist/emergencySeedRecovery.js"

@@ -15,7 +15,7 @@ import { execFile } from 'node:child_process'
 import { createHash, randomUUID } from 'node:crypto'
 import { constants, existsSync } from 'node:fs'
 import { open, readFile } from 'node:fs/promises'
-import { normalize } from 'node:path'
+import { normalize, resolve } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { stdout as output } from 'node:process'
 import { fileURLToPath } from 'node:url'
@@ -24,6 +24,7 @@ import { BitcasterEngineClient, EngineClientError } from '@bitcaster-market/clie
 import { ASSET_MONITORING_ASSETS_MAX } from '@bitcaster-market/client-sdk/assetMonitoring'
 import { decodeCtfRangeOrderFeeFacts } from '@bitcaster-market/client-sdk/ctfRangeOrderFeeComposition'
 import { isKind89NostrEvent } from '@bitcaster-market/client-sdk/marketLifecycle'
+import { checkMarketThumbnailFile } from '@bitcaster-market/client-sdk/marketThumbnailFile'
 import {
   isLoopbackHttpUrl,
   validateMarketCreateEngineUrl,
@@ -155,6 +156,8 @@ const TOKEN_FILE_READ_CHUNK_BYTES = 64 * 1_024
 const NATIVE_REQUEST_ID_BYTES_MAX = 256
 const NATIVE_REQUEST_CURSOR_BYTES_MAX = 4 * 1_024
 const NATIVE_REQUEST_PAGE_SIZE_MAX = 256
+const THUMBNAIL_OPTION_HELP =
+  'Image file: JPEG, PNG, or WebP, at most 5 MiB. A relative path starts at the current directory'
 
 await main()
 
@@ -687,7 +690,7 @@ function registerMarketCommand(program: Command): Command {
       'Maximum wallet debit for a nonzero registration fee',
       parseSafeNonNegativeIntegerOption('max wallet debit msat'),
     )
-    .option('--thumbnail <path>', 'Thumbnail file path on the daemon host')
+    .option('--thumbnail <path>', THUMBNAIL_OPTION_HELP)
     .addHelpText(
       'after',
       '\nExamples:\n  bitcaster-cli market create --condition-id <condition-id> --title "Question" --description "Details" --outcomes YES,NO\n  bitcaster-cli --dry-run market create --creation-id create-001 --title "Question" --description "Details" --outcomes Yes,No --maturity-epoch 1893456000 --relay wss://relay.example',
@@ -696,6 +699,8 @@ function registerMarketCommand(program: Command): Command {
       if (options.conditionId !== undefined && options.creationId !== undefined) {
         throwUsage('Specify either --condition-id or --creation-id, not both.')
       }
+      const thumbnailPath =
+        options.thumbnail === undefined ? undefined : await marketThumbnailPath(options.thumbnail)
       if (options.creationId !== undefined) {
         const creationId = requireNonEmptyCliValue(options.creationId, 'creation id')
         if (options.relay === undefined || options.relay.length === 0) {
@@ -710,7 +715,7 @@ function registerMarketCommand(program: Command): Command {
           eventId: requireNonEmptyCliValue(options.eventId ?? creationId, 'event id'),
           market,
           relayUrls: [...options.relay],
-          ...(options.thumbnail === undefined ? {} : { thumbnailPath: options.thumbnail }),
+          ...(thumbnailPath === undefined ? {} : { thumbnailPath }),
           ...(options.maxWalletDebitMsat === undefined
             ? {}
             : { maxWalletDebitMsat: options.maxWalletDebitMsat }),
@@ -748,7 +753,7 @@ function registerMarketCommand(program: Command): Command {
         outcomes: options.outcomes,
       }
       if (options.tag !== undefined && options.tag.length > 0) params.tags = options.tag
-      if (options.thumbnail !== undefined) params.thumbnailPath = options.thumbnail
+      if (thumbnailPath !== undefined) params.thumbnailPath = thumbnailPath
       if (globalDryRun) {
         printDryRun('market.create', params)
         return
@@ -766,7 +771,7 @@ function registerMarketCommand(program: Command): Command {
     )
     .option(
       '--thumbnail <path>',
-      'Use the original thumbnail file; omit to reuse the saved thumbnail',
+      `${THUMBNAIL_OPTION_HELP}. Give the original file; omit to reuse the saved thumbnail`,
     )
     .addHelpText(
       'after',
@@ -778,7 +783,9 @@ function registerMarketCommand(program: Command): Command {
         ...(options.maxWalletDebitMsat === undefined
           ? {}
           : { maxWalletDebitMsat: options.maxWalletDebitMsat }),
-        ...(options.thumbnail === undefined ? {} : { thumbnailPath: options.thumbnail }),
+        ...(options.thumbnail === undefined
+          ? {}
+          : { thumbnailPath: await marketThumbnailPath(options.thumbnail) }),
       }
       if (globalDryRun) {
         printDryRun('market.creation-resume', params)
@@ -4049,6 +4056,27 @@ function collectRepeatedOption(value: string, previous: string[] = []): string[]
 function requireNonEmptyCliValue(value: string, name: string): string {
   if (value.trim().length === 0) throwUsage(`${name} must not be empty.`)
   return value
+}
+
+/**
+ * The daemon keeps the working directory of the command that started it. Send an absolute path,
+ * and check the file before any effect. The daemon reads the file again and stays the authority.
+ */
+async function marketThumbnailPath(value: string): Promise<string> {
+  const path = resolve(requireNonEmptyCliValue(value, 'thumbnail path'))
+  try {
+    await checkMarketThumbnailFile(path)
+  } catch (error) {
+    throwUsage(`Cannot use --thumbnail ${path}: ${marketThumbnailRefusal(error)}`)
+  }
+  return path
+}
+
+function marketThumbnailRefusal(error: unknown): string {
+  const code = error instanceof Error && 'code' in error ? error.code : undefined
+  if (code === 'ENOENT' || code === 'ENOTDIR') return 'the file does not exist.'
+  if (code === 'EACCES' || code === 'EPERM') return 'the file is not readable.'
+  return error instanceof Error ? error.message : String(error)
 }
 
 function nativeMarketCreationInput(options: MarketCreateOptions): MarketCreationInput {

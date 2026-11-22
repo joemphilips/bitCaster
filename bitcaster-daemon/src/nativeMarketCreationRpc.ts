@@ -26,7 +26,7 @@ import {
 import { createNativeOracleHelperAdapter } from './nativeOracleHelper.ts'
 import { normalizeOracleRelayUrls } from './nativeOraclePublication.ts'
 import type { NativeMarketCreationInput } from './nativeMarketOracle.ts'
-import { readMarketThumbnail } from './marketThumbnail.ts'
+import { readMarketThumbnailFile } from '@bitcaster-market/client-sdk/marketThumbnailFile'
 import { profileDir, readProfile } from './profile.ts'
 import { readSecrets, readSelectedDaemonSigner } from './secrets.ts'
 import { createWallet, type WalletOpsDependencies } from './walletOps.ts'
@@ -139,7 +139,7 @@ async function runNativeMarketCreationCommand(
   let thumbnail =
     command.params.thumbnailPath === undefined
       ? undefined
-      : await readMarketThumbnail(command.params.thumbnailPath)
+      : await readMarketThumbnailFile(command.params.thumbnailPath)
   let input: NativeMarketCreationInput
   if (command.method === 'market.creation-resume') {
     const record = await getStore().readCreation(command.params.creationId)

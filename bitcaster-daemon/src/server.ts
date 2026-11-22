@@ -14,7 +14,7 @@ import { isDeepStrictEqual } from 'node:util'
 import { measureOrderPhase, type OrderTimelineObserver } from './orderTimeline.ts'
 import { createConnection } from 'node:net'
 import { chmod, unlink } from 'node:fs/promises'
-import { readMarketThumbnail } from './marketThumbnail.ts'
+import { readMarketThumbnailFile } from '@bitcaster-market/client-sdk/marketThumbnailFile'
 import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
 import { activeNativeConfig } from './nativeConfig.ts'
 import {
@@ -716,7 +716,7 @@ export async function dispatch(
         nostrSecretKeyHex: secrets.nostrSecretKeyHex,
       })
       const thumbnailBytes = command.params.thumbnailPath
-        ? await readMarketThumbnail(command.params.thumbnailPath)
+        ? await readMarketThumbnailFile(command.params.thumbnailPath)
         : undefined
       const response = await createMarketViaEngine(
         client,

@@ -7,6 +7,7 @@ import {
   open,
   readFile,
   readdir,
+  realpath,
   rm,
   stat,
   symlink,
@@ -17,7 +18,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { EventEmitter, once } from 'node:events'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { test } from 'node:test'
+import { after, test } from 'node:test'
 import { promisify } from 'node:util'
 import { finalizeEvent } from 'nostr-tools/pure'
 import {
@@ -25,9 +26,20 @@ import {
   readBootstrappedProfileSecrets,
 } from '../../bitcaster-daemon/src/profileBootstrap.ts'
 import { isNetworkFailure, readDaemonRpcResponse } from '../src/rpc.ts'
+import { readMarketThumbnailFile } from '../../bitcaster-client-sdk/src/marketThumbnailFile.ts'
 import type { ScorePurchaseConsent } from '../../bitcaster-daemon/src/protocol.ts'
 
 const execFileAsync = promisify(execFile)
+
+// The CLI checks a --thumbnail file before it sends the path, so the fixtures are real files.
+const thumbnailFixtures = mkdtemp(join(tmpdir(), 'bitcaster-cli-thumbnails-')).then(realpath)
+after(async () => rm(await thumbnailFixtures, { recursive: true, force: true }))
+
+async function thumbnailFixture(name: string): Promise<string> {
+  const path = join(await thumbnailFixtures, name)
+  await writeFile(path, new Uint8Array([1, 2, 3]))
+  return path
+}
 
 test('Unix daemon RPC response abort and stream errors reject the pending read', async () => {
   const abortedResponse = new EventEmitter()
@@ -4280,6 +4292,7 @@ test('bitcaster-cli wallet split rejects invalid sats text before daemon RPC', a
 })
 
 test('P47-6b: market create with named flags sends daemon RPC params', async () => {
+  const thumbnail = await thumbnailFixture('thumb.png')
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-market-create-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = home
@@ -4313,7 +4326,7 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
         '--tag',
         'test',
         '--thumbnail',
-        '/tmp/thumb.png',
+        thumbnail,
         '--trust-engine-url',
       ],
       {
@@ -4333,7 +4346,7 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
           description: 'Weather market',
           outcomes: ['YES', 'NO', 'MAYBE'],
           tags: ['weather', 'test'],
-          thumbnailPath: '/tmp/thumb.png',
+          thumbnailPath: thumbnail,
         },
       },
     ])
@@ -4346,6 +4359,7 @@ test('P47-6b: market create with named flags sends daemon RPC params', async () 
 })
 
 test('market create --creation-id sends canonical native creation params', async () => {
+  const thumbnail = await thumbnailFixture('market.png')
   const command = {
     method: 'market.create-native',
     params: {
@@ -4361,7 +4375,7 @@ test('market create --creation-id sends canonical native creation params', async
         baseAsset: 'sat',
       },
       relayUrls: ['wss://relay.one.example/', 'wss://relay.two.example/'],
-      thumbnailPath: '/tmp/market.png',
+      thumbnailPath: thumbnail,
       maxWalletDebitMsat: 1_000_000,
     },
   }
@@ -4396,7 +4410,7 @@ test('market create --creation-id sends canonical native creation params', async
       '--max-wallet-debit-msat',
       '1000000',
       '--thumbnail',
-      '/tmp/market.png',
+      thumbnail,
       '--trust-engine-url',
     ],
     {
@@ -4590,7 +4604,193 @@ test('native market creation commands reject conflicting or invalid inputs befor
   }
 })
 
+test('market create sends a relative --thumbnail as a path in the CLI working directory', async () => {
+  // The daemon keeps the working directory of the command that started it. Here that is the
+  // directory of this test process, not the directory of the CLI command.
+  const commandDirectory = await realpath(await mkdtemp(join(tmpdir(), 'bitcaster-cli-thumbnail-')))
+  assert.notEqual(process.cwd(), commandDirectory)
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-thumbnail-home-'))
+  const previousHome = process.env.BITCASTER_DAEMON_HOME
+  process.env.BITCASTER_DAEMON_HOME = home
+  await ensureRpcToken()
+  await writeFile(join(commandDirectory, 'img.png'), new Uint8Array([1, 2, 3]))
+  const received: Array<{ params: { thumbnailPath?: string } }> = []
+  const server = createServer(async (req, res) => {
+    received.push(JSON.parse(await readBody(req)))
+    writeJson(res, 200, { ok: true, result: { conditionId: 'cond-1' } })
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+  try {
+    await runCliWithEnv(
+      [
+        'market',
+        'create',
+        '--condition-id',
+        'cond-1',
+        '--title',
+        'Will it rain?',
+        '--description',
+        'Weather market',
+        '--outcomes',
+        'YES,NO',
+        '--thumbnail',
+        './img.png',
+        '--trust-engine-url',
+      ],
+      {
+        ...process.env,
+        BITCASTER_CLI_HOME: home,
+        BITCASTER_TEST_DAEMON_URL: `http://127.0.0.1:${address.port}`,
+        BITCASTER_TEST_ENGINE_URL: 'https://engine.example',
+      },
+      { cwd: commandDirectory },
+    )
+    assert.equal(received.length, 1)
+    const thumbnailPath = received[0]!.params.thumbnailPath
+    assert.equal(thumbnailPath, join(commandDirectory, 'img.png'))
+    // The daemon reads the path that it receives from its own working directory.
+    const thumbnail = await readMarketThumbnailFile(thumbnailPath!)
+    assert.deepEqual(new Uint8Array(thumbnail.data), new Uint8Array([1, 2, 3]))
+  } finally {
+    server.close()
+    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+    else process.env.BITCASTER_DAEMON_HOME = previousHome
+    await rm(home, { recursive: true, force: true })
+    await rm(commandDirectory, { recursive: true, force: true })
+  }
+})
+
+test('native creation and its resume send a relative --thumbnail as an absolute path', async () => {
+  const commandDirectory = await realpath(await mkdtemp(join(tmpdir(), 'bitcaster-cli-thumbnail-')))
+  try {
+    await mkdir(join(commandDirectory, 'images'))
+    await writeFile(join(commandDirectory, 'images', 'market.webp'), new Uint8Array([1]))
+    const env = {
+      ...process.env,
+      BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
+      BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([]),
+    }
+    const expected = join(commandDirectory, 'images', 'market.webp')
+    const created = await runCliWithEnv(
+      [
+        'market',
+        'create',
+        '--creation-id',
+        'create-001',
+        '--title',
+        'Will it rain?',
+        '--description',
+        'Weather market',
+        '--outcomes',
+        'Yes,No',
+        '--maturity-epoch',
+        '1893456000',
+        '--relay',
+        'wss://relay.example',
+        '--thumbnail',
+        'images/market.webp',
+        '--dry-run',
+      ],
+      env,
+      { cwd: commandDirectory },
+    )
+    assert.equal(JSON.parse(created.stdout).params.thumbnailPath, expected)
+    const resumed = await runCliWithEnv(
+      ['market', 'creation-resume', 'create-001', '--thumbnail', 'images/market.webp', '--dry-run'],
+      env,
+      { cwd: commandDirectory },
+    )
+    assert.deepEqual(JSON.parse(resumed.stdout).params, {
+      creationId: 'create-001',
+      thumbnailPath: expected,
+    })
+  } finally {
+    await rm(commandDirectory, { recursive: true, force: true })
+  }
+})
+
+test('market create and creation-resume refuse an unusable --thumbnail before any daemon call', async () => {
+  const commandDirectory = await realpath(await mkdtemp(join(tmpdir(), 'bitcaster-cli-thumbnail-')))
+  try {
+    await mkdir(join(commandDirectory, 'folder.png'))
+    await writeFile(join(commandDirectory, 'image.gif'), new Uint8Array([1]))
+    await writeFile(join(commandDirectory, 'empty.png'), new Uint8Array())
+    await writeFile(join(commandDirectory, 'large.jpg'), Buffer.alloc(5 * 1024 * 1024 + 1))
+    const cases = [
+      { name: 'missing.png', reason: /does not exist/ },
+      { name: 'folder.png', reason: /nonempty file of at most 5 MiB/ },
+      { name: 'image.gif', reason: /JPEG, PNG, or WebP/ },
+      { name: 'empty.png', reason: /nonempty file of at most 5 MiB/ },
+      { name: 'large.jpg', reason: /nonempty file of at most 5 MiB/ },
+    ]
+    const commands = [
+      [
+        'market',
+        'create',
+        '--condition-id',
+        'cond-1',
+        '--title',
+        'Title',
+        '--description',
+        'Description',
+        '--outcomes',
+        'YES,NO',
+        '--trust-engine-url',
+      ],
+      [
+        'market',
+        'create',
+        '--creation-id',
+        'create-001',
+        '--title',
+        'Title',
+        '--description',
+        'Description',
+        '--outcomes',
+        'Yes,No',
+        '--maturity-epoch',
+        '1893456000',
+        '--relay',
+        'wss://relay.example',
+      ],
+      ['market', 'creation-resume', 'create-001'],
+    ]
+    for (const command of commands) {
+      for (const scenario of cases) {
+        await assert.rejects(
+          runCliWithEnv(
+            [...command, '--thumbnail', `./${scenario.name}`],
+            {
+              ...process.env,
+              BITCASTER_TEST_ENGINE_URL: 'https://engine.example',
+              BITCASTER_TEST_DAEMON_URL: 'http://daemon.test',
+              BITCASTER_TEST_FETCH_MODULE: daemonRpcFetchModule([]),
+            },
+            { cwd: commandDirectory },
+          ),
+          (error: unknown) => {
+            const { code, stderr } = error as { code?: unknown; stderr?: string }
+            assert.equal(code, 2, `${command.join(' ')} ${scenario.name}`)
+            assert.ok(
+              stderr?.includes(join(commandDirectory, scenario.name)),
+              `the refusal names the path: ${stderr}`,
+            )
+            assert.match(stderr ?? '', scenario.reason)
+            return true
+          },
+        )
+      }
+    }
+  } finally {
+    await rm(commandDirectory, { recursive: true, force: true })
+  }
+})
+
 test('native creation dry runs stay local and do not trust the engine URL', async () => {
+  const thumbnail = await thumbnailFixture('thumbnail.png')
   const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-native-create-dry-run-'))
   try {
     const env = {
@@ -4619,7 +4819,7 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
         '--max-wallet-debit-msat',
         '1000000',
         '--thumbnail',
-        '/tmp/thumbnail.png',
+        thumbnail,
         '--dry-run',
       ],
       env,
@@ -4640,7 +4840,7 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
           baseAsset: 'sat',
         },
         relayUrls: ['wss://relay.example'],
-        thumbnailPath: '/tmp/thumbnail.png',
+        thumbnailPath: thumbnail,
         maxWalletDebitMsat: 1_000_000,
       },
     })
@@ -4650,20 +4850,13 @@ test('native creation dry runs stay local and do not trust the engine URL', asyn
     assert.deepEqual(config.cli.trustedEngineUrls, [])
 
     const resumed = await runCliWithEnv(
-      [
-        'market',
-        'creation-resume',
-        'dry-create-001',
-        '--thumbnail',
-        '/tmp/thumbnail.png',
-        '--dry-run',
-      ],
+      ['market', 'creation-resume', 'dry-create-001', '--thumbnail', thumbnail, '--dry-run'],
       env,
     )
     assert.deepEqual(JSON.parse(resumed.stdout), {
       dryRun: true,
       method: 'market.creation-resume',
-      params: { creationId: 'dry-create-001', thumbnailPath: '/tmp/thumbnail.png' },
+      params: { creationId: 'dry-create-001', thumbnailPath: thumbnail },
     })
     config = JSON.parse(await readFile(join(home, 'config.json'), 'utf8')) as {
       cli: { trustedEngineUrls: string[] }
@@ -4809,6 +5002,7 @@ test('wallet Remove requires an exact preview file and explicit acknowledgement 
 })
 
 test('native creation resume, status, and quote send the exact daemon RPC params', async () => {
+  const thumbnail = await thumbnailFixture('same-thumbnail.png')
   const resumeResult = await runCliWithEnv(
     [
       'market',
@@ -4817,7 +5011,7 @@ test('native creation resume, status, and quote send the exact daemon RPC params
       '--max-wallet-debit-msat',
       '0',
       '--thumbnail',
-      '/tmp/same-thumbnail.png',
+      thumbnail,
     ],
     {
       ...process.env,
@@ -4829,7 +5023,7 @@ test('native creation resume, status, and quote send the exact daemon RPC params
             params: {
               creationId: 'create-resume-001',
               maxWalletDebitMsat: 0,
-              thumbnailPath: '/tmp/same-thumbnail.png',
+              thumbnailPath: thumbnail,
             },
           },
           response: {
@@ -5803,7 +5997,7 @@ async function runCliWithOutput(
 async function runCliWithEnv(
   args: string[],
   env: NodeJS.ProcessEnv,
-  options: { childTimeoutMs?: number } = {},
+  options: { childTimeoutMs?: number; cwd?: string } = {},
 ): Promise<{ stdout: string; stderr: string }> {
   const effectiveArgs = [...args]
   const effectiveEnv = { ...env }
@@ -5856,6 +6050,7 @@ async function runCliWithEnv(
       {
         env: effectiveEnv,
         ...(options.childTimeoutMs === undefined ? {} : { timeout: options.childTimeoutMs }),
+        ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
       },
     )
   } finally {
