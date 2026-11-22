@@ -1,22 +1,20 @@
 ---
-// Starlight `Hero` override. A page that sets `heroNotice` gets the centered landing hero.
+// Starlight `Hero` override. A page that sets `heroReflection` gets the centered landing hero.
 // Other hero pages keep Starlight's default hero, so their image and actions still render.
 import DefaultHero from '@astrojs/starlight/components/Hero.astro'
 
 const { data } = Astro.locals.starlightRoute.entry
-const { heroNotice: notice, heroReflection: reflection } = data as {
-  heroNotice?: string
+const { heroReflection: reflection } = data as {
   heroReflection?: string
 }
 const { title = data.title, tagline } = data.hero ?? {}
 ---
 
 {
-  notice === undefined ? (
+  reflection === undefined ? (
     <DefaultHero />
   ) : (
     <div class="landing-hero">
-      <p class="notice">{notice}</p>
       {/* Starlight's skip link targets the page-title id `_top`. */}
       <h1 id="_top" data-page-title>
         <span class="motto" set:html={title} />
@@ -65,18 +63,6 @@ const { title = data.title, tagline } = data.hero ?? {}
     gap: 1.75rem;
     padding-block: clamp(2.5rem, 7vw, 6.5rem) 1rem;
     text-align: center;
-  }
-
-  .notice {
-    margin: 0;
-    padding: 0.375rem 0.875rem;
-    border: 1px solid var(--bc-notice-border);
-    border-radius: 999px;
-    background: var(--bc-notice-bg);
-    color: var(--bc-notice-text);
-    font-size: var(--sl-text-sm);
-    font-weight: 500;
-    line-height: 1.4;
   }
 
   h1 {
