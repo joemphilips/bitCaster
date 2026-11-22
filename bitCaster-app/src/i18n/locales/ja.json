@@ -679,7 +679,7 @@
     "nip07ConnectionFailed": "Nostr拡張機能に接続できませんでした。拡張機能の権限を確認して、もう一度お試しください。",
     "nostrConnecting": "Nostrに接続中…",
     "profileAbsent": "公開プロフィールが見つかりません。",
-    "profileAnonymous": "匿名",
+    "profileAnonymous": "名前未設定",
     "profileEditAction": "編集",
     "mintSupportsCtf": "CTF対応",
     "mintEcashOnly": "Ecashのみ",

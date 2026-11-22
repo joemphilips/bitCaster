@@ -78,7 +78,7 @@ describe("ShellRoutes own profile name", () => {
     await i18n.changeLanguage("ja");
     try {
       renderShell();
-      expect(screen.getByTestId("user-menu-name")).toHaveTextContent(/^匿名$/);
+      expect(screen.getByTestId("user-menu-name")).toHaveTextContent(/^名前未設定$/);
     } finally {
       await i18n.changeLanguage("en");
     }
