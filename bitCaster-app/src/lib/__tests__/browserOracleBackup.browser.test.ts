@@ -977,6 +977,91 @@ it.each(["created", "imported"] as const)(
   },
 );
 
+/** The engine refuses every request. Each attempt sets whether the relays accept. */
+function engineOutagePublication(
+  f: Awaited<ReturnType<typeof fixture>>,
+  owner: ReturnType<typeof createCreatorMarketsStore>,
+) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response("{}", { status: 503 })),
+  );
+  const read = vi.fn(async () => null);
+  return async (relays: "down" | "up") => {
+    if (relays === "down")
+      oracleNetwork.publish.mockRejectedValue(new Error("Controlled relay outage."));
+    else
+      oracleNetwork.publish.mockImplementation(
+        async (_relays, json: string) => JSON.parse(json).id,
+      );
+    await publishBrowserOracleOutcome(
+      f.record.conditionId,
+      "YES",
+      undefined,
+      [],
+      owner,
+      read,
+    ).catch(() => undefined);
+    const saved = await owner.getState().readOraclePublication(f.record.conditionId);
+    if (saved === null) throw new Error("The attempt must save the signed result.");
+    return saved;
+  };
+}
+
+it.each(["created", "imported"] as const)(
+  "reads %s readiness without staging the saved result, so later relay progress keeps it ready",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    const attempt = engineOutagePublication(f, owner);
+    const signed = await attempt("down");
+    expect(signed.attestation === null).toBe(false);
+    expect(signed.relayPublished).toBe(false);
+
+    // A backup status row or the recovery pass reads the readiness.
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+    expect(await f.core.staged_enum_publication(f.record.oracleEventId)).toBeUndefined();
+
+    // The automatic retry reaches the relay. The engine still refuses.
+    const relayed = await attempt("up");
+    expect(relayed.relayPublished).toBe(true);
+    expect(relayed.engineEvidence).toBeNull();
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+  },
+);
+
+it.each(["created", "imported"] as const)(
+  "reads %s readiness over a stale stage of an older read, and the backup reconcile drains it",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    const attempt = engineOutagePublication(f, owner);
+    const signed = await attempt("down");
+    // An older browser read staged the saved result in the core.
+    await f.core.export_enum_authority_v2(
+      f.record.oracleEventId,
+      f.prepared.eventJson,
+      JSON.stringify(signed),
+    );
+    // The publication retry still completes its relay step with the stale stage present.
+    const relayed = await attempt("up");
+    expect(relayed.relayPublished).toBe(true);
+    const stale = await f.core.staged_enum_publication(f.record.oracleEventId);
+    expect(stale === undefined ? null : JSON.parse(stale).relayPublished).toBe(false);
+
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+
+    // The backup export reconciles: it merges the stage into the newer saved
+    // result and acknowledges the stage.
+    await exportBrowserOracleBackup(f.record.conditionId, owner);
+    expect(await f.core.staged_enum_publication(f.record.oracleEventId)).toBeUndefined();
+    const saved = await owner.getState().readOraclePublication(f.record.conditionId);
+    expect(saved?.relayPublished).toBe(true);
+    expect(saved?.attestation?.eventJson === signed.attestation?.eventJson).toBe(true);
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+  },
+);
+
 it("requires authenticated retry for incomplete import even with valid private authority", async () => {
   const f = await fixture();
   await deliveryOwner("imported", f);

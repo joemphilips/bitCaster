@@ -411,12 +411,12 @@ async function readLockedBrowserOracleAuthorityReadiness(
   }
   if (!destinations) return "unavailable";
   guard();
-  const publication = await locked.read(conditionId);
-  guard();
+  // Check only the authority of the core. The export stages a supplied saved
+  // result in the core, and only a reconcile drains a stage. A read that staged
+  // the saved result would conflict with later saved progress.
   const dto = await core.export_enum_authority_v2(
     binding.oracleEventId,
     binding.announcementEventJson,
-    publication ? JSON.stringify(publication) : undefined,
   );
   guard();
   let summary: OracleEnumAuthoritySummary | undefined;
