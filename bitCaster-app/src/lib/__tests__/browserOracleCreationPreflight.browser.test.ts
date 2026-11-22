@@ -5,6 +5,7 @@ import {
   type MarketCreationRecord,
   type MarketCreationPreparation,
 } from "@bitcaster/client-sdk";
+import { OracleBackupCapacityError } from "@bitcaster/client-sdk/oracleBackupCapacity";
 import { useSettingsStore } from "@/stores/settings";
 import {
   prepareBrowserMarketCreation,
@@ -147,6 +148,8 @@ function assertNoExternalEffects(f: Awaited<ReturnType<typeof fixture>>) {
 
 it("refuses an oversized portable envelope before fresh creation can deliver a fee or publish or register", async () => {
   const f = await fixture();
+  // Fresh creation projects the full lifecycle record before it allocates a nonce.
+  // That check refuses this input first, so the portable preflight does not run.
   await expect(
     prepareBrowserMarketCreation(f.session, {
       creationId: f.preparation.creationId,
@@ -162,7 +165,7 @@ it("refuses an oversized portable envelope before fresh creation can deliver a f
         baseAsset: "sat",
       },
     }),
-  ).rejects.toThrow("Private oracle backup: oversized.");
+  ).rejects.toBeInstanceOf(OracleBackupCapacityError);
   expect(f.reserve).not.toHaveBeenCalled();
   assertNoExternalEffects(f);
   expect((await getKormir([])).get_public_key()).toBe(JSON.parse(state.artifact!.eventJson).pubkey);
