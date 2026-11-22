@@ -24,7 +24,7 @@ site gets another language.
 | The product category | prediction market | 予測市場 |
 | One question that people trade on | market | マーケット |
 | Token that pays out if its outcome wins | share | シェア |
-| Token type behind a share | conditional token | 条件付きトークン |
+| Token type behind a share | conditional token | コンディショナルトークン |
 | The shares that a wallet holds in a market | position | ポジション |
 | Party that signs a market's result | oracle | オラクル |
 | The unsolved risk that an oracle lies | oracle problem | オラクル問題 |

@@ -13,19 +13,19 @@ bitCaster is in beta. It uses real bitcoin, so start small.
 
 bitCaster is a prediction market built on [Bitcoin](https://bitcoin.org/) and [Cashu](https://cashu.space/). You buy and sell shares in the outcomes of real-world events: elections, sports, the weather, anything. If you turn out to be right, your shares pay out. If not, they pay nothing.
 
-Your shares are [ecash](/user-guide/core-concepts/ecash/) tokens. They sit in your own wallet, in your browser or the CLI, not on a server.
+Your shares are [ecash tokens](/user-guide/core-concepts/conditional-tokens/). They sit in your own wallet, in your browser or the CLI, not on a server.
 
 ## What you can do
 
 ### Trade on a prediction market
 
-You bring in bitcoin over Lightning and use it to take a position in a market. A position is an ecash token that can be exchanged for 1 sat, but only if a particular event happens. Buying and selling these tokens, at any price between 0 and 1,000 msats (1 sat), is what bitCaster is for.
+You bring in bitcoin over Lightning and use it to take a position in a market. A position is an ecash token that can be exchanged for 1 sat, but only if a particular event happens. Buying and selling these tokens, at any price between 0 and 1,000 msats (1 sat), is what bitCaster is for. Start with the [open markets](https://bitcaster.market/markets).
 
 ### Create a prediction market
 
 Anyone can create a market on anything.
 
-In essence, you write the question, name the possible outcomes, and describe how the result will be decided. See [Creating markets](/user-guide/core-concepts/creating-markets/).
+In essence, you write the question, name the possible outcomes, and describe how the result will be decided. You do it on the [creator page](https://bitcaster.market/creator). See [Creating markets](/user-guide/core-concepts/creating-markets/).
 
 ### Be the oracle
 
@@ -43,7 +43,7 @@ See [Market resolution](/user-guide/core-concepts/resolution/).
 
 Your tokens are just signed data stored in your browser. That lets you send and swap them freely, even outside bitCaster, and it keeps the risk of a data leak to a minimum. It also means nobody can reset a password for you.
 
-When you create a wallet you get a 12-word recovery phrase. Write it down and keep it offline. With the phrase, you can restore your funds and positions in any browser. Without it, losing the browser means losing the funds. See [Back up your wallet](/user-guide/getting-started/wallet-backup/).
+When you create a wallet you get a 12-word recovery phrase. Write it down and keep it offline. With the phrase, you can restore your funds and positions in any browser. Without it, losing the browser means losing the funds. See [Wallet backup and recovery](/technical/reference/wallet-recovery/).
 
 ## What you still have to trust
 

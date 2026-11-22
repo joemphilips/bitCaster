@@ -39,3 +39,6 @@ Apply these rules to every change:
 - Write For Humans pages in natural English and natural Japanese. The Japanese page is not a literal translation. Both languages must make the same claims.
 - Write For AI pages in controlled English: short sentences, one term for each concept, exact identifiers.
 - The app links to `/user-guide/core-concepts/resolution/#check-the-oracle-profile` and to its Japanese anchor. Keep both headings.
+- The app links to `/user-guide/core-concepts/funding-bot-liquidity/` and to its Japanese page. Keep both addresses.
+- Link the app from For Humans pages where the reader can act: the markets list, the creator page, the portfolio.
+- A reviewer can leave a `> Note:` block in a page. Apply the note, then remove the block. Do not publish a page that contains one.

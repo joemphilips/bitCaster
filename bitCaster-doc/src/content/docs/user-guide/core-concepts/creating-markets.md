@@ -5,7 +5,9 @@ sidebar:
   order: 4
 ---
 
-On most prediction markets, the operator decides which markets exist. On bitCaster anyone can create a market, on any topic, at any time. Nobody reviews it or approves it.
+On most prediction markets, the operator decides which markets exist. On bitCaster anyone can create a market, on any topic, at any time.
+
+Try it on the [creator page](https://bitcaster.market/creator).
 
 ## What you provide
 
@@ -19,7 +21,7 @@ Finally, set an end time for trading. You can also add an image.
 
 When you create a market, you promise to report its result. That promise is signed with your Nostr private key and published, and the market is tied to it for good.
 
-Three things follow. The key has to be stored in the browser, because a signing extension cannot sign results. You need to [back it up](/user-guide/getting-started/wallet-backup/#your-nostr-key), because without it you cannot report the result. And you must never sign two different results for the same market, because doing so exposes your private key.
+Three things follow. The key has to be stored in the browser, because a signing extension cannot sign results. You need to [back it up](/technical/reference/wallet-recovery/#back-up-your-nostr-key-separately), because without it you cannot report the result. And you must never sign two different results for the same market, because doing so exposes your private key.
 
 Traders will judge the market by your name. See [Market resolution](/user-guide/core-concepts/resolution/).
 
@@ -31,9 +33,11 @@ The mint can charge a registration fee, and the app shows it before you pay. You
 
 A new market has an empty order book, so nobody can trade yet. You can fix that by [funding the market maker](/user-guide/core-concepts/funding-bot-liquidity/), a bot that posts buy and sell orders. It is optional, anyone can do it, and it is not refundable.
 
+Refunds, and a share of the fee income for funders, are planned for a later release.
+
 ## After the event
 
-Trading stops when you report the result or when the end time passes. Report the result from **Your Markets** on the creator page. Winners can then cash out.
+Trading stops when you report the result or when the end time passes. Report the result from **Your Markets** on the [creator page](https://bitcaster.market/creator). Winners can then cash out.
 
 ## Further reading
 

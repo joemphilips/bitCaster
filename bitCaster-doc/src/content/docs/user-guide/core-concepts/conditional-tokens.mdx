@@ -7,7 +7,7 @@ sidebar:
 
 import TokenLayers from '../../../../components/TokenLayers.astro';
 
-A **conditional token** is a share in a market. It behaves like any other ecash token, so you can hold it, send it, and trade it. The difference is that it pays out only if one specific outcome comes true. If another outcome wins, it is worth nothing.
+A **conditional token** is a share in a market. It behaves like any other ecash token, so you can hold it, send it, and trade it. The difference is that it can be exchanged for ordinary tokens only if one specific outcome comes true. If another outcome wins, no exchange is possible, so the token is essentially worthless.
 
 Every market is simply a set of these tokens, one kind for each outcome, waiting for the oracle to say which one wins.
 
@@ -15,15 +15,15 @@ Every market is simply a set of these tokens, one kind for each outcome, waiting
 
 The Conditional Token Framework (CTF) was designed by [Gnosis](https://gnosis.io/) for Ethereum, and [Polymarket](https://polymarket.com/) made it the standard for on-chain prediction markets. It separates the money you put in from the positions you hold.
 
-bitCaster keeps the idea and changes the material. A position here is not a token on a public blockchain. It is a Cashu ecash token, issued under an extension of the Cashu protocol called NUT-CTF. The mental model is the same, with more speed and more privacy.
+bitCaster keeps the idea and changes the material. A position here is not a token on a public blockchain. It is a Cashu ecash token, issued under an extension of the Cashu protocol called [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md). The mental model is the same, with better performance and better privacy.
 
 ## Four layers of tokens
 
-A bitCaster position sits on top of three other kinds of money. Each layer wraps the one below it.
+A bitCaster position rests on three other kinds of money. Each layer is built on the one before it.
 
 <TokenLayers lang="en" />
 
-Each layer exists because the one below it is the wrong tool for the next job. Bitcoin is ideal for final settlement but too heavy to trade on. Lightning is fast and trustless, but you have to stay online, so it is an awkward place to keep a balance. Ecash is perfect for a fast, private balance, but it cannot express "this pays only if Yes wins". Conditional tokens can, and once the market resolves they have done their job and turn back into ecash.
+Each layer has its trade-offs. Bitcoin is ideal for holding wealth but too heavy to trade on. Lightning is fast and trustless, but you have to stay online, so it is an awkward place to keep a balance. Ecash is perfect for a fast, private balance, but it cannot express "this pays only if Yes wins". Conditional tokens can, and once the market resolves they have done their job and turn back into ecash.
 
 ## Price and payout
 
@@ -31,8 +31,11 @@ A winning share pays 1 sat, and a losing share pays nothing. So the price of a s
 
 Say you buy 100 Yes shares at 30%. You pay 30 sats plus fees. If Yes wins, you collect 100 sats. If it loses, you collect nothing. And if the price climbs to 60% along the way, you can sell for about 60 sats without waiting for the result.
 
+You can try it on any [open market](https://bitcaster.market/markets).
+
 ## Further reading
 
-- [Ecash](/user-guide/core-concepts/ecash/) explains layer 3.
+- [Cashu](https://cashu.space/) is the ecash protocol behind layers 3 and 4, and the [Bitcoin Design guide to ecash](https://bitcoin.design/guide/how-it-works/ecash/introduction/) is a good introduction to ecash itself.
+- [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) is the specification of layer 4.
 - [Market resolution](/user-guide/core-concepts/resolution/) explains how layer 4 turns back into layer 3.
 - [Trading model](/technical/architecture/trading-model/) has the precise trading rules.

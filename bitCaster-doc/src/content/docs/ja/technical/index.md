@@ -240,7 +240,7 @@ bitcaster-cli wallet portfolio --timeframe 1W --page-size 100
 bitcaster-cli wallet assets --cursor <nextCursor> --page-size 100
 ```
 
-`wallet positions` は、ウォレットの条件付きトークンの保有記録を読みます。
+`wallet positions` は、ウォレットのコンディショナルトークンの保有記録を読みます。
 `wallet portfolio` は、`localHoldings` と、それとは別の `monitoring` を返します。
 監視状態は `available`、`disabled`、`unavailable` のいずれかです。
 監視が無効または利用不可でも、ローカル残高がゼロになったわけではありません。

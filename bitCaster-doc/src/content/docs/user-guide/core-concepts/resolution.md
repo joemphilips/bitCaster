@@ -33,7 +33,7 @@ bitCaster takes the opposite stance and makes it obvious who is responsible. The
 
 A market closes when its oracle's result arrives or when its deadline passes, whichever comes first. If the deadline comes first, the market shows **Awaiting resolution** until the oracle reports. Then it shows **Resolved**.
 
-To collect, open Portfolio and choose **Cash out** on a winning position. Your winnings arrive as ordinary ecash, which you can withdraw over Lightning. Don't wait forever, because the mint may redeem winning shares only for a limited period.
+To collect, open your [Portfolio](https://bitcaster.market/portfolio) and choose **Cash out** on a winning position. Your winnings arrive as ordinary ecash, which you can withdraw over Lightning. Don't wait forever, because the mint may redeem winning shares only for a limited period.
 
 ## If the oracle never reports
 
@@ -41,7 +41,7 @@ There is no automatic refund in this release. The mint operator may decide on a 
 
 ## Reporting a result yourself
 
-If you created the market, open **Your Markets** on the creator page, choose **Close market**, and pick the winning outcome. A saved choice cannot be changed. See [Creating markets](/user-guide/core-concepts/creating-markets/).
+If you created the market, open **Your Markets** on the [creator page](https://bitcaster.market/creator), choose **Close market**, and pick the winning outcome. A saved choice cannot be changed. See [Creating markets](/user-guide/core-concepts/creating-markets/).
 
 ## Further reading
 

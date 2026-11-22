@@ -1,5 +1,5 @@
 ---
-// The four layers of money that a bitCaster position rests on, drawn as a stack.
+// The four layers of money that a bitCaster position rests on, drawn from layer 1 at the top to layer 4.
 // Text is real markup, not an image, so both languages and both themes share one component.
 interface Props {
   lang?: 'en' | 'ja'
@@ -15,33 +15,33 @@ const copy = {
     layer: 'Layer',
     layers: [
       {
-        n: 4,
-        name: 'Conditional tokens',
-        trait: 'Your shares',
-        text: 'Your position in a market. A share pays out only if its outcome wins.',
-      },
-      {
-        n: 3,
-        name: 'Ecash',
-        trait: 'Fast · private · relies on the mint',
-        text: 'Your wallet balance. Instant and private. The mint holds the bitcoin behind it.',
-      },
-      {
-        n: 2,
-        name: 'Lightning',
-        trait: 'Fast · trustless · online only',
-        text: 'Bitcoin payments in seconds for tiny fees. Nobody new to trust, but you have to stay online.',
-      },
-      {
         n: 1,
         name: 'Bitcoin',
         trait: 'Trustless · slow',
         text: 'The base money. Final and censorship-resistant, but too slow and costly to trade on.',
       },
+      {
+        n: 2,
+        name: 'Lightning',
+        trait: 'Fast · trustless · online only',
+        text: 'Essentially the same security model as layer 1, but hard to handle in many ways.',
+      },
+      {
+        n: 3,
+        name: 'Ordinary ecash',
+        trait: 'Fast · private · relies on the mint',
+        text: 'A plain Cashu token. It can be exchanged one-to-one for the bitcoin that the mint holds.',
+      },
+      {
+        n: 4,
+        name: 'Conditional tokens',
+        trait: 'Your shares',
+        text: 'Unique to bitCaster. A special ecash token that stands for your position in a market. It pays out only if its outcome wins.',
+      },
     ],
-    bridges: ['buy · sell · claim payout', 'deposit · withdraw', 'open · close a channel'],
+    bridges: ['open · close a channel', 'deposit · withdraw', 'buy · sell · claim payout'],
     caption:
-      'Value moves up a layer when you want to trade, and back down when you want to hold. bitCaster adds the top two layers.',
+      'Value moves toward layer 4 when you want to trade, and back toward layer 1 when you want to hold. bitCaster works in layers 3 and 4.',
   },
   ja: {
     label: 'bitCaster が使う 4 層のトークン',
@@ -50,73 +50,89 @@ const copy = {
     layer: 'レイヤー',
     layers: [
       {
-        n: 4,
-        name: '条件付きトークン',
-        trait: 'あなたのシェア',
-        text: 'マーケットでのポジションです。対応する結果が当たったときだけ払い出されます。',
-      },
-      {
-        n: 3,
-        name: 'Ecash',
-        trait: '高速 · プライベート · ミントに依存',
-        text: 'ウォレットの残高です。即時に動かせて、プライベートです。裏付けの bitcoin はミントが保管します。',
-      },
-      {
-        n: 2,
-        name: 'Lightning',
-        trait: '高速 · トラストレス · オンライン必須',
-        text: '数秒で届く、手数料のごく小さい bitcoin 送金です。新たに信頼する相手は増えませんが、オンラインでいる必要があります。',
-      },
-      {
         n: 1,
         name: 'Bitcoin',
         trait: 'トラストレス · 低速',
         text: '土台となるお金です。確定的で検閲に強い一方、取引に使うには遅く、手数料もかかります。',
       },
+      {
+        n: 2,
+        name: 'Lightning',
+        trait: '高速 · トラストレス · オンライン必須',
+        text: '基本的にはレイヤー 1 と同じセキュリティモデルですが、扱いが難しい点が多々あります。',
+      },
+      {
+        n: 3,
+        name: '通常の Ecash トークン',
+        trait: '高速 · プライベート · ミントに依存',
+        text: '通常の Ecash トークンです。ミントの保管する Bitcoin と一対一で交換できます。',
+      },
+      {
+        n: 4,
+        name: 'コンディショナルトークン',
+        trait: 'あなたのシェア',
+        text: 'bitCaster 特有の機能です。マーケットでのポジションを表す特殊な Ecash トークンで、対応する結果が当たったときだけ払い出されます。',
+      },
     ],
-    bridges: ['購入 · 売却 · 報酬受取', '入金 · 出金', 'チャネルの開設 · 閉鎖'],
+    bridges: ['チャネルの開設 · 閉鎖', '入金 · 出金', '購入 · 売却 · 報酬受取'],
     caption:
-      '取引したいときは価値を上の層へ、保有したいときは下の層へ動かします。bitCaster が加えるのは上の 2 層です。',
+      '取引したいときは価値をレイヤー 4 に向けて動かし、保有したいときはレイヤー 1 に向けて戻します。bitCaster が扱うのはレイヤー 3 と 4 です。',
   },
 }[lang]
 
-const [l4, l3, l2, l1] = copy.layers
-const [tradeBridge, lightningBridge, channelBridge] = copy.bridges
+const [l1, l2, l3, l4] = copy.layers
+const [channelBridge, lightningBridge, tradeBridge] = copy.bridges
+const outside = [l1, l2]
+const inside = [l3, l4]
 ---
 
 <figure class="token-layers not-content" aria-label={copy.label}>
-  <div class="zone inside">
-    <p class="zone-label">{copy.inside}</p>
-    <div class="layer">
-      <p class="tag">{copy.layer} {l4.n}</p>
-      <p class="name">{l4.name}</p>
-      <p class="trait">{l4.trait}</p>
-      <p class="text">{l4.text}</p>
-    </div>
-    <p class="bridge"><span aria-hidden="true">↑↓</span>{tradeBridge}</p>
-    <div class="layer">
-      <p class="tag">{copy.layer} {l3.n}</p>
-      <p class="name">{l3.name}</p>
-      <p class="trait">{l3.trait}</p>
-      <p class="text">{l3.text}</p>
-    </div>
-  </div>
-  <p class="bridge between"><span aria-hidden="true">↑↓</span>{lightningBridge}</p>
   <div class="zone outside">
     <p class="zone-label">{copy.outside}</p>
-    <div class="layer">
-      <p class="tag">{copy.layer} {l2.n}</p>
-      <p class="name">{l2.name}</p>
-      <p class="trait">{l2.trait}</p>
-      <p class="text">{l2.text}</p>
-    </div>
-    <p class="bridge"><span aria-hidden="true">↑↓</span>{channelBridge}</p>
-    <div class="layer">
-      <p class="tag">{copy.layer} {l1.n}</p>
-      <p class="name">{l1.name}</p>
-      <p class="trait">{l1.trait}</p>
-      <p class="text">{l1.text}</p>
-    </div>
+    {
+      outside.map((l, i) => (
+        <>
+          {i > 0 && (
+            <p class="bridge">
+              <span aria-hidden="true">↑↓</span>
+              {channelBridge}
+            </p>
+          )}
+          <div class="layer">
+            <p class="tag">
+              {copy.layer} {l.n}
+            </p>
+            <p class="name">{l.name}</p>
+            <p class="trait">{l.trait}</p>
+            <p class="text">{l.text}</p>
+          </div>
+        </>
+      ))
+    }
+  </div>
+  <p class="bridge between"><span aria-hidden="true">↑↓</span>{lightningBridge}</p>
+  <div class="zone inside">
+    <p class="zone-label">{copy.inside}</p>
+    {
+      inside.map((l, i) => (
+        <>
+          {i > 0 && (
+            <p class="bridge">
+              <span aria-hidden="true">↑↓</span>
+              {tradeBridge}
+            </p>
+          )}
+          <div class="layer">
+            <p class="tag">
+              {copy.layer} {l.n}
+            </p>
+            <p class="name">{l.name}</p>
+            <p class="trait">{l.trait}</p>
+            <p class="text">{l.text}</p>
+          </div>
+        </>
+      ))
+    }
   </div>
   <figcaption>{copy.caption}</figcaption>
 </figure>

@@ -7,25 +7,31 @@ sidebar:
 
 import ArchitectureFlow from '../../../../components/ArchitectureFlow.astro';
 
-bitCaster is a handful of independent pieces that talk to each other over open protocols. Your wallet lives on your own device. Everything else is shared by all users.
+bitCaster is a handful of independent pieces that talk to each other over open protocols.
 
 <ArchitectureFlow lang="en" />
 
 ## The app
 
-The app runs in your browser and holds your wallet. It talks to the mint to move tokens, and to the matching engine to read markets and place orders.
+[The app](https://bitcaster.market/) runs in your browser. At heart it is a Cashu wallet on steroids. It talks to the mint to move tokens, and to the matching engine to read markets and place orders.
 
 ## The mint
 
 The mint issues your ecash and your market shares, and it holds the bitcoin behind them. When a market resolves, it checks the oracle's signature and pays out the winning shares. During the beta there is one mint, operated by bitCaster. You rely on it to stay online and to honor withdrawals.
 
+The mint is open source and speaks an open protocol, so anyone can run it or audit it. The code is [bitCaster's fork of CDK](https://github.com/joemphilips/cdk/tree/ctf-range-migration), and the protocol is defined by two specifications, [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) and [NUT-CTF-settle](https://github.com/joemphilips/nuts/blob/nut-ctf-settle/CTF-settle.md).
+
 ## The matching engine
 
-The matching engine keeps an order book for every market, matches buyers with sellers, and broadcasts prices in real time. It never holds your wallet. For each order it receives only the tokens you locked to that order, and it cannot send them anywhere you did not agree to.
+The matching engine keeps an order book for every market, matches buyers with sellers, and broadcasts prices in real time. It never holds your wallet.
+
+An order sent to the matching engine carries locked funds. It states what you want, something like "swap these tokens for this many sats", and the easiest way to think of it is as a smart contract that the mint enforces.
 
 ## The oracle
 
-A market's oracle is the person who created it. They announce the event when they create the market, and they sign its result once the event is over. The signed result goes to the mint, which checks the signature before it pays anyone. The oracle is not a part of bitCaster. It is one user with one key, and that key is the only thing that can decide the market.
+A market's oracle is the person who created it. They announce the event when they create the market, and they sign its result once the event is over. The signed result goes to the mint, which checks the signature before it pays anyone.
+
+Strictly speaking, the oracle is not a part of bitCaster. But you can use bitCaster to become a market creator, and so an oracle, yourself.
 
 ## What is open source
 

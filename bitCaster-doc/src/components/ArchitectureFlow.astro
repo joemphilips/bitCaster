@@ -1,6 +1,7 @@
 ---
 // Who talks to whom in bitCaster, with one short label on every arrow.
 // Text is real markup, not an image, so both languages and both themes share one component.
+// The six steps light up in order, and a dot runs along each arrow, to show the flow.
 interface Props {
   lang?: 'en' | 'ja'
 }
@@ -10,9 +11,18 @@ const { lang = 'en' } = Astro.props
 const copy = {
   en: {
     label: 'How the parts of bitCaster talk to each other',
+    app: {
+      name: 'bitCaster app or CLI',
+      trait: 'Open source',
+      text: 'One app, two roles. Anyone can take either one.',
+    },
     creator: {
       name: 'Market creator = Oracle',
       text: 'Asks the question, and later signs the answer.',
+    },
+    trader: {
+      name: 'Trader',
+      text: 'Buys and sells shares.',
     },
     mint: {
       name: 'Cashu mint',
@@ -24,26 +34,30 @@ const copy = {
       trait: 'Closed source · public API',
       text: 'Keeps the order book and matches buyers with sellers.',
     },
-    traders: {
-      name: 'Traders',
-      trait: 'bitCaster app or CLI · open source',
-      text: 'Each trader keeps a wallet on their own device.',
-    },
-    create: 'Creates a market',
+    create: 'Creator registers a market',
     sync: 'Share market info',
-    order: 'Place orders',
+    order: 'Traders place orders',
     settle: 'Settle matched trades',
-    result: 'Signs the result',
-    payout: 'Pays out winning shares',
+    result: 'Oracle signs the result',
+    payout: 'Winners are paid',
     cash: 'Deposit · withdraw',
     caption:
       'Steps 1 to 6 follow one market from creation to payout. Deposits and withdrawals can happen at any time.',
   },
   ja: {
     label: 'bitCaster の各部品がどうやり取りするか',
+    app: {
+      name: 'bitCaster アプリまたは CLI',
+      trait: 'オープンソース',
+      text: '同じアプリで、誰でもどちらの役割にもなれます。',
+    },
     creator: {
       name: 'マーケット作成者 = オラクル',
       text: '質問を立て、後からその答えに署名します。',
+    },
+    trader: {
+      name: 'トレーダー',
+      text: 'シェアを売買します。',
     },
     mint: {
       name: 'Cashu ミント',
@@ -55,16 +69,11 @@ const copy = {
       trait: 'クローズドソース · API は公開',
       text: '注文板を管理し、買い手と売り手をマッチングします。',
     },
-    traders: {
-      name: 'トレーダー',
-      trait: 'bitCaster アプリまたは CLI · オープンソース',
-      text: 'ウォレットは、それぞれのトレーダー自身の端末にあります。',
-    },
-    create: 'マーケットを作成',
+    create: '作成者がマーケットを登録',
     sync: 'マーケット情報を同期',
-    order: '注文を出す',
+    order: 'トレーダーが注文を出す',
     settle: '約定した取引を決済',
-    result: '結果に署名',
+    result: 'オラクルが結果に署名',
     payout: '当たったシェアに払い出し',
     cash: '入金 · 出金',
     caption:
@@ -75,16 +84,42 @@ const copy = {
 
 <figure class="arch not-content" aria-label={copy.label}>
   <div class="grid">
-    <div class="node person creator">
-      <p class="name">{copy.creator.name}</p>
-      <p class="text">{copy.creator.text}</p>
+    <div class="node app">
+      <p class="name">{copy.app.name}</p>
+      <p class="trait">{copy.app.trait}</p>
+      <p class="text">{copy.app.text}</p>
+      <div class="roles">
+        <div class="role">
+          <p class="name">{copy.creator.name}</p>
+          <p class="text">{copy.creator.text}</p>
+        </div>
+        <div class="role">
+          <p class="name">{copy.trader.name}</p>
+          <p class="text">{copy.trader.text}</p>
+        </div>
+      </div>
     </div>
 
-    <div class="wire v down creator-mint">
-      <span class="line" aria-hidden="true"></span>
+    <div class="wire v both app-mint">
+      <span class="line" aria-hidden="true">
+        <span class="dot down" style="--i: 1"></span>
+        <span class="dot down" style="--i: 5"></span>
+        <span class="dot up" style="--i: 6"></span>
+      </span>
       <ul>
-        <li><span class="n">1</span>{copy.create}</li>
-        <li><span class="n">5</span>{copy.result}</li>
+        <li class="step" style="--i: 1"><span class="n">1</span>{copy.create}</li>
+        <li class="step" style="--i: 5"><span class="n">5</span>{copy.result}</li>
+        <li class="step" style="--i: 6"><span class="n">6</span>{copy.payout}</li>
+        <li>{copy.cash}</li>
+      </ul>
+    </div>
+
+    <div class="wire v down app-engine">
+      <span class="line" aria-hidden="true">
+        <span class="dot down" style="--i: 3"></span>
+      </span>
+      <ul>
+        <li class="step" style="--i: 3"><span class="n">3</span>{copy.order}</li>
       </ul>
     </div>
 
@@ -95,37 +130,20 @@ const copy = {
     </div>
 
     <div class="wire h mint-engine">
-      <p><span class="n">2</span>{copy.sync}</p>
-      <span class="line both" aria-hidden="true"></span>
-      <span class="line left" aria-hidden="true"></span>
-      <p><span class="n">4</span>{copy.settle}</p>
+      <p class="step" style="--i: 2"><span class="n">2</span>{copy.sync}</p>
+      <span class="line both" aria-hidden="true">
+        <span class="dot right" style="--i: 2"></span>
+      </span>
+      <span class="line left" aria-hidden="true">
+        <span class="dot left" style="--i: 4"></span>
+      </span>
+      <p class="step" style="--i: 4"><span class="n">4</span>{copy.settle}</p>
     </div>
 
     <div class="node engine">
       <p class="name">{copy.engine.name}</p>
       <p class="trait">{copy.engine.trait}</p>
       <p class="text">{copy.engine.text}</p>
-    </div>
-
-    <div class="wire v both mint-traders">
-      <span class="line" aria-hidden="true"></span>
-      <ul>
-        <li>{copy.cash}</li>
-        <li><span class="n">6</span>{copy.payout}</li>
-      </ul>
-    </div>
-
-    <div class="wire v up traders-engine">
-      <span class="line" aria-hidden="true"></span>
-      <ul>
-        <li><span class="n">3</span>{copy.order}</li>
-      </ul>
-    </div>
-
-    <div class="node person traders">
-      <p class="name">{copy.traders.name}</p>
-      <p class="trait">{copy.traders.trait}</p>
-      <p class="text">{copy.traders.text}</p>
     </div>
   </div>
   <figcaption>{copy.caption}</figcaption>
@@ -134,6 +152,9 @@ const copy = {
 <style>
   .arch {
     --wire: var(--sl-color-gray-3);
+    /* One pass through the six steps, then a short rest. */
+    --cycle: 15s;
+    --slot: 2.2s;
     margin-block: 2rem;
   }
 
@@ -150,18 +171,19 @@ const copy = {
     display: grid;
     grid-template-columns: minmax(0, 1fr) minmax(5.75rem, 0.62fr) minmax(0, 1fr);
     grid-template-areas:
-      'creator .       .'
-      'cm      .       .'
-      'mint    me      engine'
-      'mt      .       te'
-      'traders traders traders';
+      'app  app app'
+      'am   .   ae'
+      'mint me  engine';
   }
 
-  .creator {
-    grid-area: creator;
+  .app {
+    grid-area: app;
   }
-  .creator-mint {
-    grid-area: cm;
+  .app-mint {
+    grid-area: am;
+  }
+  .app-engine {
+    grid-area: ae;
   }
   .mint {
     grid-area: mint;
@@ -172,15 +194,6 @@ const copy = {
   .engine {
     grid-area: engine;
   }
-  .mint-traders {
-    grid-area: mt;
-  }
-  .traders-engine {
-    grid-area: te;
-  }
-  .traders {
-    grid-area: traders;
-  }
 
   .node {
     padding: 0.875rem 1rem;
@@ -189,8 +202,8 @@ const copy = {
     background: var(--bc-surface);
   }
 
-  /* People are tinted. The two services stay neutral. */
-  .node.person {
+  /* The app is where the people are. It is tinted. The two services stay neutral. */
+  .node.app {
     border-color: var(--sl-color-accent);
     background: color-mix(in srgb, var(--sl-color-accent) 9%, var(--bc-surface));
   }
@@ -214,6 +227,28 @@ const copy = {
     color: var(--sl-color-gray-2);
     font-size: var(--sl-text-sm);
     line-height: 1.5;
+  }
+
+  .roles {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.625rem;
+    margin-top: 0.75rem;
+  }
+
+  .role {
+    padding: 0.625rem 0.75rem;
+    border: 1px dashed color-mix(in srgb, var(--sl-color-accent) 60%, transparent);
+    border-radius: 0.375rem;
+  }
+
+  .role .name {
+    font-size: var(--sl-text-sm);
+  }
+
+  .role .text {
+    margin-top: 0.125rem;
+    font-size: var(--sl-text-xs);
   }
 
   .wire {
@@ -275,7 +310,6 @@ const copy = {
     transform: translateX(-50%);
   }
 
-  .wire.v.up .line::before,
   .wire.v.both .line::before {
     content: '';
     top: -0.25rem;
@@ -341,6 +375,171 @@ const copy = {
   .wire.v .n {
     margin-right: 0;
     transform: translateY(0.0625rem);
+  }
+
+  /* The flow. Step i owns one slot of the cycle: its label lights up and a dot runs along its arrow. */
+  .step,
+  .step .n,
+  .dot {
+    animation-duration: var(--cycle);
+    animation-timing-function: linear;
+    animation-iteration-count: infinite;
+    animation-delay: calc((var(--i) - 1) * var(--slot));
+    animation-fill-mode: backwards;
+  }
+
+  .step {
+    animation-name: arch-label;
+  }
+
+  .step .n {
+    animation-name: arch-badge;
+  }
+
+  .dot {
+    position: absolute;
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 999px;
+    background: var(--bc-amber);
+    opacity: 0;
+    translate: -50% -50%;
+  }
+
+  .dot.down,
+  .dot.up {
+    left: 50%;
+  }
+
+  .dot.right,
+  .dot.left {
+    top: 50%;
+  }
+
+  .dot.down {
+    animation-name: arch-down;
+  }
+  .dot.up {
+    animation-name: arch-up;
+  }
+  .dot.right {
+    animation-name: arch-right;
+  }
+  .dot.left {
+    animation-name: arch-left;
+  }
+
+  @keyframes arch-label {
+    0%,
+    14.6%,
+    100% {
+      color: var(--sl-color-gray-2);
+    }
+    1.5%,
+    13% {
+      color: var(--sl-color-white);
+    }
+  }
+
+  @keyframes arch-badge {
+    0%,
+    14.6%,
+    100% {
+      background: var(--sl-color-accent);
+    }
+    1.5%,
+    13% {
+      background: var(--bc-amber);
+    }
+  }
+
+  @keyframes arch-down {
+    0% {
+      top: 0;
+      opacity: 0;
+    }
+    1.5% {
+      top: 0;
+      opacity: 1;
+    }
+    12% {
+      top: 100%;
+      opacity: 1;
+    }
+    14.6%,
+    100% {
+      top: 100%;
+      opacity: 0;
+    }
+  }
+
+  @keyframes arch-up {
+    0% {
+      top: 100%;
+      opacity: 0;
+    }
+    1.5% {
+      top: 100%;
+      opacity: 1;
+    }
+    12% {
+      top: 0;
+      opacity: 1;
+    }
+    14.6%,
+    100% {
+      top: 0;
+      opacity: 0;
+    }
+  }
+
+  @keyframes arch-right {
+    0% {
+      left: 0;
+      opacity: 0;
+    }
+    1.5% {
+      left: 0;
+      opacity: 1;
+    }
+    12% {
+      left: 100%;
+      opacity: 1;
+    }
+    14.6%,
+    100% {
+      left: 100%;
+      opacity: 0;
+    }
+  }
+
+  @keyframes arch-left {
+    0% {
+      left: 100%;
+      opacity: 0;
+    }
+    1.5% {
+      left: 100%;
+      opacity: 1;
+    }
+    12% {
+      left: 0;
+      opacity: 1;
+    }
+    14.6%,
+    100% {
+      left: 0;
+      opacity: 0;
+    }
+  }
+
+  /* Without motion the diagram is complete as it stands: every arrow keeps its number and label. */
+  @media (prefers-reduced-motion: reduce) {
+    .step,
+    .step .n,
+    .dot {
+      animation: none;
+    }
   }
 
   figcaption {
