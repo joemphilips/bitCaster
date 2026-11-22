@@ -134,6 +134,9 @@ jobs:
   scripts-daemon-and-cli:
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      # Keep this pin equal to the pin in release-cli.yml.
+      RUSTUP_TOOLCHAIN: 1.99.1
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -142,8 +145,19 @@ jobs:
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: 22
-      - name: Install boundary-check prerequisite
-        run: sudo apt-get update && sudo apt-get install --yes --no-install-recommends ripgrep
+      # ripgrep runs the boundary checks. musl-tools builds the static oracle helper.
+      - name: Install the apt prerequisites
+        run: >-
+          sudo apt-get update &&
+          sudo apt-get install --yes --no-install-recommends ripgrep musl-tools
+      - name: Install the Rust toolchain
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+      - name: Install the musl target
+        run: rustup target add --toolchain "$RUSTUP_TOOLCHAIN" x86_64-unknown-linux-musl
+      # The daemon tests use the oracle helper that the CLI release ships: a
+      # static musl binary.
+      - name: Build the native oracle helper
+        run: node scripts/build-native-oracle-helper.mjs --target x86_64-unknown-linux-musl
       - run: npm ci --ignore-scripts
       - run: npm run patch:dependencies
       # The Playwright launch test starts full Chromium and reads its sandbox state.
@@ -155,7 +169,10 @@ jobs:
       # daemon package, as the CLI does.
       - name: Build the SDK and daemon packages
         run: npm run build --workspace @bitcaster-market/daemon
+      # Without this path, the real-helper tests skip.
       - name: Test the daemon
+        env:
+          BITCASTER_TEST_NATIVE_ORACLE_HELPER: ${{ github.workspace }}/bitcaster-daemon/native/linux-x64/bitcaster-oracle-helper
         run: npm test --workspace @bitcaster-market/daemon
       - name: Test the CLI
         run: npm test --workspace @bitcaster-market/cli
