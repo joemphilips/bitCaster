@@ -1097,6 +1097,43 @@ it.each(["created", "imported"] as const)(
 );
 
 it.each(["created", "imported"] as const)(
+  "keeps the newer saved result of a %s owner when it imports an older backup over a stale stage",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    const attempt = engineOutagePublication(f, owner);
+    const signed = await attempt("down");
+    // The older backup holds the signed result before the relay step.
+    const older = await exportBrowserOracleBackup(f.record.conditionId, owner);
+    const olderPublication = older.authority.publicationRecordJson;
+    expect(olderPublication === null ? null : JSON.parse(olderPublication).relayPublished).toBe(
+      false,
+    );
+    // An older browser read staged the signed result in the core.
+    await f.core.export_enum_authority_v2(
+      f.record.oracleEventId,
+      f.prepared.eventJson,
+      JSON.stringify(signed),
+    );
+    // The saved result becomes newer than the stage. The creator data stays.
+    expect((await attempt("up")).relayPublished).toBe(true);
+    const stale = await f.core.staged_enum_publication(f.record.oracleEventId);
+    expect(stale === undefined ? null : JSON.parse(stale).relayPublished).toBe(false);
+
+    await importBrowserOracleBackup(older, owner);
+    const restored = await owner.getState().readOracleOwner(f.record.conditionId);
+    expect(restored?.kind).toBe(kind);
+    if (restored?.kind === "imported") expect(restored.oracle.importComplete).toBe(true);
+    expect(await f.core.staged_enum_publication(f.record.oracleEventId)).toBeUndefined();
+    // Neither the stage nor the older backup takes back the relay progress.
+    const saved = await owner.getState().readOraclePublication(f.record.conditionId);
+    expect(saved?.relayPublished).toBe(true);
+    expect(saved?.attestation?.eventJson === signed.attestation?.eventJson).toBe(true);
+    expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+  },
+);
+
+it.each(["created", "imported"] as const)(
   "reads ready for a nonce-free core restored from the terminal backup of a %s owner, and stages nothing",
   async (kind) => {
     const f = await fixture();
