@@ -13,8 +13,8 @@ you add funds.
 
 ## What the agent can do
 
-The CLI is an application interface for scripts and trading AI agents. Its design goal is to expose
-every web-app operation. Command coverage is not complete yet. Tell the agent to run
+The CLI is an application interface for scripts and trading AI agents. It provides the operations of
+the web app. Tell the agent to run
 `bitcaster-cli --help` and `bitcaster-cli <command> --help` to find the available commands and
 options. The command groups include `market`, `order`, `wallet`, `score`, `mint`, `relay`, `signer`,
 `config`, and `daemon`.

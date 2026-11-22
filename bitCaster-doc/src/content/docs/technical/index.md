@@ -89,7 +89,7 @@ Otherwise, the CLI stops with exit code 2.
 A dry run does not prove that the operation can succeed.
 
 Use `bitcaster-cli --help` and each command's `--help` to check current support.
-CLI coverage does not yet include every web-app operation.
+The CLI provides the operations of the web app.
 Full application capability parity is the design goal.
 It does not require the CLI to reproduce browser rendering or browser storage.
 CLI clients use the same public authorization and settlement rules.

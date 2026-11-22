@@ -14,7 +14,7 @@ CLI は JSON を出力するため、エージェントは各結果を読み取�
 ## エージェントにできること
 
 CLI は、スクリプトや取引用 AI エージェントのためのアプリケーションインターフェースです。
-Web アプリのすべての操作を CLI から利用できる設計を目指しています。まだ対応していない操作があります。
+CLI は Web アプリの操作を提供します。
 利用できるコマンドとオプションは、エージェントに `bitcaster-cli --help` と `bitcaster-cli <command> --help` を実行させて確認してください。
 コマンドグループには `market`、`order`、`wallet`、`score`、`mint`、`relay`、`signer`、`config`、`daemon` があります。
 
