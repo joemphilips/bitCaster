@@ -348,6 +348,35 @@ describe("DepositStep", () => {
     expect(screen.getByText(disclosure)).toBeInTheDocument();
   });
 
+  it.each([
+    [
+      "creation",
+      "en",
+      "What is this?",
+      "https://bitcasterdoc.com/user-guide/core-concepts/funding-bot-liquidity/",
+    ],
+    [
+      "detail",
+      "ja",
+      "これは何？",
+      "https://bitcasterdoc.com/ja/user-guide/core-concepts/funding-bot-liquidity/",
+    ],
+  ] as const)(
+    "links %s funding to the user guide in %s",
+    async (presentation, language, label, href) => {
+      renderStep({ presentation });
+      if (presentation === "creation") await openFunding();
+      await act(async () => {
+        await i18n.changeLanguage(language);
+      });
+
+      const link = screen.getByRole("link", { name: label });
+      expect(link).toHaveAttribute("href", href);
+      expect(link).toHaveAttribute("target", "_blank");
+      expect(link).toHaveAttribute("rel", "noopener noreferrer");
+    },
+  );
+
   it.each(["creation", "detail"] as const)(
     "reports completed %s funding in Japanese without a credited label",
     async (presentation) => {
