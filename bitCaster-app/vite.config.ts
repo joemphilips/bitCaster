@@ -39,7 +39,8 @@ export default defineConfig({
       manifest: {
         name: "bitCaster – Bitcoin Prediction Markets",
         short_name: "bitCaster",
-        description: "Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash",
+        description:
+          "Free, privacy-focused, Bitcoin-native prediction markets powered by Cashu ecash",
         theme_color: "#f7931a",
         background_color: "#0a0a0a",
         display: "standalone",

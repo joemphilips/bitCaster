@@ -1,6 +1,6 @@
 # bitCaster — Agent Instructions
 
-**Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash.**
+**Free, privacy-focused, Bitcoin-native prediction markets powered by Cashu ecash.**
 
 Market positions are **Cashu conditional tokens (CTF)** — ecash spendable only when a DLC oracle attests a specific outcome. No accounts, no KYC, no custodians — settlement is enforced cryptographically by the mint. **Nostr** provides identity, oracle announcements, and NWC.
 

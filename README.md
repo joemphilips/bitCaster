@@ -1,6 +1,6 @@
 # bitCaster
 
-**Free, anonymous, Bitcoin-native prediction markets powered by Cashu ecash**
+**Free, privacy-focused, Bitcoin-native prediction markets powered by Cashu ecash**
 
 bitCaster is a decentralised prediction market platform where:
 
