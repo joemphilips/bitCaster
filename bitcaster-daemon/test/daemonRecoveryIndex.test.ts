@@ -5,6 +5,11 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
+import {
+  createCtfRangePreparationIntent,
+  decodeCtfRangeOrderPreparationFromRecord,
+  type PersistedCtfRangeOrderPreparationV2,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import {
   deriveRecoveryIndexKeys,
@@ -12,15 +17,30 @@ import {
   type RecoveryIndexEntry,
 } from '@bitcaster-market/client-sdk/recoveryIndexDocument'
 import { RECOVERY_INDEX_REALMS } from '@bitcaster-market/client-sdk/recoveryIndexEngine'
+import { mintDenominationKeys } from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import { RecoveryIndexFakeEngine } from '../../bitcaster-client-sdk/test/support/recoveryIndexFakeEngine.ts'
+import { signedOwnerRangeFixture } from '../../bitcaster-client-sdk/test/support/signedOwnerRangeFixture.ts'
+import {
+  encodeCanonicalRangePreparation,
+  insertRangePreparation,
+  toSdkRangePreparationRecord,
+  transitionRangePreparation,
+  type RangePreparationRecord,
+} from '../src/ctfRangeOrderJournalSqlite.ts'
 import {
   createDaemonRecoveryIndex,
+  DaemonBuyReceiveForms,
   readDaemonRecoveryIndexLocalEntries,
   startDaemonRecoveryIndexWriter,
   type DaemonRecoveryIndex,
 } from '../src/daemonRecoveryIndex.ts'
+import type { CustodyScopeFence } from '../src/profileFencing.ts'
 import { dispatch } from '../src/server.ts'
-import { advanceDaemonKeysetCounter, type CounterBinding } from '../src/state.ts'
+import {
+  advanceDaemonKeysetCounter,
+  reserveDaemonCtfPreparation,
+  type CounterBinding,
+} from '../src/state.ts'
 import {
   createDaemonStateSqliteSession,
   withDaemonStateSqliteTransaction,
@@ -69,6 +89,7 @@ async function withProfile(
   run: (input: {
     readonly directory: string
     readonly scopeId: string
+    readonly fence: CustodyScopeFence
     readonly counter: (keysetId: string, next: number) => Promise<void>
     readonly proof: (input: ProofFixture) => Promise<void>
   }) => Promise<void>,
@@ -86,6 +107,7 @@ async function withProfile(
       await run({
         directory,
         scopeId,
+        fence,
         // The production counter writer: it writes both counter authorities.
         counter: (keysetId, next) =>
           advanceDaemonKeysetCounter(keysetId, next, { fence, observedAtMs: 3 }, MSAT),
@@ -159,11 +181,105 @@ function insertProofFixture(database: DatabaseSync, scopeId: string, input: Proo
     )
 }
 
-async function localEntries(directory: string, scopeId: string) {
+/** An order of one YES share whose mint keys derive its keyset ids (NUT-02, NUT-CTF). */
+function orderCandidate(side: 'Buy' | 'Sell' = 'Buy'): PersistedCtfRangeOrderPreparationV2 {
+  const { preparation } = signedOwnerRangeFixture({ plain: false, seed: SEED, side })
+  if (preparation.version !== 2) throw new Error('the fixture must give a preparation candidate')
+  return preparation
+}
+
+/**
+ * The production reservation of `order submit`: the counters of the offer and
+ * receive keysets and the preparation, in one commit. No output is admitted.
+ */
+async function reservePreparation(
+  directory: string,
+  fence: CustodyScopeFence,
+  candidate: PersistedCtfRangeOrderPreparationV2,
+  offerStart = 0,
+) {
+  const record = await reserveDaemonCtfPreparation({
+    storage: createDaemonStateSqliteSession(directory),
+    mutation: { fence, observedAtMs: 5 },
+    intent: createCtfRangePreparationIntent({
+      scopeId: fence.scopeId,
+      request: candidate.request,
+      feeConsentBytes: null,
+      consolidateProofs: false,
+    }).intent,
+    candidate,
+    seed: SEED,
+    counterStarts: { offer: offerStart, receive: 0 },
+  })
+  assert.ok(record !== null, 'the counters of a fresh profile start at 0')
+  return record
+}
+
+async function endPreparation(
+  directory: string,
+  record: { readonly scopeId: string; readonly rangeOperationId: string },
+) {
+  await withDaemonStateSqliteTransaction(directory, (database) =>
+    transitionRangePreparation(database, {
+      scopeId: record.scopeId,
+      rangeOperationId: record.rangeOperationId,
+      expectedRevision: 0,
+      from: 'prepared',
+      to: 'terminal',
+      updatedAtMs: 6,
+    }),
+  )
+}
+
+async function localEntries(
+  directory: string,
+  scopeId: string,
+  buyReceiveForms?: DaemonBuyReceiveForms,
+) {
   return sorted(
     await createDaemonStateSqliteSession(directory).read((database) =>
-      readDaemonRecoveryIndexLocalEntries(database, scopeId),
+      readDaemonRecoveryIndexLocalEntries(database, scopeId, buyReceiveForms),
     ),
+  )
+}
+
+/** The production decoder, with a count of its calls. */
+function countingDecoder() {
+  const decoder = {
+    calls: 0,
+    decode: (record: RangePreparationRecord) => {
+      decoder.calls += 1
+      return decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(record))
+    },
+  }
+  return decoder
+}
+
+/** An active Buy row whose body is not a preparation, for example after storage damage. */
+async function insertUnreadableBuy(directory: string, scopeId: string) {
+  await withDaemonStateSqliteTransaction(directory, (database) =>
+    insertRangePreparation(database, {
+      scopeId,
+      rangeOperationId: 'range:unreadable',
+      sourceOperationId: 'source:unreadable',
+      authorizationId: 'authorization:unreadable',
+      clientOrderId: 'unreadable',
+      orderRouteId: `${CONDITION}-Yes`,
+      normalizedMint: MINT,
+      conditionId: CONDITION,
+      unit: 'msat',
+      tokenSide: 'Outcome',
+      side: 'Buy',
+      priceSubunits: 500,
+      amountSubunits: 1_000,
+      minimumFillAmountSubunits: 1_000,
+      consolidateProofs: false,
+      divisibility: 1_000,
+      authorizationExpiresAtUnixSeconds: 2_000_000_000,
+      preparationBytes: encodeCanonicalRangePreparation({ rangeOperationId: 'range:unreadable' }),
+      feeConsentBytes: null,
+      createdAtMs: 1,
+    }),
   )
 }
 
@@ -205,6 +321,220 @@ test('the local keysets are the counter keysets whose proofs show their form', a
       await localEntries(directory, scopeId),
       sorted([regular(REGULAR), conditional(YES, CONDITION, 'Yes')]),
     )
+  })
+})
+
+test('a Buy lists its receive keyset at the counter reservation, and its admitted output changes no document', async () => {
+  await withProfile(async ({ directory, scopeId, fence, counter, proof }) => {
+    const candidate = orderCandidate()
+    const payment = regular(candidate.offerKeyset.id)
+    const receive = conditional(candidate.receiveKeyset.id, candidate.conditionId, 'YES')
+    // The wallet pays the Buy from its regular keyset.
+    await counter(candidate.offerKeyset.id, 40)
+    await proof({ store: 'custody', keysetId: candidate.offerKeyset.id, label: 'payment' })
+    const engine = new RecoveryIndexFakeEngine(REALM, 'https://engine.example')
+    engine.nowSeconds = START_MS / 1000
+    const clock = { nowMs: START_MS }
+    let commit: (() => void) | undefined
+    const index = createDaemonRecoveryIndex({
+      directory,
+      scopeId,
+      walletSeed: SEED,
+      realm: REALM,
+      engineBaseUrl: engine.baseUrl,
+      walletMints: [MINT],
+      fetchImpl: engine.fetch,
+      nowMs: () => clock.nowMs,
+      random: () => 0,
+      setTimer: () => assert.fail('no retry is necessary'),
+      clearTimer: () => {},
+      subscribeToCommits: (callback) => {
+        commit = callback
+        return () => {}
+      },
+    })
+    try {
+      index.start()
+      await index.settled()
+      assert.deepEqual(stored(engine), [payment])
+
+      // `order submit` reserves the counters. The daemon can stop before it
+      // admits the outputs, so the reservation commit lists the receive keyset.
+      clock.nowMs += 5_000
+      engine.nowSeconds = clock.nowMs / 1000
+      const record = await reservePreparation(directory, fence, candidate, 40)
+      commit!()
+      await index.settled()
+      const listed = sorted([payment, receive])
+      assert.deepEqual(stored(engine), listed)
+      const requests = engine.requests.length
+
+      // The order fills: the daemon admits the output, and the preparation ends.
+      await proof({
+        store: 'custody',
+        keysetId: candidate.receiveKeyset.id,
+        conditionId: candidate.conditionId,
+        outcome: 'YES',
+        label: 'filled',
+      })
+      await endPreparation(directory, record)
+      assert.deepEqual(await localEntries(directory, scopeId), listed)
+      commit!()
+      await index.settled()
+      assert.equal(engine.requests.length, requests, 'the proof row gives the listed entry')
+      assert.deepEqual(stored(engine), listed)
+    } finally {
+      index.stop()
+    }
+  })
+})
+
+test('a Buy that ends without an output gives its receive keyset no form', async () => {
+  await withProfile(async ({ directory, scopeId, fence }) => {
+    const candidate = orderCandidate()
+    const record = await reservePreparation(directory, fence, candidate)
+    assert.deepEqual(await localEntries(directory, scopeId), [
+      conditional(candidate.receiveKeyset.id, candidate.conditionId, 'YES'),
+    ])
+
+    // For example, the engine refuses the order. The mint signs no output.
+    await endPreparation(directory, record)
+    assert.deepEqual(await localEntries(directory, scopeId), [])
+  })
+})
+
+test('a Buy receive keyset that its mint keys do not derive gives no form', async () => {
+  await withProfile(async ({ directory, scopeId, fence }) => {
+    const candidate = orderCandidate()
+    const foreignKeys = mintDenominationKeys(
+      new Uint8Array(32).fill(9),
+      Object.keys(candidate.receiveKeyset.keys),
+    )
+    await reservePreparation(directory, fence, {
+      ...candidate,
+      receiveKeyset: { ...candidate.receiveKeyset, keys: foreignKeys },
+    })
+
+    // The keyset id does not commit to this condition with these keys, so the
+    // form waits for the first proof row.
+    assert.deepEqual(await localEntries(directory, scopeId), [])
+  })
+})
+
+test('a Buy whose stored outcome collection id is not the id of its outcome collection gives no form', async () => {
+  await withProfile(async ({ directory, scopeId, fence }) => {
+    const candidate = orderCandidate()
+    await reservePreparation(directory, fence, {
+      ...candidate,
+      receiveKeyset: {
+        ...candidate.receiveKeyset,
+        outcomeCollectionId: 'ee'.repeat(32),
+      } as PersistedCtfRangeOrderPreparationV2['receiveKeyset'],
+    })
+
+    assert.deepEqual(await localEntries(directory, scopeId), [])
+  })
+})
+
+test('an active Sell gives no form, and the writer does not decode it', async () => {
+  await withProfile(async ({ directory, scopeId, fence }) => {
+    // The Sell reserves counters in its conditional offer keyset and its regular receive keyset.
+    await reservePreparation(directory, fence, orderCandidate('Sell'))
+    const decoder = countingDecoder()
+
+    assert.deepEqual(
+      await localEntries(directory, scopeId, new DaemonBuyReceiveForms({ decode: decoder.decode })),
+      [],
+    )
+    assert.equal(decoder.calls, 0)
+  })
+})
+
+test('the writer decodes each active Buy once, and forgets it when it ends', async () => {
+  await withProfile(async ({ directory, scopeId, fence }) => {
+    const candidate = orderCandidate()
+    const record = await reservePreparation(directory, fence, candidate)
+    const decoder = countingDecoder()
+    const forms = new DaemonBuyReceiveForms({ decode: decoder.decode })
+    const receive = [conditional(candidate.receiveKeyset.id, candidate.conditionId, 'YES')]
+
+    // The upload can read the local keysets twice. The preparation body does not change.
+    assert.deepEqual(await localEntries(directory, scopeId, forms), receive)
+    assert.deepEqual(await localEntries(directory, scopeId, forms), receive)
+    assert.equal(decoder.calls, 1)
+    assert.deepEqual(forms.rangeOperationIds, [record.rangeOperationId])
+
+    await endPreparation(directory, record)
+    assert.deepEqual(await localEntries(directory, scopeId, forms), [])
+    assert.deepEqual(forms.rangeOperationIds, [])
+    assert.equal(decoder.calls, 1)
+  })
+})
+
+test('an unreadable active Buy is skipped with one log line, and other keysets still upload', async () => {
+  await withProfile(async ({ directory, scopeId, counter, proof }) => {
+    await counter(REGULAR, 40)
+    await proof({ store: 'custody', keysetId: REGULAR, label: 'regular' })
+    // A keyset with counters and no proof row makes the writer read the preparations.
+    await counter(FAILED_ORDER, 17)
+    await insertUnreadableBuy(directory, scopeId)
+    const engine = new RecoveryIndexFakeEngine(REALM, 'https://engine.example')
+    engine.nowSeconds = START_MS / 1000
+    const clock = { nowMs: START_MS }
+    const retries: number[] = []
+    const lines: string[] = []
+    let commit: (() => void) | undefined
+    const index = createDaemonRecoveryIndex({
+      directory,
+      scopeId,
+      walletSeed: SEED,
+      realm: REALM,
+      engineBaseUrl: engine.baseUrl,
+      walletMints: [MINT],
+      fetchImpl: engine.fetch,
+      nowMs: () => clock.nowMs,
+      random: () => 0,
+      setTimer: (_callback, delayMs) => {
+        retries.push(delayMs)
+        return retries.length
+      },
+      clearTimer: () => {},
+      subscribeToCommits: (callback) => {
+        commit = callback
+        return () => {}
+      },
+      log: (line) => lines.push(line),
+    })
+    try {
+      index.start()
+      await index.settled()
+      assert.deepEqual(index.status(), { realm: REALM, status: 'current' })
+      assert.deepEqual(stored(engine), [regular(REGULAR)])
+
+      // A new market keyset still uploads. The skipped record logs no second line.
+      clock.nowMs += 5_000
+      engine.nowSeconds = clock.nowMs / 1000
+      await counter(OTHER_NO, 30)
+      await proof({
+        store: 'custody',
+        keysetId: OTHER_NO,
+        conditionId: OTHER_CONDITION,
+        outcome: 'No',
+        label: 'other-no',
+      })
+      commit!()
+      await index.settled()
+      assert.deepEqual(
+        stored(engine),
+        sorted([regular(REGULAR), conditional(OTHER_NO, OTHER_CONDITION, 'No')]),
+      )
+      assert.deepEqual(lines, [
+        'Recovery index skips an order preparation that the daemon cannot read',
+      ])
+      assert.deepEqual(retries, [])
+    } finally {
+      index.stop()
+    }
   })
 })
 

@@ -1,8 +1,14 @@
 import type { DatabaseSync } from 'node:sqlite'
+import { CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX } from '@bitcaster-market/client-sdk/ctfRangeOrderJournal'
+import {
+  decodeCtfRangeOrderPreparationFromRecord,
+  type PersistedCtfRangeOrderPreparation,
+} from '@bitcaster-market/client-sdk/ctfRangeOrderProtocol'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
 import {
   deriveRecoveryIndexKeys,
   recoveryIndexEntryKey,
+  recoveryIndexEntryMatchesKeyset,
   type RecoveryIndexEntry,
 } from '@bitcaster-market/client-sdk/recoveryIndexDocument'
 import {
@@ -15,6 +21,12 @@ import {
   type RecoveryIndexUploaderStatus,
 } from '@bitcaster-market/client-sdk/recoveryIndexUploader'
 import { canonicalizeMintIdentityUrl } from '@bitcaster-market/client-sdk/tokenImportValidation'
+import {
+  pageActiveRangePreparations,
+  toSdkRangePreparationRecord,
+  type RangePreparationPageCursor,
+  type RangePreparationRecord,
+} from './ctfRangeOrderJournalSqlite.ts'
 import {
   createDaemonStateSqliteSession,
   subscribeToDaemonWalletHoldingsCommits,
@@ -117,6 +129,8 @@ export function createDaemonRecoveryIndex(
 ): DaemonRecoveryIndex {
   const storage = options.storage ?? createDaemonStateSqliteSession(options.directory)
   const nowMs = options.nowMs ?? Date.now
+  const log = options.log ?? (() => {})
+  const buyReceiveForms = new DaemonBuyReceiveForms({ log })
   const keys = deriveRecoveryIndexKeys(options.walletSeed, options.realm)
   const fetchImpl = options.fetchImpl ?? fetch
   const walletMints = options.walletMints.flatMap((url) => {
@@ -140,9 +154,12 @@ export function createDaemonRecoveryIndex(
     }),
     keys,
     localEntries: () =>
-      storage.read((database) => readDaemonRecoveryIndexLocalEntries(database, options.scopeId)),
-    // The daemon holds no mint keys for the index. A form conflict that the
-    // daemon cannot check keeps the stored value (ADR-051 "Merge").
+      storage.read((database) =>
+        readDaemonRecoveryIndexLocalEntries(database, options.scopeId, buyReceiveForms),
+      ),
+    // The daemon uses the mint keys of a stored Buy preparation only to list
+    // its receive keyset. It does not check a form conflict with the stored
+    // document, so the conflict keeps the stored value (ADR-051 "Merge").
     verifyEntry: async () => {
       throw new Error('the daemon holds no keyset authority for the recovery index')
     },
@@ -164,7 +181,6 @@ export function createDaemonRecoveryIndex(
       }),
     ...(options.clearTimer === undefined ? {} : { clearTimer: options.clearTimer }),
   })
-  const log = options.log ?? (() => {})
   let reported = ''
   uploader.subscribe(() => {
     const status = uploader.status
@@ -242,13 +258,16 @@ interface ProofFormRow extends CounterKeysetRow {
  * counter cursor, in the form of its index entry. The counter tables do not
  * record the form, so a proof row of that keyset gives it: a regular proof
  * gives the regular form, and a conditional proof gives the condition and its
- * root outcome collection. Any proof row counts, also a spent one. A keyset
- * with no proof row yet, for example the receive keyset of a failed order,
- * has no signed output to restore. It is listed after its first proof row.
+ * root outcome collection. Any proof row counts, also a spent one. Before the
+ * first proof row, an active Buy preparation gives the form of its receive
+ * keyset. Thus a position is listed while the daemon has not admitted the
+ * outputs of its order. A keyset with neither, for example the receive keyset
+ * of a failed order, has no signed output to restore.
  */
 export function readDaemonRecoveryIndexLocalEntries(
   database: DatabaseSync,
   scopeId: string,
+  buyReceiveForms: DaemonBuyReceiveForms = new DaemonBuyReceiveForms(),
 ): RecoveryIndexEntry[] {
   const counters = database
     .prepare(
@@ -280,6 +299,8 @@ export function readDaemonRecoveryIndexLocalEntries(
      WHERE scope_id = ? AND normalized_mint = ? AND unit = ? AND keyset_id = ?
      LIMIT 1`,
   )
+  // Read the preparations only when a counter keyset has no proof row.
+  let preparationForms: Map<string, ProofFormRow> | undefined
   const entries = new Map<string, RecoveryIndexEntry>()
   for (const row of counters) {
     const counter = decodeKeysetRow(row)
@@ -288,6 +309,10 @@ export function readDaemonRecoveryIndexLocalEntries(
       form = custodyForm.get(scopeId, counter.normalizedMint, counter.unit, counter.keysetId) as
         | ProofFormRow
         | undefined
+    }
+    if (form === undefined) {
+      preparationForms ??= buyReceiveForms.read(database, scopeId)
+      form = preparationForms.get(counter.key)
     }
     if (form === undefined) continue
     const entry = indexEntry(form)
@@ -299,6 +324,119 @@ export function readDaemonRecoveryIndexLocalEntries(
     entries.set(entryKey, entry)
   }
   return [...entries.values()]
+}
+
+type DecodeRangePreparation = (record: RangePreparationRecord) => PersistedCtfRangeOrderPreparation
+
+const UNREADABLE_PREPARATION_LINE =
+  'Recovery index skips an order preparation that the daemon cannot read'
+
+/**
+ * The receive keyset form of each active Buy preparation, by range operation
+ * id. A preparation body does not change, so the writer decodes each body
+ * once. Each read keeps only the preparations that are still active. A
+ * terminal preparation adds nothing: its outputs are proof rows, or it has no
+ * output.
+ */
+export class DaemonBuyReceiveForms {
+  readonly #forms = new Map<string, ProofFormRow | null>()
+  readonly #decode: DecodeRangePreparation
+  readonly #log: (line: string) => void
+
+  constructor(
+    input: {
+      /** Test seam. Production uses the order journal decoder. */
+      readonly decode?: DecodeRangePreparation
+      readonly log?: (line: string) => void
+    } = {},
+  ) {
+    this.#decode =
+      input.decode ??
+      ((record) => decodeCtfRangeOrderPreparationFromRecord(toSdkRangePreparationRecord(record)))
+    this.#log = input.log ?? (() => {})
+  }
+
+  /** The range operation ids that the writer keeps. */
+  get rangeOperationIds(): string[] {
+    return [...this.#forms.keys()]
+  }
+
+  /** The forms by counter keyset key, from one read of the active preparations. */
+  read(database: DatabaseSync, scopeId: string): Map<string, ProofFormRow> {
+    const active = new Set<string>()
+    const forms = new Map<string, ProofFormRow>()
+    let after: RangePreparationPageCursor | undefined
+    do {
+      const page = pageActiveRangePreparations(database, {
+        scopeId,
+        limit: CTF_RANGE_ORDER_PREPARATION_PAGE_LIMIT_MAX,
+        ...(after === undefined ? {} : { after }),
+      })
+      for (const record of page.preparations) {
+        active.add(record.rangeOperationId)
+        let form = this.#forms.get(record.rangeOperationId)
+        if (form === undefined) {
+          form = this.#receiveForm(record)
+          this.#forms.set(record.rangeOperationId, form)
+        }
+        if (form !== null) addForm(forms, form)
+      }
+      after = page.nextCursor ?? undefined
+    } while (after !== undefined)
+    for (const rangeOperationId of this.#forms.keys()) {
+      if (!active.has(rangeOperationId)) this.#forms.delete(rangeOperationId)
+    }
+    return forms
+  }
+
+  /**
+   * A Buy keeps the mint conditional keyset that receives its outputs, with
+   * the mint keys. The keyset id commits to the condition and the outcome
+   * collection (NUT-CTF), so the keys check the form with no mint request. A
+   * form that the keys do not derive, or a body that the daemon cannot read,
+   * waits for the first proof row: a wrong form is worse than a later entry,
+   * and one bad record must not stop the upload of other keysets.
+   */
+  #receiveForm(record: RangePreparationRecord): ProofFormRow | null {
+    switch (record.side) {
+      // A Sell receives in a regular keyset. Its offer keyset holds the proofs that it sells.
+      case 'Sell':
+        return null
+      case 'Buy':
+        break
+      default:
+        return assertNever(record.side)
+    }
+    let keyset: PersistedCtfRangeOrderPreparation['receiveKeyset']
+    try {
+      keyset = this.#decode(record).receiveKeyset
+    } catch {
+      // The order journal refuses this record by itself.
+      this.#log(UNREADABLE_PREPARATION_LINE)
+      return null
+    }
+    if (
+      !('conditionId' in keyset) ||
+      !('outcomeCollection' in keyset) ||
+      !('outcomeCollectionId' in keyset)
+    ) {
+      this.#log(UNREADABLE_PREPARATION_LINE)
+      return null
+    }
+    const form: ProofFormRow = {
+      normalizedMint: record.normalizedMint,
+      unit: record.unit,
+      keysetId: keyset.id,
+      conditionId: keyset.conditionId,
+      outcomeSetId: keyset.outcomeCollection,
+    }
+    const entry = indexEntry(form)
+    return entry.kind === 'conditional' &&
+      entry.outcomeCollectionId === keyset.outcomeCollectionId &&
+      recoveryIndexEntryMatchesKeyset(entry, keyset)
+      ? form
+      : null
+  }
 }
 
 function decodeKeysetRow(row: CounterKeysetRow): {
