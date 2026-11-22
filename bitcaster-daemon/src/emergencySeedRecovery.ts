@@ -42,6 +42,7 @@ import {
   type ConditionalKeysetSeedRecoveryAuthority,
   type ConditionalKeysetSeedRecoveryDescriptor,
 } from '@bitcaster-market/client-sdk/conditionalKeysetSeedRecovery'
+import { requirePlausibleRestoredAmounts } from '@bitcaster-market/client-sdk/seedCounterAdmissionScan'
 import { SeedRecoverySqliteStore, type SeedRecoveryObservedProof } from './seedRecoverySqlite.ts'
 import {
   claimCustodyScopeLease,
@@ -51,6 +52,7 @@ import {
 } from './profileFencing.ts'
 import { profileDir, readProfile } from './profile.ts'
 import { acquireDaemonRunLock } from './runLock.ts'
+import { upgradeDaemonProfileSchema } from './profileSchemaUpgrade.ts'
 import { createDaemonStateSqliteSession, type DaemonStateSqliteSession } from './stateSqlite.ts'
 import { createCustodyProofSqliteRow } from './custodyProofSqliteRow.ts'
 import {
@@ -161,6 +163,7 @@ export async function runOfflineDaemonSeedRecovery(
   }
   const runLock = await acquireDaemonRunLock()
   try {
+    await upgradeDaemonProfileSchema(profileDir())
     return await runOfflineRecoveryWithLease(input)
   } finally {
     await runLock.release()
@@ -710,6 +713,8 @@ async function scanSelectedKeysets(
   const selectedIds = selected.map(recoveryKeysetId)
   const pending = new Set(selectedIds)
   const blocked = new Set<string>()
+  // The restored value of this pass. No honest restore exceeds a safe integer.
+  const restoredTotal = { value: 0n }
   const ordered = await orderSelectedForFairScan(input, deps, store, fence, selected)
   while (processed < 4 && pending.size > 0) {
     let attempted = false
@@ -721,7 +726,15 @@ async function scanSelectedKeysets(
         pending.delete(keysetId)
         continue
       }
-      const batch = await scanSelectedKeysetBatch(input, deps, fence, seed, keyset, start)
+      const batch = await scanSelectedKeysetBatch(
+        input,
+        deps,
+        fence,
+        seed,
+        keyset,
+        start,
+        restoredTotal,
+      )
       processed += 1
       attempted = true
       switch (batch.state) {
@@ -808,6 +821,7 @@ async function scanSelectedKeysetBatch(
   seed: Uint8Array,
   keyset: SelectedRecoveryKeyset,
   start: Awaited<ReturnType<SeedRecoverySqliteStore['readRecoveryStart']>>,
+  restoredTotal: { value: bigint },
 ): Promise<
   | { readonly state: 'completed' }
   | { readonly state: 'blocked' }
@@ -831,6 +845,14 @@ async function scanSelectedKeysetBatch(
     ),
   })
   const keysetAuthority = deps.transport.wallet.keyChain.getKeyset(recoveryKeysetId(keyset))
+  // A mint that signs every queried output with an amount the keyset cannot
+  // sign, or with more value than a wallet can hold, stops the scan before
+  // any admission (ADR-033).
+  restoredTotal.value = requirePlausibleRestoredAmounts({
+    amounts: restored.matches.map(({ signature }) => signature.amount),
+    keyset: keysetAuthority,
+    total: restoredTotal.value,
+  })
   const proofs = restored.matches.map(({ candidate, signature }) =>
     candidate.outputData.toProof(signature, keysetAuthority),
   )

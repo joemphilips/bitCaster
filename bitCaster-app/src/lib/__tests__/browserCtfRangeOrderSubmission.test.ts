@@ -13,7 +13,9 @@ import {
   type BrowserCtfRangeOrderSubmission,
 } from "../browserCtfRangeOrderSubmission";
 import { BrowserCtfRangeOrderError } from "../browserCtfRangeOrderCoordinator";
+import { CtfRangeOrderOutputCheckError } from "@bitcaster/client-sdk/ctfRangeOrderOutputCheck";
 import { BrowserCtfRangeRecoverySchedule } from "../browserCtfRangeRecoverySchedule";
+import { registerBrowserRecoveryIndex, type BrowserRecoveryIndex } from "../browserRecoveryIndex";
 import {
   listenForBrowserCtfRangeRecoveryWake,
   publishBrowserCtfRangeRecoveryWake,
@@ -49,7 +51,7 @@ const mocks = vi.hoisted(() => ({
   planConsolidation: vi.fn(),
   recoverPage: vi.fn(),
   recoverClientOrder: vi.fn(),
-  recoverFundedAsset: vi.fn(),
+  classifyFundedPlan: vi.fn(),
   readPreparation: vi.fn(),
   recordMessage: vi.fn(),
   raiseMessage: vi.fn(),
@@ -61,9 +63,8 @@ const mocks = vi.hoisted(() => ({
   advanceCounterPastMint: vi.fn(),
   advanceCounterPastSignedOutputs: vi.fn(),
   requestResync: vi.fn(),
-  probePreparation: vi.fn(),
-  probeMint: { kind: "test-probe-mint" },
-  probeCache: { kind: "test-probe-cache" },
+  reserveChecked: vi.fn(),
+  checkMint: { kind: "test-check-mint" },
   scopeId: `custody:wallet:${"11".repeat(32)}`,
   database: {},
   wallet: {},
@@ -151,6 +152,7 @@ vi.mock("../cashu", () => ({
   advanceWalletKeysetCounterPastMint: mocks.advanceCounterPastMint,
   advanceWalletKeysetCounterPastSignedOutputs: mocks.advanceCounterPastSignedOutputs,
   WalletKeysetCounterPendingError: class extends Error {},
+  WalletKeysetCounterReadinessError: class extends Error {},
 }));
 
 vi.mock("@/stores/seed-restore-db", () => ({
@@ -158,6 +160,8 @@ vi.mock("@/stores/seed-restore-db", () => ({
 }));
 
 vi.mock("../browserCtfRangeOrderCoordinator", () => ({
+  BROWSER_ORDER_OUTPUT_CHECK_FAILED_MESSAGE:
+    "The wallet could not finish preparing this order. No order was submitted. Please try again.",
   buildBrowserCtfRangeOrderPreparation: mocks.buildPreparation,
   browserCtfRangeOrderErrorMessage: (code: string) => `message for ${code}`,
   BrowserCtfRangeOrderError: class extends Error {
@@ -181,14 +185,13 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   },
 }));
 
-vi.mock("../browserCtfRangeCounterProbe", () => ({
-  createBuyReceiveProbeCache: () => mocks.probeCache,
-  probeBuyReceiveRange: mocks.probePreparation,
-  browserSeedCounterRestoreClient: () => mocks.probeMint,
+vi.mock("../browserCtfRangeOrderOutputCheck", () => ({
+  reserveCheckedBrowserCtfRangePreparation: mocks.reserveChecked,
+  browserSeedCounterRestoreClient: () => mocks.checkMint,
 }));
 
-vi.mock("../browserFundedAssetRecovery", () => ({
-  recoverBrowserFundedAsset: mocks.recoverFundedAsset,
+vi.mock("../browserFundedPlan", () => ({
+  classifyBrowserFundedPlan: mocks.classifyFundedPlan,
 }));
 
 describe("submitBrowserCtfRangeOrder", () => {
@@ -196,7 +199,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     vi.clearAllMocks();
     mocks.planConsolidation.mockReset();
     mocks.getBoundedCanonicalRangeProofsForKeyset.mockReset();
-    mocks.recoverFundedAsset.mockReset();
+    mocks.classifyFundedPlan.mockReset();
     mocks.counterReady.mockResolvedValue(undefined);
     mocks.buildPreparation.mockImplementation(({ request }) => preparationFor(request));
     mocks.engine.getSettlementCapabilityAdmissionPolicy.mockResolvedValue({
@@ -239,12 +242,15 @@ describe("submitBrowserCtfRangeOrder", () => {
     mocks.advanceCounterPastMint.mockResolvedValue(undefined);
     mocks.advanceCounterPastSignedOutputs.mockResolvedValue(undefined);
     mocks.requestResync.mockResolvedValue(undefined);
-    mocks.probePreparation.mockResolvedValue(undefined);
+    mocks.reserveChecked.mockImplementation(async ({ preparation }: { preparation: unknown }) => ({
+      record: preparation,
+      replayed: false,
+    }));
     mocks.recordMessage.mockResolvedValue(undefined);
     mocks.raiseMessage.mockResolvedValue(undefined);
     mocks.resolveMessages.mockResolvedValue(undefined);
     mocks.ensureParticipationScoreForNextMatch.mockReset();
-    mocks.recoverFundedAsset.mockImplementation(async ({ loadPlan }) => ({
+    mocks.classifyFundedPlan.mockImplementation(async ({ loadPlan }) => ({
       kind: "ready",
       plan: await loadPlan(),
     }));
@@ -320,7 +326,7 @@ describe("submitBrowserCtfRangeOrder", () => {
   it("recovers an insufficient explicit submission before returning insufficient funds", async () => {
     mocks.candidates = [];
     mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "unavailable" });
+    mocks.classifyFundedPlan.mockResolvedValue({ kind: "unavailable" });
 
     await expect(
       submitBrowserCtfRangeOrder({
@@ -346,13 +352,13 @@ describe("submitBrowserCtfRangeOrder", () => {
       }),
     ).rejects.toMatchObject({ code: "insufficient-funds", shortfall: "offered" });
 
-    expect(mocks.recoverFundedAsset).toHaveBeenCalledOnce();
+    expect(mocks.classifyFundedPlan).toHaveBeenCalledOnce();
   });
 
   it("records a revision-zero durable funds error when exact recovery fails", async () => {
     mocks.candidates = [];
     mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "persistent-error" });
+    mocks.classifyFundedPlan.mockResolvedValue({ kind: "persistent-error" });
 
     await expect(
       submitBrowserCtfRangeOrder({
@@ -386,36 +392,6 @@ describe("submitBrowserCtfRangeOrder", () => {
         kind: "funds",
       }),
     );
-  });
-
-  it("fails durably when the single post-recovery replan remains insufficient", async () => {
-    mocks.candidates = [];
-    mocks.recoverFundedAsset.mockResolvedValue({ kind: "recovered" });
-    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-
-    await expect(submitRangeOrder("client-recovery-replan")).rejects.toMatchObject({
-      code: "asset-recovery-failed",
-    });
-
-    expect(mocks.planConsolidation).toHaveBeenCalledOnce();
-    expect(mocks.recordMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ revision: 0, code: "asset-recovery-failed", kind: "funds" }),
-    );
-  });
-
-  it("uses the one post-recovery replan when it becomes ready", async () => {
-    mocks.candidates = [];
-    mocks.recoverFundedAsset.mockImplementation(async () => {
-      mocks.candidates = [{ id: "regular-keyset", amount: 10_000, secret: "recovered", C: "02" }];
-      return { kind: "recovered" };
-    });
-
-    await expect(submitRangeOrder("client-recovery-ready")).resolves.toEqual({
-      orderId: "order-1",
-    });
-
-    expect(mocks.planConsolidation).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
   });
 
   it("submits a durable FOK ticket as GUI FOK", async () => {
@@ -544,7 +520,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [],
       maxOutputs: 256,
       shortfall: "collateral",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "fee cash is present but the joint outputs exceed the mint bound",
@@ -552,7 +528,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [2],
       maxOutputs: ONE_SHARE_SELL_AUTHORIZATION_OUTPUTS,
       shortfall: "mint-limits",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "cash covers face and fee but 125 held proofs exceed the input bound",
@@ -560,7 +536,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [2 * ONE_SHARE_FACE_SUBUNITS],
       maxOutputs: 256,
       shortfall: "mint-limits",
-      offeredAssetRecoveries: 0,
+      offeredAssetPlans: 0,
     },
     {
       name: "a partial holding cannot be completed from regular cash",
@@ -568,7 +544,7 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [ONE_SHARE_FACE_SUBUNITS + 10],
       maxOutputs: 256,
       shortfall: "offered",
-      offeredAssetRecoveries: 1,
+      offeredAssetPlans: 1,
     },
     {
       name: "no held shares cannot be synthesized from regular cash",
@@ -576,11 +552,11 @@ describe("submitBrowserCtfRangeOrder", () => {
       regularSubunits: [ONE_SHARE_FACE_SUBUNITS + 10],
       maxOutputs: 256,
       shortfall: "offered",
-      offeredAssetRecoveries: 1,
+      offeredAssetPlans: 1,
     },
   ])(
     "refuses a one-share Sell and names the shortfall when $name",
-    async ({ heldSubunits, regularSubunits, maxOutputs, shortfall, offeredAssetRecoveries }) => {
+    async ({ heldSubunits, regularSubunits, maxOutputs, shortfall, offeredAssetPlans }) => {
       // Mint metadata is cached per condition, so each output bound uses its own condition.
       const conditionId = `condition-sell-refusal-${maxOutputs}`;
       mocks.loadMintMetadata.mockResolvedValue({ maxOutputs, observation: {} });
@@ -602,46 +578,11 @@ describe("submitBrowserCtfRangeOrder", () => {
         submitSellOrder("client-sell-refusal", feeFacts("Sell"), conditionId),
       ).rejects.toMatchObject({ code: "insufficient-funds", shortfall });
 
-      expect(mocks.recoverFundedAsset).toHaveBeenCalledTimes(offeredAssetRecoveries);
+      expect(mocks.classifyFundedPlan).toHaveBeenCalledTimes(offeredAssetPlans);
       expect(mocks.consolidateRound).not.toHaveBeenCalled();
       expect(mocks.prepareAndSubmit).toHaveBeenCalledOnce();
     },
   );
-
-  it("reselects mixed Sell sources after funded recovery restores an exact held position", async () => {
-    const held = {
-      id: "conditional-keyset",
-      amount: ONE_SHARE_FACE_SUBUNITS,
-      secret: "recovered-held-share",
-      C: "held-C",
-    };
-    const cash = { id: "regular-keyset", amount: 1, secret: "fee-cash", C: "cash-C" };
-    let restored = false;
-    mocks.planConsolidation.mockReturnValue({ kind: "insufficient" });
-    mocks.getBoundedCanonicalRangeProofsForKeyset.mockImplementation((_mintUrl, { keysetId }) =>
-      keysetId === "conditional-keyset" ? (restored ? [held] : []) : [cash],
-    );
-    mocks.recoverFundedAsset.mockImplementation(async () => {
-      restored = true;
-      return { kind: "recovered" };
-    });
-
-    await expect(
-      submitSellOrder(
-        "client-recovered-mixed-sell",
-        feeFacts("Sell"),
-        "condition-recovered-mixed-sell",
-      ),
-    ).resolves.toEqual({ orderId: "order-1" });
-
-    expect(mocks.recoverFundedAsset).toHaveBeenCalledOnce();
-    expect(mocks.consolidateRound).not.toHaveBeenCalled();
-    expect(mocks.prepareAndSubmit).toHaveBeenCalledWith(
-      expect.objectContaining({
-        loadSourceInputs: expect.any(Function),
-      }),
-    );
-  });
 
   it("keeps the consented fee-funded Sell mode after consolidating fragmented shares", async () => {
     const actualSourceOperation = await vi.importActual<
@@ -1012,7 +953,7 @@ describe("submitBrowserCtfRangeOrder", () => {
   it("records a terminal order explanation without stale pending-funds recovery", async () => {
     const ended = new BrowserCtfRangeOrderError(
       "order-attempt-ended",
-      "The prepared order attempt ended before capability creation. No order was submitted.",
+      "The prepared order attempt ended before the order request. No order was submitted.",
     );
     mocks.readPreparation.mockResolvedValue({ revision: 5, lifecycleState: "terminal" });
     mocks.prepareAndSubmit.mockRejectedValueOnce(ended);
@@ -1108,7 +1049,7 @@ describe("submitBrowserCtfRangeOrder", () => {
         message:
           "The wallet could not finish preparing this order. No order was submitted. Please try again.",
       });
-      expect(mocks.recoverFundedAsset).not.toHaveBeenCalled();
+      expect(mocks.classifyFundedPlan).not.toHaveBeenCalled();
       expect(mocks.consolidateRound).not.toHaveBeenCalled();
       expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
       expect(mocks.recordMessage).not.toHaveBeenCalled();
@@ -1624,6 +1565,48 @@ describe("submitBrowserCtfRangeOrder", () => {
     },
   );
 
+  it("reads the recovery index once for a recovery pass with several refused orders", async () => {
+    const refused = (operationId: string) => ({
+      operationId,
+      revision: 1,
+      mintUrl: "https://mint.example",
+      mintError: { code: 11008, detail: "Duplicate outputs" },
+    });
+    mocks.recoverPage
+      .mockResolvedValueOnce({
+        recoveredOperationIds: [],
+        pending: [],
+        attention: [],
+        refused: [refused("range-a"), refused("range-b")],
+        nextCursor: { createdAtMs: 1, rangeOperationId: "range-b" },
+      })
+      .mockResolvedValueOnce({
+        recoveredOperationIds: [],
+        pending: [],
+        attention: [],
+        refused: [refused("range-c")],
+        nextCursor: null,
+      });
+    mocks.readPreparation.mockResolvedValue({ lifecycleState: "terminal", revision: 1 });
+    const read = vi.fn(async () => ({ status: "skipped" }) as never);
+    const unregister = registerBrowserRecoveryIndex(mocks.scopeId, {
+      read,
+    } as unknown as BrowserRecoveryIndex);
+    try {
+      await recoverBrowserCtfRangeOrders({
+        mnemonic:
+          "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about",
+        mintUrls: ["https://mint.example"],
+      });
+    } finally {
+      unregister();
+    }
+
+    // Each index read is an engine presence observation (ADR-034 "Engine privacy").
+    expect(read).toHaveBeenCalledOnce();
+    expect(read).toHaveBeenCalledWith("mint-refusal");
+  });
+
   it("records each kind of recovery result with its stored mint code", async () => {
     const mintError = { code: 11008, detail: "Duplicate outputs" };
     mocks.recoverPage.mockResolvedValue({
@@ -1698,10 +1681,48 @@ describe("submitBrowserCtfRangeOrder", () => {
     });
   });
 
+  // The coordinator records a stopped wait as a refused request, because no
+  // attempt committed. The user stopped it, so it is not an order failure.
+  it("records no wallet alert when the user stopped the order wait", async () => {
+    const stopped = new BrowserCtfRangeOrderError(
+      "order-submission-rejected",
+      "The engine rejected the order. It will not retry.",
+    );
+    mocks.readPreparation.mockResolvedValue({
+      revision: 3,
+      lifecycleState: "order-request-rejected",
+    });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(stopped);
+    const stop = new AbortController();
+    stop.abort();
+
+    await expect(submitRangeOrder("client-stopped", 0, "1", stop.signal)).rejects.toBe(stopped);
+
+    expect(mocks.readPreparation).toHaveBeenCalled();
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["an engine refusal", false, "order-request-rejected", "order-submission-rejected"],
+    ["a stop that interrupted an attempt", true, "order-requested", "order-submission-uncertain"],
+  ] as const)("records the order alert after %s", async (_case, aborted, lifecycleState, code) => {
+    const error = new BrowserCtfRangeOrderError(code, "message");
+    mocks.readPreparation.mockResolvedValue({ revision: 3, lifecycleState });
+    mocks.prepareAndSubmit.mockRejectedValueOnce(error);
+    const control = new AbortController();
+    if (aborted) control.abort();
+
+    await expect(submitRangeOrder(`client-${code}`, 0, "1", control.signal)).rejects.toBe(error);
+
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: 3, code, kind: "order" }),
+    );
+  });
+
   it("stores the mint code of a refused submission with its order alert", async () => {
     const ended = new BrowserCtfRangeOrderError(
       "order-attempt-ended",
-      "The mint refused this order. No order was submitted. The reserved funds are available again.",
+      "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
     );
     Object.assign(ended, {
       mintError: { code: 11008, detail: "Duplicate outputs" },
@@ -1724,7 +1745,7 @@ describe("submitBrowserCtfRangeOrder", () => {
     );
   });
 
-  it("probes a buy receive range during the preview and again before it reserves counters", async () => {
+  it("checks the order outputs with the mint only at submit, before it reserves counters", async () => {
     await previewBrowserCtfRangeOrderFees({
       market: market(),
       ticket: {
@@ -1742,35 +1763,111 @@ describe("submitBrowserCtfRangeOrder", () => {
       },
       mintUrl: "https://mint.example",
     }).catch(() => undefined);
-    expect(mocks.probePreparation).toHaveBeenCalledTimes(1);
+    // A preview reserves nothing, so it shows the mint no output.
+    expect(mocks.reserveChecked).not.toHaveBeenCalled();
 
-    await submitRangeOrder("client-probed-preparation");
+    await submitRangeOrder("client-checked-preparation");
 
-    // The submit call reuses the preview probe through the shared cache unless the cursor moved.
-    expect(mocks.probePreparation).toHaveBeenCalledTimes(2);
-    for (const [input] of mocks.probePreparation.mock.calls) {
-      expect(input).toMatchObject({
+    expect(mocks.reserveChecked).toHaveBeenCalledTimes(1);
+    const [input] = mocks.reserveChecked.mock.calls[0]!;
+    expect(input).toMatchObject({
+      mint: mocks.checkMint,
+      preparation: expect.objectContaining({ operationId: "range-operation" }),
+      intent: expect.objectContaining({
         scopeId: mocks.scopeId,
-        cache: mocks.probeCache,
-        mint: mocks.probeMint,
-        preparation: expect.objectContaining({ operationId: "range-operation" }),
-      });
-    }
-    expect(mocks.probePreparation.mock.invocationCallOrder[1]!).toBeLessThan(
+        request: expect.objectContaining({ clientOrderId: "client-checked-preparation" }),
+      }),
+    });
+    expect(mocks.reserveChecked.mock.invocationCallOrder[0]!).toBeLessThan(
       mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
     );
     const receiveKeyset = preparationFor(sellRequest()).receiveKeyset;
-    await mocks.probePreparation.mock.calls[1]![0].advancePastSignedOutputs(receiveKeyset, 7, 12);
-    // The probed range starts the deferral, so a later pass admits its outputs.
+    await input.skipSignedCounters(receiveKeyset, {
+      keysetId: receiveKeyset.id,
+      fromCounter: 7,
+      lastSignedCounter: 11,
+      nextCounter: 162,
+    });
+    // The checked range starts the deferral, so a later pass admits the signed outputs.
     expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
       expect.objectContaining({
         scopeId: mocks.scopeId,
         unit: "msat",
         keyset: receiveKeyset,
         fromCounter: 7,
-        nextCounter: 12,
+        lastSignedCounter: 11,
+        nextCounter: 162,
       }),
     );
+  });
+
+  it("gives the coordinator the same mint check and counter skip for the source request", async () => {
+    await submitRangeOrder("client-source-check");
+
+    const { sourceOutputCheck } = mocks.coordinatorInput as {
+      sourceOutputCheck: {
+        mint: (mintUrl: string) => unknown;
+        skipSignedCounters: (keyset: unknown, skip: unknown) => Promise<void>;
+      };
+    };
+    expect(sourceOutputCheck.mint("https://mint.example")).toBe(mocks.checkMint);
+    const offerKeyset = preparationFor(sellRequest()).offerKeyset;
+    await sourceOutputCheck.skipSignedCounters(offerKeyset, {
+      keysetId: offerKeyset.id,
+      fromCounter: 29,
+      lastSignedCounter: 29,
+      nextCounter: 180,
+    });
+    expect(mocks.advanceCounterPastSignedOutputs).toHaveBeenCalledWith(
+      expect.objectContaining({
+        scopeId: mocks.scopeId,
+        mintUrl: "https://mint.example",
+        keyset: offerKeyset,
+        fromCounter: 29,
+        lastSignedCounter: 29,
+        nextCounter: 180,
+      }),
+    );
+  });
+
+  it("checks the outputs of a sell before it reserves counters", async () => {
+    await submitSellOrder("client-checked-sell");
+
+    expect(mocks.reserveChecked).toHaveBeenCalledTimes(1);
+    expect(mocks.reserveChecked.mock.calls[0]![0]).toMatchObject({
+      mint: mocks.checkMint,
+      preparation: expect.objectContaining({ side: "Sell" }),
+    });
+    expect(mocks.reserveChecked.mock.invocationCallOrder[0]!).toBeLessThan(
+      mocks.prepareAndSubmit.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it.each([
+    ["the mint check cannot finish", () => new CtfRangeOrderOutputCheckError("mint-check-failed")],
+    [
+      "the outputs stay signed after bounded checks",
+      () => new CtfRangeOrderOutputCheckError("attempts-exhausted"),
+    ],
+  ])("refuses the order before any mint request when %s", async (_name, failure) => {
+    mocks.reserveChecked.mockRejectedValueOnce(failure());
+
+    await expect(submitRangeOrder("client-unchecked")).rejects.toMatchObject({
+      code: "source-preparation-failed",
+      message:
+        "The wallet could not finish preparing this order. No order was submitted. Please try again.",
+    });
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
+    // Nothing was reserved, so no durable order alert is written.
+    expect(mocks.recordMessage).not.toHaveBeenCalled();
+  });
+
+  it("keeps a counter store error of the checked reservation", async () => {
+    const refused = new Error("wallet counter recovery is incomplete");
+    mocks.reserveChecked.mockRejectedValueOnce(refused);
+
+    await expect(submitRangeOrder("client-store-refused")).rejects.toBe(refused);
+    expect(mocks.prepareAndSubmit).not.toHaveBeenCalled();
   });
 
   it.each([11001, 11003, 11008])(
@@ -2111,8 +2208,10 @@ function submitRangeOrder(
   clientOrderId: string,
   consolidationFeeSubunits = 0,
   sourceFeeSubunits = "1",
+  signal?: AbortSignal,
 ) {
   return submitBrowserCtfRangeOrder({
+    ...(signal === undefined ? {} : { signal }),
     market: market(),
     ticket: {
       marketId: "condition-1-YES",

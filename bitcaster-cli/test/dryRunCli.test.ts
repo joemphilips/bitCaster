@@ -45,9 +45,11 @@ const READ_DAEMON_METHODS = new Set([
   'wallet.operations',
   'order.recovery',
   'score.show',
+  'score.history',
   'score.status',
   'order.fee-preview',
   'order.status',
+  'order.settlement-failure',
   'order.list',
   'order.book',
 ])
@@ -358,6 +360,10 @@ const SUPPORTED: Record<string, { args: Args; method: string }> = {
     method: 'wallet.activity-sync',
   },
   'wallet watch': { args: () => ['wallet', 'watch'], method: 'wallet.watch' },
+  'wallet backup delete': {
+    args: (files) => ['wallet', 'backup', 'delete', '--wallet-seed-hex-file', files.seed],
+    method: 'wallet.backup.delete',
+  },
   'wallet invoice create': {
     args: () => ['wallet', 'invoice', 'create', '--amount-msat', '1000'],
     method: 'wallet.invoice.create',
@@ -521,6 +527,7 @@ const READ_ONLY: Record<string, Args> = {
   'wallet pay status': () => ['wallet', 'pay', 'status', `wallet-melt:${RECORD_ID}`],
   'wallet operations': () => ['wallet', 'operations'],
   'score show': () => ['score', 'show'],
+  'score history': () => ['score', 'history'],
   'score status': (files) => ['score', 'status', '--fee-consent-file', files.scoreQuote],
   'order preview': () => [
     'order',
@@ -546,6 +553,7 @@ const READ_ONLY: Record<string, Args> = {
     '1000',
   ],
   'order status': () => ['order', 'status', MARKET, 'order-1'],
+  'order settlement-failure': () => ['order', 'settlement-failure', MARKET, 'order-1'],
   'order wait': () => ['order', 'wait', MARKET, 'order-1', '--timeout-ms', '1000'],
   'order list': () => ['order', 'list'],
   'order book': () => ['order', 'book', MARKET],

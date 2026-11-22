@@ -18,4 +18,7 @@
   <ItemGroup>
     <ProjectReference Include="../BitCaster.MatchingEngine.Contracts/BitCaster.MatchingEngine.Contracts.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <Content Include="Fixtures/PreviousForms/*.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>

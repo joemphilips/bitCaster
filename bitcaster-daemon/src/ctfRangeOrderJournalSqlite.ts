@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 import {
   assertCtfRangeOrderPreparationTransition,
+  bindCtfRangeOrderPreparationAdmission,
   bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationArtifact,
   decodeCtfRangeOrderPreparationCapability,
@@ -255,40 +256,74 @@ export function readActiveRangePreparationByClientOrderId(
   return rows.length === 0 ? null : decodePreparationRow(rows[0]!)
 }
 
+interface RangePreparationCapabilityBinding {
+  readonly scopeId: string
+  readonly rangeOperationId: string
+  readonly expectedRevision: number
+  readonly capability: RangePreparationCapability
+  readonly updatedAtMs: number
+}
+
+/** Old two-step path: `capability-requested` -> `capability-bound`. */
 export function bindRangePreparationCapability(
   database: DatabaseSync,
-  input: {
-    readonly scopeId: string
-    readonly rangeOperationId: string
-    readonly expectedRevision: number
-    readonly capability: RangePreparationCapability
-    readonly updatedAtMs: number
-  },
+  input: RangePreparationCapabilityBinding,
+): RangePreparationRecord {
+  return bindCapability(
+    database,
+    input,
+    'capability-requested',
+    'capability-bound',
+    bindCtfRangeOrderPreparationCapability,
+  )
+}
+
+/** One-step path: `order-requested` -> `order-submitted` with the capability of the accepted order. */
+export function bindRangePreparationAdmission(
+  database: DatabaseSync,
+  input: RangePreparationCapabilityBinding,
+): RangePreparationRecord {
+  return bindCapability(
+    database,
+    input,
+    'order-requested',
+    'order-submitted',
+    bindCtfRangeOrderPreparationAdmission,
+  )
+}
+
+function bindCapability(
+  database: DatabaseSync,
+  input: RangePreparationCapabilityBinding,
+  from: 'capability-requested' | 'order-requested',
+  to: 'capability-bound' | 'order-submitted',
+  bind: typeof bindCtfRangeOrderPreparationCapability,
 ): RangePreparationRecord {
   decodeCtfRangeOrderPreparationCapability(input.capability)
   requireRevision(input.expectedRevision)
   requireTimestamp(input.updatedAtMs, 'updated time')
   const current = requirePreparation(database, input.scopeId, input.rangeOperationId)
-  const next = bindCtfRangeOrderPreparationCapability({
+  const next = bind({
     current: toSdkRangePreparationRecord(current),
     ...input,
   })
   if (next.revision === current.revision) return current
   const capability = next.capability
-  if (capability === null) {
+  if (capability === null || next.lifecycleState !== to) {
     throw new Error('daemon CTF range capability binding lacks exact authority')
   }
   const result = database
     .prepare(
       `UPDATE daemon_ctf_range_preparations
-       SET lifecycle_state = 'capability-bound',
+       SET lifecycle_state = ?,
            capability_artifact_id = ?, capability_binding_digest = ?,
            capability_artifact_digest = ?, engine_order_id = ?,
            revision = revision + 1, updated_at_ms = ?
        WHERE scope_id = ? AND range_operation_id = ?
-         AND lifecycle_state = 'capability-requested' AND revision = ?`,
+         AND lifecycle_state = ? AND revision = ?`,
     )
     .run(
+      to,
       capability.artifactId,
       capability.bindingDigest,
       capability.artifactDigest,
@@ -296,6 +331,7 @@ export function bindRangePreparationCapability(
       next.updatedAtMs,
       input.scopeId,
       input.rangeOperationId,
+      from,
       input.expectedRevision,
     )
   if (result.changes !== 1) {

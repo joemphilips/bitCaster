@@ -2,6 +2,13 @@
 import { createSeedRecoveryScanPolicy } from '@bitcaster-market/client-sdk/seedRecoveryScanPolicy'
 import { seedRecoveryMnemonicBytes } from '@bitcaster-market/client-sdk/seedRecoveryMnemonic'
 import { readOwnerPrivateRecoveryPhraseFile } from '@bitcaster-market/client-sdk/seedRecoveryPhraseFile'
+import { deriveRecoveryIndexKeys } from '@bitcaster-market/client-sdk/recoveryIndexDocument'
+import {
+  RECOVERY_INDEX_REALMS,
+  createRecoveryIndexEngineStore,
+  type RecoveryIndexRealm,
+} from '@bitcaster-market/client-sdk/recoveryIndexEngine'
+import { deleteRecoveryIndexDocument } from '@bitcaster-market/client-sdk/recoveryIndexSync'
 import { submitOrderWithProgress } from './rpc.ts'
 
 import { execFile } from 'node:child_process'
@@ -1732,6 +1739,77 @@ function registerWalletCommand(program: Command): void {
       },
     )
 
+  const backup = wallet
+    .command('backup')
+    .description('Manage the encrypted recovery index of a seed at the engine.')
+  backup
+    .command('delete')
+    .description(
+      'Delete the engine recovery index of one seed. The engine keeps a tombstone. A browser that holds the seed writes the index again at its next upload. Supply exactly one owner-only seed or phrase file.',
+    )
+    .option(
+      '--wallet-seed-hex-file <path>',
+      'Owner-only file containing the 64-byte wallet seed as lowercase hex',
+    )
+    .option('--recovery-phrase-file <path>', 'Owner-only file containing an English BIP-39 phrase')
+    .addOption(
+      new Option('--realm <realm>', 'Recovery index realm of the engine')
+        .choices(Object.values(RECOVERY_INDEX_REALMS))
+        .default(RECOVERY_INDEX_REALMS.production),
+    )
+    .allowExcessArguments(false)
+    .addHelpText(
+      'after',
+      '\nExample:\n  bitcaster-cli wallet backup delete --recovery-phrase-file ./phrase.txt',
+    )
+    .action(
+      async (options: {
+        walletSeedHexFile?: string
+        recoveryPhraseFile?: string
+        realm: RecoveryIndexRealm
+      }) => {
+        if (
+          (options.walletSeedHexFile === undefined) ===
+          (options.recoveryPhraseFile === undefined)
+        ) {
+          throwUsage(
+            'wallet backup delete requires exactly one of --wallet-seed-hex-file or --recovery-phrase-file',
+          )
+        }
+        const seed =
+          options.walletSeedHexFile !== undefined
+            ? new Uint8Array(
+                Buffer.from(await readPrivateWalletSeedFile(options.walletSeedHexFile), 'hex'),
+              )
+            : seedRecoveryMnemonicBytes(
+                await readOwnerPrivateRecoveryPhraseFile(options.recoveryPhraseFile!),
+              )
+        const keys = deriveRecoveryIndexKeys(seed, options.realm)
+        if (globalDryRun) {
+          // The request key is public. Never print the seed.
+          printDryRun('wallet.backup.delete', {
+            realm: options.realm,
+            requestPublicKey: keys.locatorPublicKey,
+          })
+          return
+        }
+        if (globalEngineUrl === undefined) throw new Error('engine URL is not configured')
+        const result = await deleteRecoveryIndexDocument(
+          createRecoveryIndexEngineStore({
+            engineBaseUrl: globalEngineUrl,
+            realm: options.realm,
+            keys,
+            fetchImpl: (input, init) =>
+              fetch(input, {
+                ...init,
+                signal: init?.signal ?? AbortSignal.timeout(DIRECT_ENGINE_READ_TIMEOUT_MS),
+              }),
+          }),
+        )
+        process.stdout.write(`${JSON.stringify(result, null, 2)}\n`)
+      },
+    )
+
   wallet
     .command('send <amountSats>')
     .description('Prepare an ecash send operation for the requested amount.')
@@ -2171,6 +2249,19 @@ function registerScoreCommand(program: Command): void {
     })
 
   score
+    .command('history')
+    .description(
+      'Show the authenticated Participation Score balance and its most recent changes, newest first.',
+    )
+    .addHelpText(
+      'after',
+      '\nEach entry has kind purchase, capability-binding, invalid-capability-validation or reused-output-penalty.',
+    )
+    .action(async () => {
+      await printDaemonResult(callDaemon({ method: 'score.history' }))
+    })
+
+  score
     .command('quote <scorePoints>')
     .description('Preview the exact wallet debit for one Score purchase.')
     .addHelpText(
@@ -2527,7 +2618,7 @@ function registerOrderCommand(program: Command): void {
     .option('--market-url <url>', 'Market URL to include with the optional order comment')
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --fee-consent-file fees.json\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --amount-msat 1000',
+      '\nThe daemon sends one order request that carries the settlement capability. While you wait, it sends the same request again only when the engine answers that the order book changed or quotes are updating; it stops after 60 seconds or 30 attempts. If the answer is lost, recovery only reads the order and never sends it again. Reserved funds return after the authorization expires.\n\nExample:\n  bitcaster-cli order submit --market cond-YES --outcome YES --side Buy --price 420 --amount-msat 1000 --fee-consent-file fees.json\n  bitcaster-cli --dry-run order submit --market cond-YES --outcome YES --side Buy --amount-msat 1000',
     )
     .action(async (options: OrderSubmitOptions, command: Command) => {
       const draft = orderDraftParams(options, command.args)
@@ -2555,7 +2646,7 @@ function registerOrderCommand(program: Command): void {
               signal: controller.signal,
               onWaiting: () => {
                 process.stderr.write(
-                  'Updating quotes; waiting with the original order. Press Ctrl-C to stop waiting.\n',
+                  'The order book changed or quotes are updating; sending the same order again. Press Ctrl-C to stop waiting.\n',
                 )
               },
             },
@@ -2564,7 +2655,7 @@ function registerOrderCommand(program: Command): void {
       } catch (error) {
         if (!controller.signal.aborted) throw error
         process.stderr.write(
-          'Stopped waiting. The original order and reserved funds may still need recovery. Check order status.\n',
+          'Stopped waiting. The original order and reserved funds stay with recovery, which reads the order and never sends it again; it appears in `order list` once found.\n',
         )
         process.exitCode = 130
       } finally {
@@ -2579,6 +2670,21 @@ function registerOrderCommand(program: Command): void {
     .addHelpText('after', '\nExample:\n  bitcaster-cli order status <market-id> <order-id>')
     .action(async (marketId: string, orderId: string) => {
       await printDaemonResult(callDaemon({ method: 'order.status', params: { marketId, orderId } }))
+    })
+
+  order
+    .command('settlement-failure <marketId> <orderId>')
+    .description(
+      'Show why the settlement of a failed order failed. The result is null when no reason is recorded.',
+    )
+    .addHelpText(
+      'after',
+      '\nReasons: OwnOutputReused (an output of this order was already used by another operation of the same wallet; a Score penalty was charged) and GroupOutputReused (an output in the same settlement was already used; no penalty for this order).\nExample:\n  bitcaster-cli order settlement-failure <market-id> <order-id>',
+    )
+    .action(async (marketId: string, orderId: string) => {
+      await printDaemonResult(
+        callDaemon({ method: 'order.settlement-failure', params: { marketId, orderId } }),
+      )
     })
 
   order
@@ -2636,7 +2742,7 @@ function registerOrderCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nAn entry with "halted": true stopped its automatic retries after repeated identical mint refusals. Its "retryCommand" sends one more check.\n\nExample:\n  bitcaster-cli order recovery',
+      '\nAn entry with "halted": true stopped its automatic retries after repeated identical mint refusals of one request, or because its refund outputs match only an earlier output plan. Its "retryCommand" sends one more check.\n\nExample:\n  bitcaster-cli order recovery',
     )
     .action(async () => {
       await printDaemonResult(callDaemon({ method: 'order.recovery' }))

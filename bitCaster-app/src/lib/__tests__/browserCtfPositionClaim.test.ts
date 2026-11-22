@@ -1,7 +1,7 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
 import { BrowserWalletCounterDexieStore } from "../../stores/browser-wallet-counter-db";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CheckStateEnum,
   MintOperationError,
@@ -41,17 +41,6 @@ import {
   signOutputs,
 } from "./fixtures/browserCtfRedeemFixture";
 import { browserD4OracleEvidence } from "../../test/browserD4OracleFixture";
-
-const mocks = vi.hoisted(() => ({ requireNewWritePermission: vi.fn() }));
-
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
-}));
-
-beforeEach(() => {
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
-});
 
 afterEach(async () => {
   await disposeFixtures();

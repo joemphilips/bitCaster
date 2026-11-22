@@ -2,10 +2,14 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { MemoryRouter } from "react-router";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey } from "nostr-tools/pure";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import "fake-indexeddb/auto";
 import { createGeneratedNostrIdentity } from "@/lib/identityOps";
 import * as bip39 from "@/lib/bip39";
+import {
+  registerBrowserRecoveryIndex,
+  type BrowserRecoveryIndex,
+} from "@/lib/browserRecoveryIndex";
 import {
   activeBrowserWalletScopeId,
   browserWalletIdFromMnemonic,
@@ -76,6 +80,7 @@ function makeNsec(): string {
 
 const LOGOUT_DIALOG = "Your Nostr key is not backed up";
 const ORDERS_IN_PROGRESS = /orders are in progress/i;
+const ALL_CONDITIONS_COMMAND = "bitcaster wallet recover-seed --all-conditions";
 
 function setUnbackedLocalKey(): string {
   const secret = makeNsec();
@@ -637,6 +642,12 @@ describe("SettingsPage wallet replacement", () => {
       },
     });
 
+    // The engine acknowledged the index of this wallet, which used no keyset.
+    const unregisterIndex = registerBrowserRecoveryIndex(oldScopeId!, {
+      prepareSeedHandoff: async () => ({ kind: "acknowledged", listed: [] }),
+    } as unknown as BrowserRecoveryIndex);
+    onTestFinished(unregisterIndex);
+
     await renderSettingsPage("cashu");
     fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
     const newWords = bip39.generate();
@@ -696,6 +707,94 @@ describe("SettingsPage wallet replacement", () => {
     expect(recover).not.toHaveBeenCalled();
     expect(useWalletStore.getState().mnemonic === mnemonic).toBe(true);
     expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument();
+  });
+
+  it("shows a partial backup in the dialog and replaces only when the user replaces anyway", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    setActiveBrowserWalletProfile(mnemonic);
+    const recover = vi
+      .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
+      .mockResolvedValueOnce({
+        valid: false,
+        warning: { code: "backup-partial", command: ALL_CONDITIONS_COMMAND },
+      })
+      .mockResolvedValueOnce({ valid: true });
+    useWalletStore.setState({ recoverFromMnemonic: recover });
+    const replacement = bip39.generate();
+
+    await renderSettingsPage("cashu");
+    fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
+      target: { value: replacement.join(" ") },
+    });
+    const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
+
+    // The warning comes before the commit point. Close still cancels.
+    expect(await within(dialog).findByRole("alert")).toHaveTextContent(
+      "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use bitcaster wallet recover-seed --all-conditions.",
+    );
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: false,
+      acceptCounterGap: false,
+    });
+    expect(within(dialog).getByRole("button", { name: "Close" })).toBeEnabled();
+
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument(),
+    );
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: true,
+      acceptCounterGap: false,
+    });
+  });
+
+  it("shows the counter gap warning after the partial backup, and replaces after both are accepted", async () => {
+    const mnemonic = bip39.generate().join(" ");
+    useWalletStore.setState({ mnemonic, walletBackupState: "confirmed" });
+    setActiveBrowserWalletProfile(mnemonic);
+    const recover = vi
+      .fn<ReturnType<typeof useWalletStore.getState>["recoverFromMnemonic"]>()
+      .mockResolvedValueOnce({
+        valid: false,
+        warning: { code: "backup-partial", command: ALL_CONDITIONS_COMMAND },
+      })
+      .mockResolvedValueOnce({
+        valid: false,
+        warning: { code: "counter-gap", command: "bitcaster wallet recover-seed --gap-limit 400" },
+      })
+      .mockResolvedValueOnce({ valid: true });
+    useWalletStore.setState({ recoverFromMnemonic: recover });
+    const replacement = bip39.generate();
+
+    await renderSettingsPage("cashu");
+    fireEvent.click(await screen.findByRole("button", { name: /replace wallet/i }));
+    fireEvent.change(screen.getByLabelText("Seed word 1"), {
+      target: { value: replacement.join(" ") },
+    });
+    const dialog = screen.getByRole("dialog", { name: "Replace This Wallet" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Wallet" }));
+    fireEvent.click(await within(dialog).findByRole("button", { name: "Replace Anyway" }));
+
+    await waitFor(() =>
+      expect(within(dialog).getByRole("alert")).toHaveTextContent(
+        "A restore in another browser can miss some funds of this wallet. To find them, use bitcaster wallet recover-seed --gap-limit 400.",
+      ),
+    );
+    // One warning at a time: the accepted partial backup warning is gone.
+    expect(within(dialog).getAllByRole("alert")).toHaveLength(1);
+    fireEvent.click(within(dialog).getByRole("button", { name: "Replace Anyway" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "Replace This Wallet" })).not.toBeInTheDocument(),
+    );
+    expect(recover).toHaveBeenLastCalledWith(replacement, {
+      acceptPartialBackup: true,
+      acceptCounterGap: true,
+    });
   });
 
   it("keeps the replacement modal open while the handoff is pending", async () => {

@@ -51,7 +51,8 @@ balance)** row also appears. It shows the Score that the app buys with ordinary
 sats from your wallet when you confirm. This purchase can be larger than the
 shortfall. Score that the order does not use stays in your Score balance for
 later orders. The trade totals do not include these rows. Score is not
-refundable. See [Participation Score](/technical/architecture/trading-model/#participation-score)
+refundable. Your recent Score changes, including a penalty, appear under
+**Participation Score** in **Nostr Settings**. See [Participation Score](/technical/architecture/trading-model/#participation-score)
 for the charge and top-up rules.
 
 To sell all your shares, keep some ordinary sats available for preparation
@@ -118,6 +119,63 @@ Conditional tokens keep their condition and outcome collection.
 The mint's swap fee still applies. The protocol calls this operation `refund`.
 The mint operator's discretionary compensation policy is separate.
 See [market resolution](/technical/reference/resolution/).
+
+The web app keeps wallet alerts until you dismiss them. One exception applies
+when the wallet finishes an operation. Its alerts that say the order result is
+uncertain or that funds recovery is pending then close. Use **Next** to read
+more alerts without dismissing an unresolved alert. Use **First alerts** to
+return to the start. Dismissing an alert does not stop recovery or delete funds.
+
+An alert can show the code that the mint returned, for example
+**Mint code: 11008**. If the mint refused an order preparation, the alert says
+**Order was not completed**, and the reserved funds, less any consolidation fee
+already paid, are available again. If the
+wallet stopped the automatic retries, the alert shows **Retry**. Select
+**Retry** to send the check one more time.
+
+The **Active trade progress** list shows operations that the wallet still needs
+to finish. It survives a reload while the wallet data remains available.
+Use **Refresh status** to check again. An unavailable status is not a failed
+trade, and it stays in this list. A confirmed settlement can still need wallet
+recovery. An operation leaves this active list when the wallet finishes its
+work. After a confirmed trade, the list shows **Trade complete.** for a few
+seconds before the trade leaves it. The list is not your completed-trade
+history.
+
+When bitCaster accepts an order but its settlement does not complete, or when
+bitCaster ends the accepted order without a settlement, the order leaves
+**Active trade progress**. A separate **Trade failed** panel shows the market of
+the order and **This order was not completed. Your funds, less preparation and
+refund fees, return to this wallet after the order expires.** The wallet
+recovers the funds automatically while the app is open. After the refund, the
+panel says **Your funds, less preparation and refund fees, were returned to
+this wallet.** The failure stays after the refund and after a reload until you
+dismiss it. If the settlement completes after all, the failure leaves the panel. The failed-order notification in the notification list shows the
+same reason.
+
+When bitCaster refuses the order request itself, the wallet alert
+**Order was not completed** shows the refusal and the market of the order. The
+alert also says when your funds, less preparation and refund fees, return to
+this wallet, and that they were returned after the refund. The order does not
+show in either list. When you select **Stop waiting**, leave the market, or change the
+trade while the order waits between two attempts, that is not a failure. Until
+its refund, the order shows in **Active trade progress** as **This order ended
+without a trade. Your funds, less preparation and refund fees, return to this
+wallet after the order expires.** Only its refund is still active. When the
+list shows only such orders, it does not show **Refresh status**. An order that bitCaster cancels because it
+cannot fill at once shows the same text. If you stop while the wallet is sending an attempt, the result is
+uncertain, and the order can still fill. The wallet then reads the status of
+the order and does not send it again.
+
+When a settlement fails because the same wallet was used in two places at the
+same time, the panel shows the specific reason. If your wallet was used in another browser or device at
+the same time, a Participation Score penalty was charged. If another order in
+the same settlement failed, no penalty was charged for your order. In
+**Score history**, the penalty row is **Penalty: wallet used in two places**.
+See [Check for use in another browser](/technical/reference/wallet-recovery/#check-for-use-in-another-browser).
+
+While the wallet finishes the trade that you just submitted, the trading panel
+shows **Updating your wallet…**. This includes the refund of a failed trade.
 
 When bitCaster reports that the settlement of your order is confirmed, the
 wallet applies the result at once. Your balance, your positions, and the

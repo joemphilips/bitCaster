@@ -5,7 +5,20 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import { toSeed } from "./bip39";
 
-let activeScopeId: string | null = null;
+/**
+ * One activation of a wallet profile in this page. Each
+ * `setActiveBrowserWalletProfile` call starts a new epoch, also for the same
+ * wallet and for the empty invalidation of a handoff. So a late result of an
+ * earlier activation of the same wallet (A -> B -> A) cannot pass as current.
+ * The epoch lives in page memory only: a reload starts again at epoch 0.
+ */
+export interface BrowserWalletActivation {
+  readonly scopeId: string | null;
+  readonly epoch: number;
+}
+
+let activation: BrowserWalletActivation = Object.freeze({ scopeId: null, epoch: 0 });
+const activationListeners = new Set<() => void>();
 
 export function browserWalletScopeIdFromMnemonic(mnemonic: string): string | null {
   const walletId = browserWalletIdFromMnemonic(mnemonic);
@@ -24,11 +37,26 @@ export function browserWalletScopeIdFromSeed(seed: Uint8Array): string {
 }
 
 export function setActiveBrowserWalletProfile(mnemonic: string): void {
-  activeScopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  activation = Object.freeze({ scopeId, epoch: activation.epoch + 1 });
+  for (const listener of [...activationListeners]) listener();
 }
 
 export function activeBrowserWalletScopeId(): string | null {
-  return activeScopeId;
+  return activation.scopeId;
+}
+
+/** The current activation. The value stays the same object until the next activation. */
+export function activeBrowserWalletActivation(): BrowserWalletActivation {
+  return activation;
+}
+
+/** Calls the listener after each activation. Returns the unsubscribe function. */
+export function subscribeBrowserWalletActivation(listener: () => void): () => void {
+  activationListeners.add(listener);
+  return () => {
+    activationListeners.delete(listener);
+  };
 }
 
 /** Check a live wallet value against the module's currently active profile. */
@@ -39,13 +67,14 @@ export function isActiveBrowserWalletId(walletId: string, mnemonic: string): boo
       ? null
       : deriveDurableCustodyScopeId({ scopeKind: "wallet", walletId: currentWalletId });
   return (
-    currentWalletId === walletId && currentScopeId !== null && activeScopeId === currentScopeId
+    currentWalletId === walletId && currentScopeId !== null && activation.scopeId === currentScopeId
   );
 }
 
 export function requireActiveBrowserWalletScopeId(): string {
-  if (activeScopeId === null) throw new Error("The wallet profile is unavailable.");
-  return activeScopeId;
+  const { scopeId } = activation;
+  if (scopeId === null) throw new Error("The wallet profile is unavailable.");
+  return scopeId;
 }
 
 export function browserWalletDatabaseName(scopeId: string): string {

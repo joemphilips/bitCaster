@@ -14,11 +14,6 @@ import {
 import { createAuthenticatedBrowserEngineClient } from "@/lib/markets";
 import { getNdk, getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
 import { hasSubmittedCtfRangeOrder } from "@/stores/ctf-range-order-db";
-import { listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts } from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
-import {
-  activeBrowserEncryptedWalletBackupV2RuntimeDriver,
-  subscribeToBrowserEncryptedBackupMonitoring,
-} from "@/lib/encryptedWalletBackupDriver";
 import { decodeBrowserCustodyProofRow } from "@/stores/durable-custody-types";
 import {
   db,
@@ -89,7 +84,6 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
       if (released) reporter.request();
     };
     const unsubscribe = subscribeToCommittedProofChanges(database, request);
-    const unsubscribeOwner = subscribeToBrowserEncryptedBackupMonitoring(scopeId, request);
     if (released) {
       reporter.request();
     } else {
@@ -106,12 +100,11 @@ export function useAssetMonitoringReporter(nostrSignerReady: boolean): void {
       stopped = true;
       reporter.stop();
       unsubscribe();
-      unsubscribeOwner();
     };
   }, [mnemonic, nostrSignerReady, signerRevision]);
 }
 
-/** Build a report from one current custody/owner snapshot. */
+/** Build a report from one current custody snapshot. */
 export async function buildBrowserAssetMonitoringHoldings(
   database: BitcasterDB,
   scopeId: string,
@@ -124,15 +117,7 @@ export async function buildBrowserAssetMonitoringHoldings(
     .filter((proof): proof is StoredProof => proof !== null);
   const conditionIds = conditionalProofConditionIds(proofs);
   if (conditionIds === null) return null;
-  const monitoringConditionIds = [
-    ...new Set([
-      ...conditionIds,
-      ...snapshot.evictedAssets.flatMap((asset) =>
-        asset.kind === "conditional" ? [asset.conditionId] : [],
-      ),
-    ]),
-  ];
-  const catalogue = await fetchAssetMonitoringCatalogue(monitoringConditionIds, {
+  const catalogue = await fetchAssetMonitoringCatalogue(conditionIds, {
     engineBaseUrl: remote.engineBaseUrl,
     fetchImpl: remote.fetchImpl,
   });
@@ -141,7 +126,6 @@ export async function buildBrowserAssetMonitoringHoldings(
     proofs,
     catalogue,
     ...(snapshot.custody === undefined ? {} : { custody: snapshot.custody }),
-    ...(snapshot.evictedAssets.length === 0 ? {} : { evictedAssets: snapshot.evictedAssets }),
   });
 }
 
@@ -152,9 +136,6 @@ interface AssetMonitoringDatabaseSnapshot {
     readonly proofs: readonly unknown[];
     readonly proofBackupAuthorities: readonly unknown[];
   };
-  readonly evictedAssets: Awaited<
-    ReturnType<typeof listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts>
-  >;
 }
 
 function decodeCurrentCustodyProof(rawProof: unknown, scopeId: string): StoredProof | null {
@@ -167,53 +148,29 @@ export async function readAssetMonitoringSnapshot(
   database: BitcasterDB,
   scopeId: string,
 ): Promise<AssetMonitoringDatabaseSnapshot> {
-  if (!hasCustodyAuthorityTables(database)) {
-    return { evictedAssets: [] };
-  }
-  const driver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId);
-  const owner = (await driver?.captureSelectedOwnerMonitoringAuthority?.()) ?? null;
+  if (!hasCustodyAuthorityTables(database)) return {};
   const isCurrent = () =>
     database.name === browserWalletDatabaseName(scopeId) &&
-    activeBrowserWalletScopeId() === scopeId &&
-    (owner === null ||
-      (activeBrowserEncryptedWalletBackupV2RuntimeDriver(scopeId) === driver && owner.isCurrent()));
+    activeBrowserWalletScopeId() === scopeId;
   if (!isCurrent()) throw new Error("asset monitoring snapshot is stale");
   return database.transaction(
     "r",
-    [
-      database.custodyProofs,
-      database.custodyProofBackupAuthorities,
-      database.custodyConditionalKeysets,
-      database.encryptedWalletBackupV2DesiredAssets,
-      database.encryptedWalletBackupOwnerDesiredAssets,
-      database.encryptedWalletBackupOwnerAssetReceipts,
-      database.encryptedWalletBackupOwnerAcceptedHeads,
-      database.encryptedWalletBackupOwnerActiveDescriptors,
-    ],
+    [database.custodyProofs, database.custodyProofBackupAuthorities],
     async () => {
-      const [selectableProofs, lockedProofs, proofBackupAuthorities, evictedAssets] =
-        await Promise.all([
-          database.custodyProofs
-            .where("[scopeId+selectability]")
-            .equals([scopeId, "selectable"])
-            .toArray(),
-          database.custodyProofs
-            .where("[scopeId+selectability]")
-            .equals([scopeId, "locked"])
-            .toArray(),
-          database.custodyProofBackupAuthorities
-            .where("[scopeId+proofState+proofId]")
-            .between([scopeId, "", ""], [scopeId, "\uffff", "\uffff"], true, true)
-            .toArray(),
-          owner === null
-            ? Promise.resolve([])
-            : listBrowserEncryptedWalletBackupOwnerEvictedAssetMonitoringFacts({
-                database,
-                scopeId,
-                isCurrentProfile: isCurrent,
-                ownerAuthority: owner,
-              }),
-        ]);
+      const [selectableProofs, lockedProofs, proofBackupAuthorities] = await Promise.all([
+        database.custodyProofs
+          .where("[scopeId+selectability]")
+          .equals([scopeId, "selectable"])
+          .toArray(),
+        database.custodyProofs
+          .where("[scopeId+selectability]")
+          .equals([scopeId, "locked"])
+          .toArray(),
+        database.custodyProofBackupAuthorities
+          .where("[scopeId+proofState+proofId]")
+          .between([scopeId, "", ""], [scopeId, "\uffff", "\uffff"], true, true)
+          .toArray(),
+      ]);
       if (!isCurrent()) throw new Error("asset monitoring snapshot is stale");
       return {
         isCurrent,
@@ -222,7 +179,6 @@ export async function readAssetMonitoringSnapshot(
           proofs: [...selectableProofs, ...lockedProofs],
           proofBackupAuthorities,
         },
-        evictedAssets,
       };
     },
   );
@@ -242,7 +198,6 @@ export function subscribeToCommittedProofChanges(
   const observedTransactions = new WeakSet<Transaction>();
   let active = true;
   const observesAuthorities = hasCustodyAuthorityTables(database);
-  const observesBackupMetadata = hasBackupMetadataTables(database);
   const metadataUnsubscribers: Array<() => void> = [];
   const requestAfterCommit = (transaction: Transaction) => {
     if (observedTransactions.has(transaction)) return;
@@ -281,19 +236,6 @@ export function subscribeToCommittedProofChanges(
     database.custodyProofBackupAuthorities.hook("updating", authorityUpdating);
     database.custodyProofBackupAuthorities.hook("deleting", authorityDeleting);
   }
-  if (observesBackupMetadata) {
-    metadataUnsubscribers.push(
-      subscribeTableChanges(database.encryptedWalletBackupV2DesiredAssets, requestAfterCommit),
-      subscribeTableChanges(database.custodyConditionalKeysets, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupOwnerDesiredAssets, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupOwnerAssetReceipts, requestAfterCommit),
-      subscribeTableChanges(database.encryptedWalletBackupOwnerAcceptedHeads, requestAfterCommit),
-      subscribeTableChanges(
-        database.encryptedWalletBackupOwnerActiveDescriptors,
-        requestAfterCommit,
-      ),
-    );
-  }
   return () => {
     active = false;
     database.proofs.hook("creating").unsubscribe(creating);
@@ -306,17 +248,6 @@ export function subscribeToCommittedProofChanges(
     }
     metadataUnsubscribers.forEach((unsubscribe) => unsubscribe());
   };
-}
-
-function hasBackupMetadataTables(database: BitcasterDB): boolean {
-  return (
-    database.custodyConditionalKeysets !== undefined &&
-    database.encryptedWalletBackupV2DesiredAssets !== undefined &&
-    database.encryptedWalletBackupOwnerDesiredAssets !== undefined &&
-    database.encryptedWalletBackupOwnerAssetReceipts !== undefined &&
-    database.encryptedWalletBackupOwnerAcceptedHeads !== undefined &&
-    database.encryptedWalletBackupOwnerActiveDescriptors !== undefined
-  );
 }
 
 function subscribeTableChanges(

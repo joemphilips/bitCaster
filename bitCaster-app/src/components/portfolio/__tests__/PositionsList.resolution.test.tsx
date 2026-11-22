@@ -4,6 +4,16 @@ import { describe, expect, it } from "vitest";
 import i18n from "@/i18n";
 import { PositionsList } from "../PositionsList";
 import type { Position } from "@/types/portfolio";
+import type { WalletRecoveryStatus } from "@bitcaster/client-sdk/walletRecoveryStatus";
+
+// A completed recovery and a current read, so the list shows its rows (#161).
+const TAG = { activation: { scopeId: "scope", epoch: 1 }, mintSetTag: "[]" };
+const COMPLETED: WalletRecoveryStatus = {
+  kind: "completed",
+  tag: TAG,
+  passSeq: 1,
+  coverage: "full",
+};
 
 // A deadline closed the market, and the oracle has not answered.
 const pastDeadline: Position = {
@@ -41,6 +51,8 @@ describe("PositionsList resolution state", () => {
           <PositionsList
             positions={[pastDeadline]}
             positionsTab="closed"
+            recoveryStatus={COMPLETED}
+            read={{ kind: "ok", tag: TAG, afterPassSeq: 1, value: [pastDeadline] }}
             onViewPosition={() => {}}
             onClaimPayout={() => {}}
             onDiscardLostPosition={() => {}}

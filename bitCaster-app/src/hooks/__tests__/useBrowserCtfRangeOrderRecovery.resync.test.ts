@@ -16,6 +16,8 @@ await vi.hoisted(async () => {
     IDBKeyRange,
     window: dom.window,
     document: dom.window.document,
+    // The recovery index runtime calls the engine at the page origin.
+    location: dom.window.location,
     // The recovery wake dispatches its event on the jsdom window.
     CustomEvent: dom.window.CustomEvent,
     IS_REACT_ACT_ENVIRONMENT: true,
@@ -83,9 +85,10 @@ vi.mock("@/lib/browserCtfRangeOrderSubmission", () => ({
   recoverBrowserCtfRangeOrders: vi.fn(async () => ({ recovered: 0, pending: [] })),
 }));
 
-// The hook calls this once at the end of each recovery pass.
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: vi.fn(() => {
+// The hook asks for an index upload once at the end of each recovery pass.
+vi.mock("@/lib/browserRecoveryIndex", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/browserRecoveryIndex")>()),
+  uploadBrowserRecoveryIndexAfterRecovery: vi.fn(() => {
     mocks.passCompleted.shift()?.();
   }),
 }));
@@ -131,8 +134,9 @@ import {
   advanceWalletKeysetCounterPastMint,
   ensureWalletKeysetCounterReady,
 } from "@/lib/cashu";
-import { readSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { durableWalletRecoveryStatus } from "@/test/walletRecoveryStatusFixture";
 import { useBrowserCtfRangeOrderRecovery } from "../useBrowserCtfRangeOrderRecovery";
+import { useBrowserRecoveryIndex } from "../useBrowserRecoveryIndex";
 
 // The passes derive and verify real NUT-13 outputs. Under CPU load they can
 // exceed the 5 s default test timeout. These bounds only detect a hang.
@@ -158,13 +162,15 @@ let unmount: (() => void) | undefined;
 /** One page load: the hook runs its first recovery pass. */
 async function runStartupPass(): Promise<void> {
   const firstPass = nextPassCompleted();
-  ({ unmount } = renderHook(() =>
+  ({ unmount } = renderHook(() => {
+    // The wallet open reads the recovery index, as in the app.
+    useBrowserRecoveryIndex(MNEMONIC);
     useBrowserCtfRangeOrderRecovery({
       nostrSignerReady: true,
       walletMnemonic: MNEMONIC,
       walletMintUrls: MINT_URL,
-    }),
-  ));
+    });
+  }));
   await firstPass;
   unmount();
   unmount = undefined;
@@ -250,11 +256,13 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   });
 
   it("re-syncs a keyset in use after evidence that another browser signed past the cursor", async () => {
+    // This browser generated the seed. Its counter recovery checked the msat
+    // keyset, so the cursor follows its last signed output.
+    await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
     vi.stubGlobal("fetch", mint.fetch);
-    // This browser restored the msat keyset earlier, so its cursor is 1.
     await runStartupPass();
     expect(await associationComplete(regular.id)).toBe(true);
     expect(await cursor(regular.id)).toBe(1);
@@ -335,6 +343,9 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     expect(later).not.toContain("/api/v1/markets/query");
   });
   it("admits outputs that a counter-only advance skipped in the next pass", async () => {
+    // This browser generated the seed. Its counter recovery checked the msat
+    // keyset, so the cursor follows its last signed output.
+    await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "SPENT" });
@@ -350,7 +361,8 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
       unit: "msat",
       keyset: activeKeyset(regular),
     });
-    expect(await cursor(regular.id)).toBe(3);
+    // ADR-051 cursor rule: the next 150 counters after the last signed output stay unused.
+    expect(await cursor(regular.id)).toBe(3 + 150);
     expect(await selectableHoldings()).toEqual([]);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
 
@@ -361,6 +373,9 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   });
 
   it("keeps the refused plan's outputs for a later pass after an output reuse refusal", async () => {
+    // This browser generated the seed. Its counter recovery checked the msat
+    // keyset, so the cursor follows its last signed output.
+    await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "SPENT" });
@@ -461,9 +476,11 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await resync(start + 2 * HOUR_MS);
     expect(mint.restoredOutputs()).toHaveLength(probes);
     expect((await resyncRow(market.yes.id))?.failures).toBe(3);
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({
-      kind: "failed",
-      scopeId: scopeId(),
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({
+      kind: "unavailable",
+      reason: "recovery-failed",
     });
 
     // Retry clears the backoff, and the deferral is admitted.
@@ -471,10 +488,15 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     await retryBrowserSeedPositionRestore(scopeId());
     await resync(start + 2 * HOUR_MS + 1_000);
     expect(await selectableHoldings()).toContainEqual(position(market.yes, 2));
-    expect(await readSeedPositionRestoreStatus(scopeId())).toEqual({ kind: "idle" });
+    expect(
+      await durableWalletRecoveryStatus({ scopeId: scopeId(), mintUrls: [MINT_URL] }),
+    ).toMatchObject({ kind: "completed" });
   });
 
   it("advances the cursor and keeps found outputs for a later pass when admission fails", async () => {
+    // This browser generated the seed. Its counter recovery checked the msat
+    // keyset, so the cursor follows its last signed output.
+    await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
@@ -510,7 +532,8 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
 
     expect(await amounts()).toEqual([4, 8]);
     expect(await associationComplete(regular.id)).toBe(false);
-    expect(await cursor(regular.id)).toBe(3);
+    // ADR-051: the restore moves the cursor 150 counters past the last signed output.
+    expect(await cursor(regular.id)).toBe(2 + 151);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
 
     // A reload within the backoff sends no restore request.
@@ -538,13 +561,16 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
     const mint = new FakeMint(regular, [market.yes, market.no]);
     mint.sign({ keyset: market.yes, counter: 0, amount: 2, state: "UNSPENT" });
     mint.sign({ keyset: market.yes, counter: 1, amount: 4, state: "PENDING" });
+    // The old browser listed the keyset in the recovery index.
+    await mint.listInIndex([market.yes]);
     vi.stubGlobal("fetch", mint.fetch);
 
     await runStartupPass();
 
     expect(await selectableHoldings()).toEqual([position(market.yes, 2)]);
     expect(await associationComplete(market.yes.id)).toBe(false);
-    expect(await cursor(market.yes.id)).toBe(2);
+    // ADR-051: the restore moves the cursor 150 counters past the last signed output.
+    expect(await cursor(market.yes.id)).toBe(1 + 151);
     expect(await resyncRow(market.yes.id)).toMatchObject({
       pendingFromCounter: 1,
       condition: conditionalAsset(market.yes),
@@ -704,6 +730,9 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
   });
 
   it("bounds the counter scan when the mint reports every output as signed", async () => {
+    // This browser generated the seed. Its counter recovery checked the msat
+    // keyset, so the cursor follows its last signed output.
+    await recordGeneratedBrowserSeed(scopeId());
     const regular = regularKeyset();
     const mint = new FakeMint(regular, []);
     mint.sign({ keyset: regular, counter: 0, amount: 8, state: "UNSPENT" });
@@ -722,7 +751,7 @@ describe("useBrowserCtfRangeOrderRecovery — keysets that another client used",
 
     // One scan asks about 3,000 counters in requests of 100, then stops.
     expect(mint.requestsTo("/v1/restore").length - requests).toBe(30);
-    expect(await cursor(regular.id)).toBe(3_001);
+    expect(await cursor(regular.id)).toBe(3_001 + 150);
     expect((await resyncRow(regular.id))?.pendingFromCounter).toBe(1);
   });
 });

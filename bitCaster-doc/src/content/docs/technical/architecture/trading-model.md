@@ -169,7 +169,8 @@ return `413`. Rate or concurrency limits return `429` with `Retry-After`.
 
 A wallet supplies one `PAY_TO_UNLOCK` capability when it submits a public FOK
 order. The engine validates the capability during order admission. It makes no
-mint network call during admission.
+mint network call during admission. One order request carries the capability.
+The engine binds it and accepts the order in one commit, or writes nothing.
 
 The capability covers an authorized range for that one attempt. Public FOK does
 not rest on the book or leave a residual order. If the complete quantity cannot
@@ -182,8 +183,11 @@ Each matched quantity creates one fill. `fillId` identifies that real fill.
 
 The engine can group one or more fills into one atomic settlement group.
 `groupId` identifies the settlement group. The mint receives one multi-party
-conversion for the group. The current product supports complementary and mint
-conversion. It does not expose merge conversion in this release.
+conversion for the group. The current product supports complementary, mint,
+and merge conversion. A merge match pairs a sell with a sell of the
+complementary outcome set, and the mint merges the two positions into
+collateral. This API version reports a merge match as `Complementary`, with the
+taker's token side and execution price. A later engine version reports `Merge`.
 
 Mint confirmation returns exact result entries. Clients retain their submitted
 operations and confirmed results. They can recover those exact records after a
@@ -207,9 +211,32 @@ tariff is `max(1, ceil(v1 / 10))`, where `v1 = 1 + InputCount +
 ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)`. A charge recorded
 earlier under `settlement-capability-v1` keeps its `v1` amount. Each
 authenticated invalid proof or DLEQ validation attempt uses the same tariff.
-There is no separate order, fill, or settlement-failure tariff. Fills,
-cancellation, settlement failure, refund, and recovery do not debit Score. This
-tariff applies to public client capabilities.
+The tariff is not a per-order, per-fill, or settlement-failure fee. Fills,
+cancellation, settlement failure, refund, and recovery do not charge the tariff.
+This tariff applies to public client capabilities. The reused-output penalty
+below is a separate charge, not a tariff.
+
+The mint refuses a settlement when one of its outputs was already used by
+another operation, for example by the same wallet in another browser. When the
+engine can prove from the mint's answers that the output belongs to one order,
+it removes that order and any order accepted after it from the settlement, and
+it submits the remaining orders once more. If no order remains, or the
+remaining orders cannot settle, the whole settlement fails. It charges the owner of the removed
+order `reused-output-penalty-v1`: 100 Score once for that settlement. The
+balance can become negative. An order that fails only because it was in the
+same settlement pays nothing. The engine never charges its own bot. The
+penalty changes Score only. It does not take funds: a removed order follows
+the normal refund path after its authorization expires.
+
+The order status of a removed order stays `failed`, and its settlement group
+status stays `DefinitivelyRejected`.
+`GET /api/v1/{marketId}/orders/{orderId}/settlement-failure` returns the
+reason: `OwnOutputReused` for the charged order and `GroupOutputReused` for an
+order that failed with no penalty. `GET /api/v1/participation-score/history`
+returns the balance and the 50 most recent Score changes, newest first. The
+penalty has the kind `reused-output-penalty`. The CLI reads them with
+`bitcaster-cli order settlement-failure <market-id> <order-id>` and
+`bitcaster-cli score history`.
 
 If Score is insufficient, the daemon submits a payment and waits for its
 delivery state to become `credited` before it prepares the order capability.
@@ -242,8 +269,8 @@ The mint performs the conversion. Wallets control their proof material. A
 ## Comparison with on-chain CTF exchanges
 
 The names complementary, mint, and merge also appear in on-chain CTF systems.
-The implementation differs. bitCaster currently exposes complementary and mint
-conversion only. It uses one mint conversion for an atomic settlement group. It
+The implementation differs. bitCaster exposes complementary, mint, and merge
+conversion. It uses one mint conversion for an atomic settlement group. It
 does not use a peer-to-peer settlement exchange or an on-chain operator
 transaction.
 
@@ -264,10 +291,11 @@ The server does not extend price limits, consent, or expiry. If the quote wait
 ends without acceptance, the batch reports `authorityUnavailable` for the
 remaining current items. This does not guarantee a fill.
 
-The GUI and CLI can wait when the engine returns the exact
-`order-quotes-refreshing` pre-acceptance problem. The client retries the same
-serialized request and signed comment. It keeps the original capability,
-price limit, fee consent and expiry. It does not prepare a replacement order.
+The GUI and CLI can wait when the engine refuses the order before acceptance
+with the exact `order-quotes-refreshing` problem or with `order-book-conflict`.
+Neither refusal commits anything. The client sends the same serialized request
+and signed comment again. It keeps the original capability, price limit, fee
+consent and expiry. It does not prepare a replacement order.
 
 Waiting lasts at most 60 seconds from the first submission and 30 attempts.
 The first delay is one second. Later delays are two seconds. Each request has
@@ -277,12 +305,18 @@ attempt starts only while time remains before both limits.
 
 The GUI shows progress and lets you stop waiting. The CLI shows progress on
 stderr. Press Ctrl-C to stop waiting. Stopping does not release reserved funds
-or prove that the order was never accepted. Check the original order status.
+or prove that the order was never accepted. The wallet reads the original order
+and shows it once found.
 The wallet keeps its existing recovery and expiry process.
 
 A generic service error, timeout, malformed response or uncertain result stops
-automatic submission. The client reconciles the original operation. Restarting
-the app does not restart this submission loop.
+automatic submission. The client reconciles the original operation through the
+read-only order lookup and never sends the order again. When waiting stops at a
+limit or by your stop, and every attempt got one of the two refusals, no order
+exists: the wallet records the refusal and refunds after the authorization
+expires. If the stop interrupts an attempt in flight, the result is uncertain
+and the wallet uses the order lookup. Restarting the app does not restart
+this submission loop.
 
 ## Reading depth while quotes refresh
 

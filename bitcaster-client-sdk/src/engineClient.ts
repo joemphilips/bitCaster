@@ -1,4 +1,5 @@
 import {
+  OrderQuoteRefreshWaitStopped,
   requireOrderRequestTimeoutMs,
   runOrderQuoteRefreshRetry,
   type SubmitOrderOptions,
@@ -76,6 +77,9 @@ export const SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX = 64 * 1_024
 export const SUBMIT_ORDER_RESPONSE_BYTES_MAX = 1024 * 1024
 export const CONDITION_ATTESTATION_RESPONSE_BYTES_MAX = 64 * 1_024
 export const DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX = 64 * 1_024
+export const ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX = 4 * 1_024
+export const PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX = 16 * 1_024
+const PARTICIPATION_SCORE_HISTORY_ENTRIES_MAX = 50
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS = 10_000
 const SETTLEMENT_CAPABILITY_RESULT_REQUEST_TIMEOUT_MS_MAX = 60_000
 // The first hosted custody receive can take more than 10 seconds. The engine
@@ -193,10 +197,25 @@ export interface AcknowledgeSettlementCapabilityResultRequest {
   expectedVersion: number
 }
 
+/**
+ * The admission form of the order request (ADR-037 amendment of 2026-11-13).
+ * One request carries the capability artifact; the engine binds it and accepts
+ * the order in one commit, or writes nothing. The client never sends the
+ * reference form, which serves only the old two-step route until release 6.
+ */
 export interface SubmitOrderRequest {
-  settlementCapability: SettlementCapabilityReference
+  settlementCapabilityAdmission: CreateSettlementCapabilityRequest
   comment: NostrKind1Event | null
   walletId?: WalletId
+}
+
+/** One accepted order of the authenticated owner, found by condition and client order id. */
+export interface OrderLookupResponse {
+  orderId: string
+  marketId: string
+  status: 'accepted' | 'processed'
+  settlementCapability: SettlementCapabilityReference
+  artifactDigest: string
 }
 
 export interface NostrKind1Event {
@@ -215,7 +234,7 @@ export interface Fill {
   takerOrderId: string
   amountSubunits: number
   executionPrice: number
-  path: 'Complementary' | 'Mint'
+  path: MatchPath
   status: 'Matched' | 'Filled' | 'Failed'
   filledAt: string
   settlementGroup: SettlementGroupSummary
@@ -227,6 +246,8 @@ export interface Fill {
 }
 
 export type SettlementGroupStatus = components['schemas']['SettlementGroupStatus']
+
+export type MatchPath = components['schemas']['MatchPath']
 
 export interface SettlementGroupSummary {
   groupId: string
@@ -249,7 +270,7 @@ export interface MatchedDelta {
   readonly takerOrderId: string
   readonly executionPrice: number
   readonly amountSubunits: number
-  readonly path: 'Complementary' | 'Mint'
+  readonly path: MatchPath
   readonly matchedAt: string
   readonly baseAsset: MarketBaseAsset
   readonly collateralUnit: 'msat'
@@ -278,6 +299,11 @@ export interface SubmitOrderResponse {
   baseAsset: MarketBaseAsset
   divisibility: MarketDivisibility
   activeSettlementGroup: SettlementGroupSummary | null
+  /**
+   * Admission form only: the capability of the accepted order. A stored result
+   * whose capability the engine no longer keeps has none.
+   */
+  settlementCapability?: SettlementCapabilityResponse
 }
 
 export interface BatchSubmitOrdersRequest {
@@ -457,6 +483,14 @@ export interface ParticipationScoreResponse {
   consumedTotal: number
   enabled: boolean
 }
+
+export type OrderSettlementFailureReason = components['schemas']['OrderSettlementFailureReason']
+export type OrderSettlementFailure = components['schemas']['OrderSettlementFailure']
+export type OrderSettlementFailureResponse = components['schemas']['OrderSettlementFailureResponse']
+export type ParticipationScoreHistoryKind = components['schemas']['ParticipationScoreHistoryKind']
+export type ParticipationScoreHistoryEntry = components['schemas']['ParticipationScoreHistoryEntry']
+export type ParticipationScoreHistoryResponse =
+  components['schemas']['ParticipationScoreHistoryResponse']
 
 export class BitcasterEngineClient {
   private readonly baseUrl: string
@@ -676,7 +710,7 @@ export class BitcasterEngineClient {
       )
     }
     if (options.quoteRefreshRetry !== undefined)
-      return runOrderQuoteRefreshRetry(submit, isOrderQuotesRefreshingError, {
+      return runOrderQuoteRefreshRetry(submit, isOrderAdmissionResendableError, {
         ...options,
         quoteRefreshRetry: options.quoteRefreshRetry,
       })
@@ -690,6 +724,38 @@ export class BitcasterEngineClient {
     } finally {
       lifetime.dispose()
     }
+  }
+
+  /**
+   * Read-only recovery lookup of one accepted order. It never stages, verifies,
+   * or accepts. Only the documented 404 `order-not-found` means absent; any
+   * other failure throws.
+   */
+  async lookupOrderByClientOrderId(
+    conditionId: string,
+    clientOrderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderLookupResponse | null> {
+    const query = new URLSearchParams({ clientOrderId })
+    const response = await this.request(
+      `/api/v1/conditions/${encodePathSegment(conditionId)}/orders/by-client-order-id?${query}`,
+      { signal },
+      undefined,
+      true,
+      ORDER_LOOKUP_RESPONSE_BYTES_MAX,
+    )
+    if (response.status === 404) {
+      const detail = await readAllocationBoundedTextResponse(
+        response,
+        ORDER_LOOKUP_RESPONSE_BYTES_MAX,
+      ).catch(() => '')
+      const problem = parseEngineProblem(detail)
+      if (problem?.code === 'order-not-found') return null
+      throw new EngineClientError(404, detail, problem?.code, problem?.detail)
+    }
+    const value = await readAllocationBoundedJsonResponse(response, ORDER_LOOKUP_RESPONSE_BYTES_MAX)
+    signal?.throwIfAborted()
+    return decodeOrderLookupResponse(value)
   }
 
   async previewFokOrder(
@@ -758,6 +824,31 @@ export class BitcasterEngineClient {
     const value = await readAllocationBoundedJsonResponse(response, SUBMIT_ORDER_RESPONSE_BYTES_MAX)
     signal?.throwIfAborted()
     return decodeOrderStatusResponse(value)
+  }
+
+  /** The recorded settlement failure reason of one owned order. Null when the engine does not find the order. */
+  async getOrderSettlementFailure(
+    marketId: string,
+    orderId: string,
+    signal?: AbortSignal,
+  ): Promise<OrderSettlementFailureResponse | null> {
+    const response = await this.request(
+      `/api/v1/${encodePathSegment(marketId)}/orders/${encodePathSegment(orderId)}/settlement-failure`,
+      { signal },
+      undefined,
+      true,
+      ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX,
+    )
+    if (response.status === 404) {
+      await response.body?.cancel().catch(() => {})
+      return null
+    }
+    const value = await readAllocationBoundedJsonResponse(
+      response,
+      ORDER_SETTLEMENT_FAILURE_RESPONSE_BYTES_MAX,
+    )
+    signal?.throwIfAborted()
+    return decodeOrderSettlementFailureResponse(value, orderId)
   }
 
   async listMyOrders(conditionId: string, cursor?: string): Promise<ListMyOrdersResponse> {
@@ -890,6 +981,25 @@ export class BitcasterEngineClient {
   async getParticipationScore(): Promise<ParticipationScoreResponse> {
     const response = await this.request('/api/v1/participation-score')
     return (await response.json()) as ParticipationScoreResponse
+  }
+
+  /** The caller's Score balance and its most recent changes, newest first. */
+  async getParticipationScoreHistory(
+    signal?: AbortSignal,
+  ): Promise<ParticipationScoreHistoryResponse> {
+    const response = await this.request(
+      '/api/v1/participation-score/history',
+      { signal },
+      undefined,
+      false,
+      PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX,
+    )
+    const value = await readAllocationBoundedJsonResponse(
+      response,
+      PARTICIPATION_SCORE_HISTORY_RESPONSE_BYTES_MAX,
+    )
+    signal?.throwIfAborted()
+    return decodeParticipationScoreHistoryResponse(value)
   }
 
   async getDurableRecipientDeliveryStatus(
@@ -1220,15 +1330,19 @@ function assetMonitoringPortfolioQueryString(queryInput: AssetMonitoringPortfoli
 }
 
 export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
-  const response = exactEngineRecord(value, [
-    'orderId',
-    'status',
-    'remainingAmountSubunits',
-    'fills',
-    'baseAsset',
-    'divisibility',
-    'activeSettlementGroup',
-  ])
+  const response = exactEngineRecord(
+    value,
+    [
+      'orderId',
+      'status',
+      'remainingAmountSubunits',
+      'fills',
+      'baseAsset',
+      'divisibility',
+      'activeSettlementGroup',
+    ],
+    ['settlementCapability'],
+  )
   requireUuid(response.orderId, 'order id')
   requireOrderStatus(response.status)
   requireNonnegativeSafeInteger(response.remainingAmountSubunits, 'remaining order amount')
@@ -1248,6 +1362,96 @@ export function decodeSubmitOrderResponse(value: unknown): SubmitOrderResponse {
     baseAsset: 'sat',
     divisibility,
     activeSettlementGroup,
+    ...(Object.hasOwn(response, 'settlementCapability')
+      ? { settlementCapability: decodeSettlementCapabilityResponse(response.settlementCapability) }
+      : {}),
+  }
+}
+
+const SETTLEMENT_CAPABILITY_STATES = [
+  'staged',
+  'bindingPending',
+  'bound',
+  'selected',
+  'uncertain',
+  'terminal',
+  'quarantined',
+] as const satisfies readonly SettlementCapabilityState[]
+
+function decodeSettlementCapabilityResponse(value: unknown): SettlementCapabilityResponse {
+  const capability = exactEngineRecord(value, [
+    'reference',
+    'orderId',
+    'clientOrderId',
+    'marketId',
+    'artifactDigest',
+    'state',
+    'version',
+    'authorizationExpiresAt',
+    'stageExpiresAt',
+    'settlementGroup',
+  ])
+  const reference = decodeSettlementCapabilityReference(capability.reference)
+  requireUuid(capability.orderId, 'capability order id')
+  requireBoundedText(capability.clientOrderId, 128, 'capability client order id')
+  requireBoundedText(capability.marketId, 256, 'capability market id')
+  requireSha256(capability.artifactDigest, 'capability artifact digest')
+  if (!SETTLEMENT_CAPABILITY_STATES.includes(capability.state as SettlementCapabilityState)) {
+    throw new Error('capability state is invalid')
+  }
+  requireNonnegativeSafeInteger(capability.version, 'capability version')
+  requireIsoEngineTime(capability.authorizationExpiresAt, 'capability authorization expiry')
+  requireIsoEngineTime(capability.stageExpiresAt, 'capability stage expiry')
+  return {
+    reference,
+    orderId: capability.orderId,
+    clientOrderId: capability.clientOrderId,
+    marketId: capability.marketId,
+    artifactDigest: capability.artifactDigest,
+    state: capability.state as SettlementCapabilityState,
+    version: capability.version,
+    authorizationExpiresAt: capability.authorizationExpiresAt,
+    stageExpiresAt: capability.stageExpiresAt,
+    settlementGroup:
+      capability.settlementGroup === null
+        ? null
+        : decodeSettlementGroup(capability.settlementGroup),
+  }
+}
+
+function decodeSettlementCapabilityReference(value: unknown): SettlementCapabilityReference {
+  const reference = exactEngineRecord(value, ['artifactId', 'bindingDigest'])
+  requireUuid(reference.artifactId, 'capability artifact id')
+  requireSha256(reference.bindingDigest, 'capability binding digest')
+  return { artifactId: reference.artifactId, bindingDigest: reference.bindingDigest }
+}
+
+export const ORDER_LOOKUP_RESPONSE_BYTES_MAX = 4 * 1024
+
+export function decodeOrderLookupResponse(value: unknown): OrderLookupResponse {
+  try {
+    const lookup = exactEngineRecord(value, [
+      'orderId',
+      'marketId',
+      'status',
+      'settlementCapability',
+      'artifactDigest',
+    ])
+    requireUuid(lookup.orderId, 'order id')
+    requireBoundedText(lookup.marketId, 256, 'order market id')
+    if (lookup.status !== 'accepted' && lookup.status !== 'processed') {
+      throw new Error('order status is invalid')
+    }
+    requireSha256(lookup.artifactDigest, 'artifact digest')
+    return {
+      orderId: lookup.orderId,
+      marketId: lookup.marketId,
+      status: lookup.status,
+      settlementCapability: decodeSettlementCapabilityReference(lookup.settlementCapability),
+      artifactDigest: lookup.artifactDigest,
+    }
+  } catch {
+    throw new Error('engine order lookup response is invalid')
   }
 }
 
@@ -1307,6 +1511,78 @@ export function decodeOrderStatusResponse(value: unknown): OrderStatusResponse {
     divisibility,
     activeSettlementGroup,
   }
+}
+
+/** Decode the settlement failure of the requested order. An unknown reason or field is refused. */
+export function decodeOrderSettlementFailureResponse(
+  value: unknown,
+  orderId: string,
+): OrderSettlementFailureResponse {
+  const response = exactEngineRecord(value, ['orderId', 'failure'])
+  if (response.orderId !== orderId) throw new Error('settlement failure order id is invalid')
+  if (response.failure === null) return { orderId, failure: null }
+  const failure = exactEngineRecord(response.failure, ['groupId', 'reason', 'failedAt'])
+  requireUuid(failure.groupId, 'settlement failure group id')
+  requireIsoEngineTime(failure.failedAt, 'settlement failure time')
+  return {
+    orderId,
+    failure: {
+      groupId: failure.groupId,
+      reason: decodeOrderSettlementFailureReason(failure.reason),
+      failedAt: failure.failedAt,
+    },
+  }
+}
+
+function decodeOrderSettlementFailureReason(value: unknown): OrderSettlementFailureReason {
+  switch (value) {
+    case 'OwnOutputReused':
+    case 'GroupOutputReused':
+      return value
+    default:
+      throw new Error('settlement failure reason is invalid')
+  }
+}
+
+/** Decode the bounded Score history. An unknown kind or field is refused. */
+export function decodeParticipationScoreHistoryResponse(
+  value: unknown,
+): ParticipationScoreHistoryResponse {
+  const response = exactEngineRecord(value, ['balance', 'entries'])
+  requireSafeInteger(response.balance, 'Score balance')
+  const entries = boundedEngineArray(
+    response.entries,
+    PARTICIPATION_SCORE_HISTORY_ENTRIES_MAX,
+    'Score history entries',
+  ).map((item): ParticipationScoreHistoryEntry => {
+    const entry = exactEngineRecord(item, ['kind', 'amountScore', 'balanceAfter', 'occurredAt'])
+    requireSafeInteger(entry.amountScore, 'Score history amount')
+    requireSafeInteger(entry.balanceAfter, 'Score history balance')
+    requireIsoEngineTime(entry.occurredAt, 'Score history time')
+    return {
+      kind: decodeParticipationScoreHistoryKind(entry.kind),
+      amountScore: entry.amountScore,
+      balanceAfter: entry.balanceAfter,
+      occurredAt: entry.occurredAt,
+    }
+  })
+  return { balance: response.balance, entries }
+}
+
+function decodeParticipationScoreHistoryKind(value: unknown): ParticipationScoreHistoryKind {
+  switch (value) {
+    case 'purchase':
+    case 'capability-binding':
+    case 'invalid-capability-validation':
+    case 'reused-output-penalty':
+      return value
+    default:
+      throw new Error('Score history kind is invalid')
+  }
+}
+
+function requireSafeInteger(value: unknown, name: string): asserts value is number {
+  if (!Number.isSafeInteger(value)) throw new Error(`${name} is invalid`)
 }
 
 function decodeOrderStatusQuoteBounds(
@@ -1385,9 +1661,7 @@ function decodeFill(value: unknown): Fill {
   requireUuid(fill.makerOrderId, 'maker order id')
   requireUuid(fill.takerOrderId, 'taker order id')
   requirePositiveSafeInteger(fill.amountSubunits, 'fill amount')
-  if (fill.path !== 'Complementary' && fill.path !== 'Mint') {
-    throw new Error('fill path is invalid')
-  }
+  const path = decodeMatchPath(fill.path, 'fill path is invalid')
   if (fill.status !== 'Matched' && fill.status !== 'Filled' && fill.status !== 'Failed') {
     throw new Error('fill status is invalid')
   }
@@ -1410,7 +1684,7 @@ function decodeFill(value: unknown): Fill {
     takerOrderId: fill.takerOrderId as string,
     amountSubunits: fill.amountSubunits as number,
     executionPrice: fill.executionPrice as number,
-    path: fill.path,
+    path,
     status: fill.status,
     filledAt: fill.filledAt as string,
     settlementGroup: decodeSettlementGroup(fill.settlementGroup),
@@ -1495,9 +1769,7 @@ export function decodeMatchedDelta(value: unknown): MatchedDelta {
   requireUuid(delta.takerOrderId, 'matched taker order id')
   requirePositiveSafeInteger(delta.executionPrice, 'matched execution price')
   requirePositiveSafeInteger(delta.amountSubunits, 'matched amount')
-  if (delta.path !== 'Complementary' && delta.path !== 'Mint') {
-    throw new Error('matched path is invalid')
-  }
+  const path = decodeMatchPath(delta.path, 'matched path is invalid')
   requireIsoEngineTime(delta.matchedAt, 'matched time')
   if (delta.baseAsset !== 'sat') throw new Error('matched base asset is invalid')
   if (delta.collateralUnit !== 'msat') throw new Error('matched collateral unit is invalid')
@@ -1517,7 +1789,7 @@ export function decodeMatchedDelta(value: unknown): MatchedDelta {
     takerOrderId: delta.takerOrderId,
     executionPrice: delta.executionPrice,
     amountSubunits: delta.amountSubunits,
-    path: delta.path,
+    path,
     matchedAt: delta.matchedAt,
     baseAsset: 'sat',
     collateralUnit: 'msat',
@@ -1562,6 +1834,19 @@ export function decodeOrderLifecycleChangedDelta(value: unknown): OrderLifecycle
         ? null
         : decodeSettlementGroup(delta.activeSettlementGroup),
   }
+}
+
+// The readers accept every contract value, including `Merge`, which the
+// engine does not send yet. A new generated value is a compile error here.
+const MATCH_PATHS: Readonly<Record<MatchPath, true>> = {
+  Complementary: true,
+  Mint: true,
+  Merge: true,
+}
+
+function decodeMatchPath(value: unknown, error: string): MatchPath {
+  if (typeof value !== 'string' || !Object.hasOwn(MATCH_PATHS, value)) throw new Error(error)
+  return value as MatchPath
 }
 
 function requireOrderStatus(value: unknown): asserts value is OrderLifecycleStatus {
@@ -1636,6 +1921,22 @@ function requireUuid(value: unknown, name: string): asserts value is string {
     typeof value !== 'string' ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
   ) {
+    throw new Error(`${name} is invalid`)
+  }
+}
+
+function requireSha256(value: unknown, name: string): asserts value is string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${name} is invalid`)
+  }
+}
+
+function requireBoundedText(
+  value: unknown,
+  maximum: number,
+  name: string,
+): asserts value is string {
+  if (typeof value !== 'string' || value.length < 1 || value.length > maximum) {
     throw new Error(`${name} is invalid`)
   }
 }
@@ -1798,35 +2099,79 @@ export class EngineClientError extends Error {
   }
 }
 
-const RETRYABLE_ORDER_BOOK_CONFLICT =
-  'Order book changed while submitting order; retry the request.'
+/**
+ * The client outcome of a failed admission-form order request (ADR-037
+ * amendment of 2026-11-13, decision 6). `rejected` is a documented refusal that
+ * committed nothing: the journal records `order-request-rejected`. Every other
+ * failure is `uncertain`: the record stays `order-requested`, and recovery only
+ * reads the order. The resend loop consumes the two refusals that permit the
+ * in-flow resend; alone they are uncertain here. When the loop stops (budget,
+ * expiry or a user cancel), the stop is a refusal only if every attempt got
+ * one of those refusals; a stop that interrupts an attempt stays uncertain.
+ */
+export type OrderSubmissionFailure =
+  | { readonly kind: 'rejected'; readonly code: string | null }
+  | { readonly kind: 'uncertain' }
 
-export function isDefinitiveOrderSubmissionError(error: EngineClientError): boolean {
-  if (
-    error.status < 400 ||
-    error.status >= 500 ||
-    error.status === 401 ||
-    error.status === 403 ||
-    error.status === 408 ||
-    error.status === 425 ||
-    error.status === 429
-  ) {
-    return false
-  }
-  if (error.status !== 409) return true
-  if (error.code !== undefined) return error.code !== 'order-book-conflict'
-  return orderSubmissionErrorDetail(error) !== RETRYABLE_ORDER_BOOK_CONFLICT
+// The admission form can also replay a stored result through the reference
+// form, after this request's commit exists. That replay can answer 403
+// `market-closed`, 404 `order-capability-not-found`, 409
+// `order-capability-route-mismatch` and 409 `order-capability-not-current`.
+// The client cannot tell such an answer from a refusal, so those four stay
+// uncertain: recovery reads the order instead of reporting that no order exists.
+const REJECTED_ORDER_SUBMISSION_CODES: Readonly<Record<number, readonly string[]>> = {
+  403: [],
+  404: ['order-market-not-found', 'settlement-capability-not-found'],
+  409: [
+    'order-processing-conflict',
+    'order-market-closed',
+    'settlement-capability-conflict',
+    'settlement-capability-market-unavailable',
+  ],
 }
 
-function orderSubmissionErrorDetail(error: EngineClientError): string {
-  if (error.problemDetail !== undefined) return error.problemDetail
-  const detail = error.detail.trim()
-  try {
-    const parsed = JSON.parse(detail) as unknown
-    return typeof parsed === 'string' ? parsed : detail
-  } catch {
-    return detail
+export function classifyOrderSubmissionFailure(error: unknown): OrderSubmissionFailure {
+  // The in-flow resend stopped (budget, expiry or cancel). Only refusals that
+  // commit nothing make it definitive; an interrupted attempt stays uncertain.
+  if (error instanceof OrderQuoteRefreshWaitStopped) {
+    return error.allAttemptsRefused
+      ? { kind: 'rejected', code: error.lastRefusalCode }
+      : { kind: 'uncertain' }
   }
+  if (!(error instanceof EngineClientError)) return { kind: 'uncertain' }
+  const code = error.code ?? null
+  switch (error.status) {
+    // Request validation (also framework validation without a code), the
+    // Participation Score tariff, the body limit before authentication, and
+    // the rate and capacity limits all refuse before any write.
+    case 400:
+    case 402:
+    case 413:
+    case 429:
+      return { kind: 'rejected', code }
+    case 403:
+    case 404:
+    case 409:
+      return code !== null && REJECTED_ORDER_SUBMISSION_CODES[error.status]!.includes(code)
+        ? { kind: 'rejected', code }
+        : { kind: 'uncertain' }
+    default:
+      return { kind: 'uncertain' }
+  }
+}
+
+/**
+ * In the active submit flow, these two refusals commit nothing and permit an
+ * exact resend of the identical bytes (ADR-037 amendment of 2026-11-13). The
+ * loop of orderQuoteRefreshRetry bounds the resend.
+ */
+export function isOrderAdmissionResendableError(error: unknown): boolean {
+  return (
+    isQuotesRefreshingProblem(error) ||
+    (error instanceof EngineClientError &&
+      error.status === 409 &&
+      error.code === 'order-book-conflict')
+  )
 }
 
 function encodePathSegment(segment: string): string {
@@ -1895,11 +2240,6 @@ function normalizeHeaders(headers: HeadersInit | undefined): Record<string, stri
   }
   if (Array.isArray(headers)) return Object.fromEntries(headers)
   return { ...headers }
-}
-
-/** In an order submission, this exact problem permits exact-original resubmission. */
-export function isOrderQuotesRefreshingError(error: unknown): boolean {
-  return isQuotesRefreshingProblem(error)
 }
 
 /** A failed depth read preserves last-known display data; it is not an empty book. */

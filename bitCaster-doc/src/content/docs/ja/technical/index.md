@@ -558,6 +558,9 @@ bitcaster-cli order wait <market-id> <order-id> --timeout-ms 30000
 `wait.status: "timed_out"` の場合、終了コードはゼロ以外になります。
 タイムアウトは監視だけを停止します。注文の取消や準備の取消は行いません。
 同じ注文 ID で再確認してください。
+`failed` の注文では、`bitcaster-cli order settlement-failure <market-id> <order-id>` が、
+出力がすでに使われていた場合の理由、または `null` を返します。
+`bitcaster-cli score history` は、最近の Participation Score の変動を返します。
 
 ### 結果判定済みポジションを償還する
 

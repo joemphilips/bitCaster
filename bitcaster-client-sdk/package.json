@@ -163,113 +163,9 @@
       "types": "./dist/recoverableWalletStorage.d.ts",
       "import": "./dist/recoverableWalletStorage.js"
     },
-    "./encryptedWalletBackup": {
-      "types": "./dist/encryptedWalletBackup.d.ts",
-      "import": "./dist/encryptedWalletBackup.js"
-    },
-    "./encryptedWalletBackupV2Keys": {
-      "types": "./dist/encryptedWalletBackupV2Keys.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Keys.js"
-    },
-    "./encryptedWalletBackupV2Bundle": {
-      "types": "./dist/encryptedWalletBackupV2Bundle.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Bundle.js"
-    },
-    "./encryptedWalletBackupV2Descriptor": {
-      "types": "./dist/encryptedWalletBackupV2Descriptor.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Descriptor.js"
-    },
-    "./encryptedWalletBackupV2Head": {
-      "types": "./dist/encryptedWalletBackupV2Head.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Head.js"
-    },
-    "./encryptedWalletBackupV2Mutation": {
-      "types": "./dist/encryptedWalletBackupV2Mutation.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Mutation.js"
-    },
-    "./encryptedWalletBackupV2Receipt": {
-      "types": "./dist/encryptedWalletBackupV2Receipt.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Receipt.js"
-    },
-    "./encryptedWalletBackupV2ServiceCodec": {
-      "types": "./dist/encryptedWalletBackupV2ServiceCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2ServiceCodec.js"
-    },
-    "./encryptedWalletBackupV2HttpCodec": {
-      "types": "./dist/encryptedWalletBackupV2HttpCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2HttpCodec.js"
-    },
-    "./encryptedWalletBackupV2DelegatedServerCodec": {
-      "types": "./dist/encryptedWalletBackupV2DelegatedServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupV2DelegatedServerCodec.js"
-    },
-    "./encryptedWalletBackupV2HttpAdapter": {
-      "types": "./dist/encryptedWalletBackupV2HttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupV2HttpAdapter.js"
-    },
-    "./encryptedWalletBackupOwnerHttpAdapter": {
-      "types": "./dist/encryptedWalletBackupOwnerHttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerHttpAdapter.js"
-    },
-    "./encryptedWalletBackupOwnerClient": {
-      "types": "./dist/encryptedWalletBackupOwnerClient.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerClient.js"
-    },
-    "./encryptedWalletBackupOwnerDiscovery": {
-      "types": "./dist/encryptedWalletBackupOwnerDiscovery.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerDiscovery.js"
-    },
-    "./encryptedWalletBackupOwnerHead": {
-      "types": "./dist/encryptedWalletBackupOwnerHead.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerHead.js"
-    },
-    "./encryptedWalletBackupOwnerServiceCodec": {
-      "types": "./dist/encryptedWalletBackupOwnerServiceCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerServiceCodec.js"
-    },
-    "./encryptedWalletBackupOwnerDeletionAuthority": {
-      "types": "./dist/encryptedWalletBackupOwnerDeletionAuthority.d.ts",
-      "import": "./dist/encryptedWalletBackupOwnerDeletionAuthority.js"
-    },
-    "./encryptedWalletBackupV2RequestProof": {
-      "types": "./dist/encryptedWalletBackupV2RequestProof.d.ts",
-      "import": "./dist/encryptedWalletBackupV2RequestProof.js"
-    },
     "./encryptedWalletBackupV2ProofSet": {
       "types": "./dist/encryptedWalletBackupV2ProofSet.d.ts",
       "import": "./dist/encryptedWalletBackupV2ProofSet.js"
-    },
-    "./encryptedWalletBackupV2Sync": {
-      "types": "./dist/encryptedWalletBackupV2Sync.d.ts",
-      "import": "./dist/encryptedWalletBackupV2Sync.js"
-    },
-    "./encryptedWalletBackupEnrollment": {
-      "types": "./dist/encryptedWalletBackupEnrollment.d.ts",
-      "import": "./dist/encryptedWalletBackupEnrollment.js"
-    },
-    "./encryptedWalletBackupHttpCodec": {
-      "types": "./dist/encryptedWalletBackupHttpCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupHttpCodec.js"
-    },
-    "./encryptedWalletBackupHttpAdapter": {
-      "types": "./dist/encryptedWalletBackupHttpAdapter.d.ts",
-      "import": "./dist/encryptedWalletBackupHttpAdapter.js"
-    },
-    "./encryptedWalletBackupNip98AccountAuthorization": {
-      "types": "./dist/encryptedWalletBackupNip98AccountAuthorization.d.ts",
-      "import": "./dist/encryptedWalletBackupNip98AccountAuthorization.js"
-    },
-    "./encryptedWalletBackupRetrySchedule": {
-      "types": "./dist/encryptedWalletBackupRetrySchedule.d.ts",
-      "import": "./dist/encryptedWalletBackupRetrySchedule.js"
-    },
-    "./encryptedWalletBackupServerCodec": {
-      "types": "./dist/encryptedWalletBackupServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupServerCodec.js"
-    },
-    "./encryptedWalletBackupDelegatedServerCodec": {
-      "types": "./dist/encryptedWalletBackupDelegatedServerCodec.d.ts",
-      "import": "./dist/encryptedWalletBackupDelegatedServerCodec.js"
     },
     "./managedConditionInventory": {
       "types": "./dist/managedConditionInventory.d.ts",
@@ -326,6 +222,10 @@
     "./ctfRangeMintMetadata": {
       "types": "./dist/ctfRangeMintMetadata.d.ts",
       "import": "./dist/ctfRangeMintMetadata.js"
+    },
+    "./ctfRangeOrderAdmission": {
+      "types": "./dist/ctfRangeOrderAdmission.d.ts",
+      "import": "./dist/ctfRangeOrderAdmission.js"
     },
     "./ctfRangeOrderJournal": {
       "types": "./dist/ctfRangeOrderJournal.d.ts",
@@ -423,6 +323,10 @@
       "types": "./dist/seedPositionRestore.d.ts",
       "import": "./dist/seedPositionRestore.js"
     },
+    "./walletRecoveryStatus": {
+      "types": "./dist/walletRecoveryStatus.d.ts",
+      "import": "./dist/walletRecoveryStatus.js"
+    },
     "./engineClient": {
       "types": "./dist/engineClient.d.ts",
       "import": "./dist/engineClient.js"
@@ -495,9 +399,41 @@
       "types": "./dist/mintRefusal.d.ts",
       "import": "./dist/mintRefusal.js"
     },
+    "./ctfRangeRecoveryRefusal": {
+      "types": "./dist/ctfRangeRecoveryRefusal.d.ts",
+      "import": "./dist/ctfRangeRecoveryRefusal.js"
+    },
+    "./ctfRangeRefundReplacedPlans": {
+      "types": "./dist/ctfRangeRefundReplacedPlans.d.ts",
+      "import": "./dist/ctfRangeRefundReplacedPlans.js"
+    },
     "./seedCounterGapScan": {
       "types": "./dist/seedCounterGapScan.d.ts",
       "import": "./dist/seedCounterGapScan.js"
+    },
+    "./ctfRangeOrderOutputCheck": {
+      "types": "./dist/ctfRangeOrderOutputCheck.d.ts",
+      "import": "./dist/ctfRangeOrderOutputCheck.js"
+    },
+    "./seedCounterAdmissionScan": {
+      "types": "./dist/seedCounterAdmissionScan.d.ts",
+      "import": "./dist/seedCounterAdmissionScan.js"
+    },
+    "./recoveryIndexDocument": {
+      "types": "./dist/recoveryIndexDocument.d.ts",
+      "import": "./dist/recoveryIndexDocument.js"
+    },
+    "./recoveryIndexEngine": {
+      "types": "./dist/recoveryIndexEngine.d.ts",
+      "import": "./dist/recoveryIndexEngine.js"
+    },
+    "./recoveryIndexSync": {
+      "types": "./dist/recoveryIndexSync.d.ts",
+      "import": "./dist/recoveryIndexSync.js"
+    },
+    "./recoveryIndexRestore": {
+      "types": "./dist/recoveryIndexRestore.d.ts",
+      "import": "./dist/recoveryIndexRestore.js"
     },
     "./proofUnit": {
       "types": "./dist/proofUnit.d.ts",
@@ -514,10 +450,6 @@
     "./assetMonitoringReporter": {
       "types": "./dist/assetMonitoringReporter.d.ts",
       "import": "./dist/assetMonitoringReporter.js"
-    },
-    "./targetedAssetRecovery": {
-      "types": "./dist/targetedAssetRecovery.d.ts",
-      "import": "./dist/targetedAssetRecovery.js"
     },
     "./participationScore": {
       "types": "./dist/participationScore.d.ts",
@@ -591,6 +523,7 @@
     "@scure/bip39": "2.0.1",
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@ngraveio/bc-ur": "1.1.13",
+    "@noble/ciphers": "2.1.1",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
     "cborg": "5.1.7",

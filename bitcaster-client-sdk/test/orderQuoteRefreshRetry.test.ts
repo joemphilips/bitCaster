@@ -4,7 +4,7 @@ import {
   runOrderQuoteRefreshRetry,
   OrderQuoteRefreshWaitStopped,
 } from '../src/orderQuoteRefreshRetry.ts'
-import { isOrderQuotesRefreshingError, EngineClientError } from '../src/engineClient.ts'
+import { isOrderAdmissionResendableError, EngineClientError } from '../src/engineClient.ts'
 
 const refusal = new EngineClientError(
   503,
@@ -23,7 +23,7 @@ function deferred<T>() {
 }
 
 test('only the complete exact preaccept problem permits retry', () => {
-  assert.equal(isOrderQuotesRefreshingError(refusal), true)
+  assert.equal(isOrderAdmissionResendableError(refusal), true)
   for (const detail of [
     '',
     '{}',
@@ -39,8 +39,8 @@ test('only the complete exact preaccept problem permits retry', () => {
       code: 'order-quotes-refreshing',
     }),
   ])
-    assert.equal(isOrderQuotesRefreshingError(new EngineClientError(503, detail)), false)
-  assert.equal(isOrderQuotesRefreshingError(new Error('order-quotes-refreshing')), false)
+    assert.equal(isOrderAdmissionResendableError(new EngineClientError(503, detail)), false)
+  assert.equal(isOrderAdmissionResendableError(new Error('order-quotes-refreshing')), false)
 })
 
 test('waits one second after exact refusal and submits again once', async (t) => {
@@ -52,7 +52,7 @@ test('waits one second after exact refusal and submits again once', async (t) =>
       if (++calls === 1) throw refusal
       return 'accepted'
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       quoteRefreshRetry: {
         authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120,
@@ -79,7 +79,7 @@ test('cancellation stops waiting without a second dispatch', async (t) => {
       calls++
       throw refusal
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       signal: controller.signal,
       quoteRefreshRetry: {
@@ -109,7 +109,7 @@ test('generic failure never enters the waiting policy', async () => {
         calls++
         throw error
       },
-      isOrderQuotesRefreshingError,
+      isOrderAdmissionResendableError,
       {
         quoteRefreshRetry: {
           authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120,
@@ -135,7 +135,7 @@ test('an expired authorization never dispatches', async (t) => {
         calls++
         return 1
       },
-      isOrderQuotesRefreshingError,
+      isOrderAdmissionResendableError,
       {
         quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 },
       },
@@ -159,7 +159,7 @@ test('a short-lived authorization submits with an attempt limit at its expiry', 
       entered.resolve()
       return new Promise(() => {})
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 + 5 },
     },
@@ -191,7 +191,7 @@ test('a quote-refresh retry uses the time left after its delay', async (t) => {
       second.resolve()
       return new Promise(() => {})
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       quoteRefreshRetry: {
         authorizationExpiresAtUnixSeconds: MOCKED_NOW_MS / 1000 + 10,
@@ -227,7 +227,7 @@ test('attempt timeout exits after 30 seconds even when a transport ignores cance
       entered.resolve()
       return new Promise(() => {})
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120 },
     },
@@ -263,7 +263,7 @@ test('a caller can shorten but not extend the 30-second attempt limit', async ()
     /between 1 and 30000 milliseconds/,
   )
   await assert.rejects(
-    runOrderQuoteRefreshRetry(async () => 1, isOrderQuotesRefreshingError, {
+    runOrderQuoteRefreshRetry(async () => 1, isOrderAdmissionResendableError, {
       requestTimeoutMs: 30_001,
       quoteRefreshRetry: { authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120 },
     }),
@@ -339,7 +339,7 @@ test('total wait budget does not reset after a refusal', async (t) => {
       calls++
       throw refusal
     },
-    isOrderQuotesRefreshingError,
+    isOrderAdmissionResendableError,
     {
       quoteRefreshRetry: {
         authorizationExpiresAtUnixSeconds: Math.floor(Date.now() / 1000) + 120,

@@ -11,7 +11,7 @@ import {
   decodeSubmitOrderResponse,
   EngineClientError,
   DURABLE_RECIPIENT_DELIVERY_RESPONSE_BYTES_MAX,
-  isDefinitiveOrderSubmissionError,
+  classifyOrderSubmissionFailure,
   SETTLEMENT_CAPABILITY_RESULT_ERROR_RESPONSE_BYTES_MAX,
   SETTLEMENT_CAPABILITY_RESULT_RESPONSE_BYTES_MAX,
   SUBMIT_ORDER_RESPONSE_BYTES_MAX,
@@ -30,6 +30,27 @@ import { isKind89NostrEvent } from '../src/marketLifecycle.ts'
 import { oracleFixture } from './fixtures/oraclePublication.ts'
 
 const DISPLAY_WALLET_ID = decodeDurableCustodyWalletId('c'.repeat(64))
+
+const ORDER_ADMISSION: CreateSettlementCapabilityRequest = {
+  stageIdempotencyKey: 'authorization-1',
+  clientOrderId: 'client-1',
+  marketId: `${'a'.repeat(64)}-Alpha`,
+  orderIntent: {
+    outcomeId: 'Alpha',
+    tokenSide: 'Outcome',
+    side: 'Buy',
+    price: 400,
+    maxQuotePaymentSubunits: 400,
+    minQuotePaymentSubunits: null,
+    amountSubunits: 1_000,
+    minimumFillAmountSubunits: 1_000,
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    timeInForce: 'FOK',
+    expiresAt: null,
+  },
+  artifact: 'Y2Fub25pY2FsLWFydGlmYWN0',
+}
 
 function durableRecipientSubmission(deliveryId: string): DurableRecipientDeliverySubmission {
   const token = 'cashuBabc123'
@@ -359,6 +380,33 @@ test('decodeMatchedDelta enforces the exact public match contract', () => {
   assert.deepEqual(decodeMatchedDelta(value), value)
   assert.throws(() => decodeMatchedDelta({ ...value, FillId: value.fillId }), /fields are invalid/)
   assert.throws(() => decodeMatchedDelta({ ...value, fillId: 'not-a-uuid' }), /fill id is invalid/)
+})
+
+test('decodeMatchedDelta accepts every contract match path and refuses any other', () => {
+  const value = {
+    marketId: 'condition-no',
+    fillId: '11111111-1111-4111-8111-111111111111',
+    makerOrderId: '22222222-2222-4222-8222-222222222222',
+    takerOrderId: '33333333-3333-4333-8333-333333333333',
+    executionPrice: 620,
+    amountSubunits: 1_000,
+    path: 'Merge',
+    matchedAt: '2026-08-01T00:00:00.000Z',
+    baseAsset: 'sat',
+    collateralUnit: 'msat',
+    divisibility: 1_000,
+    quotePaymentSubunits: 620,
+    outcomeFaceAmountSubunits: 1_000,
+    tokenSide: 'Outcome',
+  } as const
+
+  for (const path of ['Complementary', 'Mint', 'Merge'] as const) {
+    assert.equal(decodeMatchedDelta({ ...value, path }).path, path)
+  }
+  for (const path of ['merge', 'MERGE', 'Split', '', null, undefined, 2]) {
+    assert.throws(() => decodeMatchedDelta({ ...value, path }), /matched path is invalid/)
+  }
+  assert.throws(() => decodeMatchedDelta({ ...value, mergedWith: 'YES' }), /fields are invalid/)
 })
 
 test('decodeOrderLifecycleChangedDelta enforces the retained owner notification contract', () => {
@@ -990,7 +1038,7 @@ test('BitcasterEngineClient default fetch keeps the browser fetch receiver', asy
   }
 })
 
-test('BitcasterEngineClient.submitOrder sends display-only wallet attribution with the capability reference', async () => {
+test('BitcasterEngineClient.submitOrder sends display-only wallet attribution with the admission form', async () => {
   const comment = {
     id: '1'.repeat(64),
     pubkey: '2'.repeat(64),
@@ -1001,10 +1049,7 @@ test('BitcasterEngineClient.submitOrder sends display-only wallet attribution wi
     sig: '3'.repeat(128),
   }
   const expectedBody = JSON.stringify({
-    settlementCapability: {
-      artifactId: '11111111-1111-4111-8111-111111111111',
-      bindingDigest: 'a'.repeat(64),
-    },
+    settlementCapabilityAdmission: ORDER_ADMISSION,
     comment,
     walletId: DISPLAY_WALLET_ID,
   })
@@ -1037,10 +1082,7 @@ test('BitcasterEngineClient.submitOrder sends display-only wallet attribution wi
   })
 
   const response = await client.submitOrder('condition-1-YES', {
-    settlementCapability: {
-      artifactId: '11111111-1111-4111-8111-111111111111',
-      bindingDigest: 'a'.repeat(64),
-    },
+    settlementCapabilityAdmission: ORDER_ADMISSION,
     comment,
     walletId: DISPLAY_WALLET_ID,
   })
@@ -1123,6 +1165,73 @@ test('decodeSubmitOrderResponse rejects removed fill trade identity', () => {
   )
 })
 
+test('order fill readers accept every contract match path and refuse any other', () => {
+  const settlementGroup = {
+    groupId: '44444444-4444-4444-8444-444444444444',
+    status: 'Prepared',
+    revision: 1,
+    coalescingDeadline: '2026-07-29T00:00:10Z',
+    frozenAt: null,
+  }
+  const fill = {
+    id: '55555555-5555-4555-8555-555555555555',
+    makerOrderId: '66666666-6666-4666-8666-666666666666',
+    takerOrderId: '77777777-7777-4777-8777-777777777777',
+    amountSubunits: 1_000,
+    executionPrice: 620,
+    path: 'Merge',
+    status: 'Matched',
+    filledAt: '2026-07-29T00:00:00Z',
+    settlementGroup,
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    tokenSide: 'Complement',
+    quotePaymentSubunits: 620,
+    outcomeFaceAmountSubunits: 1_000,
+  }
+  const submitted = (path: unknown, extra: Record<string, unknown> = {}) => ({
+    orderId: '22222222-2222-4222-8222-222222222222',
+    status: 'filled',
+    remainingAmountSubunits: 0,
+    fills: [{ ...fill, path, ...extra }],
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: settlementGroup,
+  })
+  const status = (path: unknown) => ({
+    orderId: '22222222-2222-4222-8222-222222222222',
+    marketId: 'condition-YES',
+    status: 'matched',
+    remainingAmountSubunits: 0,
+    filledAmountSubunits: 1_000,
+    fills: [{ ...fill, path }],
+    amountSubunits: 1_000,
+    outcomeId: 'YES',
+    side: 'Sell',
+    price: 600,
+    placedAt: '2026-07-29T00:00:00Z',
+    timeInForce: 'FOK',
+    tokenSide: 'Complement',
+    baseAsset: 'sat',
+    divisibility: 1_000,
+    activeSettlementGroup: settlementGroup,
+  })
+
+  assert.deepEqual(decodeSubmitOrderResponse(submitted('Merge')).fills[0], fill)
+  for (const path of ['Complementary', 'Mint', 'Merge'] as const) {
+    assert.equal(decodeSubmitOrderResponse(submitted(path)).fills[0]?.path, path)
+    assert.equal(decodeOrderStatusResponse(status(path)).fills[0]?.path, path)
+  }
+  for (const path of ['merge', 'MERGE', 'Split', '', null, undefined, 2]) {
+    assert.throws(() => decodeSubmitOrderResponse(submitted(path)), /fill path is invalid/)
+    assert.throws(() => decodeOrderStatusResponse(status(path)), /fill path is invalid/)
+  }
+  assert.throws(
+    () => decodeSubmitOrderResponse(submitted('Merge', { mergedWith: 'YES' })),
+    /fields are invalid/,
+  )
+})
+
 test('BitcasterEngineClient.submitOrder rejects an oversized response before decoding', async () => {
   const client = new BitcasterEngineClient({
     baseUrl: 'https://engine.example',
@@ -1136,10 +1245,7 @@ test('BitcasterEngineClient.submitOrder rejects an oversized response before dec
   await assert.rejects(
     () =>
       client.submitOrder('condition-1-YES', {
-        settlementCapability: {
-          artifactId: '11111111-1111-4111-8111-111111111111',
-          bindingDigest: 'a'.repeat(64),
-        },
+        settlementCapabilityAdmission: ORDER_ADMISSION,
         comment: null,
       }),
     /byte limit/,
@@ -1865,18 +1971,18 @@ test('BitcasterEngineClient authenticates and strictly validates settlement poli
   ])
 })
 
-test('capability problems retain machine codes and retry classification through HTTP parsing', async () => {
-  for (const [status, suffix, definitive] of [
-    [400, 'invalid-request', true],
-    [400, 'invalid-artifact', true],
-    [400, 'policy-rejected', true],
-    [402, 'score-required', true],
-    [409, 'conflict', true],
-    [409, 'market-unavailable', true],
-    [413, 'request-too-large', true],
-    [429, 'admission-limited', false],
-    [429, 'capacity-exhausted', false],
-    [503, 'admission-unavailable', false],
+test('capability problems retain machine codes through HTTP parsing', async () => {
+  for (const [status, suffix] of [
+    [400, 'invalid-request'],
+    [400, 'invalid-artifact'],
+    [400, 'policy-rejected'],
+    [402, 'score-required'],
+    [409, 'conflict'],
+    [409, 'market-unavailable'],
+    [413, 'request-too-large'],
+    [429, 'admission-limited'],
+    [429, 'capacity-exhausted'],
+    [503, 'admission-unavailable'],
   ] as const) {
     const code = `settlement-capability-${suffix}`
     let calls = 0
@@ -1921,7 +2027,6 @@ test('capability problems retain machine codes and retry classification through 
         assert.ok(error instanceof EngineClientError)
         assert.equal(error.status, status)
         assert.equal(error.code, code)
-        assert.equal(isDefinitiveOrderSubmissionError(error), definitive)
         return true
       },
     )
@@ -1942,10 +2047,7 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
   await assert.rejects(
     () =>
       client.submitOrder('condition-Bob%7CCarol', {
-        settlementCapability: {
-          artifactId: '11111111-1111-4111-8111-111111111111',
-          bindingDigest: 'a'.repeat(64),
-        },
+        settlementCapabilityAdmission: ORDER_ADMISSION,
         comment: null,
       }),
     (err) =>
@@ -1957,20 +2059,20 @@ test('BitcasterEngineClient exposes plain submit-order validation errors', async
 
 test('submitOrder preserves error classification through coded Problem Details', async () => {
   const cases = [
-    [400, 'order-invalid-request', true],
-    [400, 'order-invalid-comment', true],
-    [404, 'order-market-not-found', true],
-    [404, 'order-capability-not-found', true],
-    [409, 'order-capability-route-mismatch', true],
-    [409, 'order-capability-not-current', true],
-    [503, 'order-admission-unavailable', false],
-    [503, 'order-processing-unavailable', false],
-    [409, 'order-processing-conflict', true],
-    [409, 'order-book-conflict', false],
-    [409, 'order-market-closed', true],
-    [403, 'market-closed', false],
+    [400, 'order-invalid-request', 'rejected'],
+    [400, 'order-invalid-comment', 'rejected'],
+    [404, 'order-market-not-found', 'rejected'],
+    [409, 'order-capability-route-mismatch', 'uncertain'],
+    [409, 'order-capability-not-current', 'uncertain'],
+    [503, 'order-admission-unavailable', 'uncertain'],
+    [503, 'order-processing-unavailable', 'uncertain'],
+    [409, 'order-processing-conflict', 'rejected'],
+    // Without the in-flow resend loop, a resend refusal proves nothing.
+    [409, 'order-book-conflict', 'uncertain'],
+    [409, 'order-market-closed', 'rejected'],
+    [403, 'market-closed', 'uncertain'],
   ] as const
-  for (const [status, code, definitive] of cases) {
+  for (const [status, code, outcome] of cases) {
     const detail =
       code === 'order-book-conflict'
         ? 'The order book changed. Retry the original request.'
@@ -1992,10 +2094,7 @@ test('submitOrder preserves error classification through coded Problem Details',
     await assert.rejects(
       () =>
         client.submitOrder('condition-Alpha', {
-          settlementCapability: {
-            artifactId: '11111111-1111-4111-8111-111111111111',
-            bindingDigest: 'a'.repeat(64),
-          },
+          settlementCapabilityAdmission: ORDER_ADMISSION,
           comment: null,
         }),
       (error: unknown) => {
@@ -2003,7 +2102,7 @@ test('submitOrder preserves error classification through coded Problem Details',
         assert.equal(error.status, status)
         assert.equal(error.code, code)
         assert.equal(error.problemDetail, detail)
-        assert.equal(isDefinitiveOrderSubmissionError(error), definitive, code)
+        assert.equal(classifyOrderSubmissionFailure(error).kind, outcome, code)
         return true
       },
     )
@@ -2093,27 +2192,4 @@ test('coded order-not-found preserves null status and false cancellation results
   })
   assert.equal(await client.getOrderStatus('condition-Alpha', 'order'), null)
   assert.equal(await client.cancelOrder('condition-Alpha', 'order'), false)
-})
-
-test('order submission error classification recognizes only the transient book conflict', () => {
-  for (const detail of [
-    'Order book changed while submitting order; retry the request.',
-    JSON.stringify('Order book changed while submitting order; retry the request.'),
-  ]) {
-    assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(409, detail)), false)
-  }
-  assert.equal(
-    isDefinitiveOrderSubmissionError(
-      new EngineClientError(409, 'Settlement capability is not current.'),
-    ),
-    true,
-  )
-  assert.equal(
-    isDefinitiveOrderSubmissionError(
-      new EngineClientError(409, '{"detail":"Market is closed."}', undefined, 'Market is closed.'),
-    ),
-    true,
-  )
-  assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(429, 'retry')), false)
-  assert.equal(isDefinitiveOrderSubmissionError(new EngineClientError(400, 'invalid')), true)
 })

@@ -59,64 +59,6 @@ export function serializeDurableWalletProofDerivationLocator(
   return decodeDurableWalletProofDerivationLocator(value)
 }
 
-/** Encode the closed locator union for a canonical CBOR proof record. */
-export function encodeDurableWalletProofDerivationLocatorCbor(value: unknown): readonly unknown[] {
-  const locator = decodeDurableWalletProofDerivationLocator(value)
-  switch (locator.kind) {
-    case 'nut13':
-      return [1, 0, locator.keysetId, locator.counter]
-    case 'ctf-range-manifest':
-      return [1, 1, locator.rangeOperationId, locator.manifestIndex]
-    case 'ctf-range-refund':
-      return [
-        1,
-        2,
-        locator.rangeOperationId,
-        locator.authorizationId,
-        locator.refundOperationId,
-        locator.counter,
-      ]
-  }
-}
-
-/** Decode the only locator representation permitted inside a CBOR proof record. */
-export function decodeDurableWalletProofDerivationLocatorCbor(
-  value: unknown,
-): DurableWalletProofDerivationLocator {
-  if (!Array.isArray(value) || value[0] !== 1 || typeof value[1] !== 'number') {
-    throw new Error('durable wallet proof derivation locator is invalid')
-  }
-  switch (value[1]) {
-    case 0:
-      if (value.length !== 4) break
-      return decodeDurableWalletProofDerivationLocator({
-        schemaVersion: 1,
-        kind: 'nut13',
-        keysetId: value[2],
-        counter: value[3],
-      })
-    case 1:
-      if (value.length !== 4) break
-      return decodeDurableWalletProofDerivationLocator({
-        schemaVersion: 1,
-        kind: 'ctf-range-manifest',
-        rangeOperationId: value[2],
-        manifestIndex: value[3],
-      })
-    case 2:
-      if (value.length !== 6) break
-      return decodeDurableWalletProofDerivationLocator({
-        schemaVersion: 1,
-        kind: 'ctf-range-refund',
-        rangeOperationId: value[2],
-        authorizationId: value[3],
-        refundOperationId: value[4],
-        counter: value[5],
-      })
-  }
-  throw new Error('durable wallet proof derivation locator is invalid')
-}
-
 export function durableWalletProofDerivationLocatorsEqual(
   left: DurableWalletProofDerivationLocator,
   right: DurableWalletProofDerivationLocator,

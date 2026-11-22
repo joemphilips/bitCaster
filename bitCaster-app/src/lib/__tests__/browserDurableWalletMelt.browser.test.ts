@@ -26,9 +26,6 @@ vi.mock("@/stores/wallet", () => ({
   createUncachedWalletForSeedUnit: async (input: { counterSource: CounterSource }) =>
     factory.create!(input.counterSource),
 }));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: async () => undefined,
-}));
 import {
   meltBrowserDurableWallet,
   type BrowserDurableWalletMeltContext,
@@ -126,7 +123,6 @@ it("atomically aborts, commits/reopens and rejects separate-connection melt CAS 
           database.custodyReservations,
           database.custodyActiveWork,
           database.custodyProofBackupAuthorities,
-          database.encryptedWalletBackupV2DesiredAssets,
           database.walletCounterAssociations,
           database.walletCounterCursors,
         ].map((table) => table.toArray()),

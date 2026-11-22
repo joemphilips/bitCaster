@@ -1,0 +1,139 @@
+{
+  "walletScopeId": "custody:wallet:d838805de7febb07eb958c39f06532a86049d348f037fdc6265ec36e734a48fb",
+  "files": [
+    {
+      "name": "config.json",
+      "mode": 384,
+      "text": "{\n  \"version\": 2,\n  \"daemon\": {\n    \"engineUrl\": \"https://engine.example\",\n    \"mintUrl\": \"https://mint.example\",\n    \"mintUrls\": [\n      \"https://mint.example\"\n    ],\n    \"autoRetireResolvedConditionInventory\": false,\n    \"assetMonitoringEnabled\": false,\n    \"nostrRelays\": [\n      \"wss://nos.lol\",\n      \"wss://nostr.bitcoiner.social\",\n      \"wss://relay.primal.net\",\n      \"wss://relay.nostr.net\",\n      \"wss://relay.damus.io\",\n      \"wss://purplepag.es\"\n    ]\n  },\n  \"cli\": {\n    \"trustedEngineUrls\": []\n  }\n}\n"
+    },
+    {
+      "name": "daemon-state.sqlite",
+      "mode": 384,
+      "text": null
+    }
+  ],
+  "reads": {
+    "secrets": {
+      "walletSeedHex": "5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a",
+      "nostrSecretKeyHex": "3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c",
+      "nostrPublicKeyHex": "6776bee20c9bf74c421e703c23a132f6dbdf6c882c7f6634b128e66820139db1",
+      "nativeOracleNonceSeedHex": "7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d7d"
+    },
+    "rpcToken": "TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+    "state": {
+      "version": 1,
+      "wallet": {
+        "proofs": [
+          {
+            "proof": {
+              "id": "01ac16ec25a243ba9a2670a92cedc703f9d57f88e9592d891dd1d5d293518cb949",
+              "amount": 8,
+              "secret": "release4-daemon-sats",
+              "C": "022222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "mintUrl": "https://mint.example",
+            "state": "available",
+            "asset": {
+              "kind": "sats",
+              "baseAsset": "sat",
+              "unit": "sat"
+            },
+            "createdAt": "2026-11-09T13:20:08.574Z",
+            "updatedAt": "2026-11-09T13:20:08.574Z"
+          },
+          {
+            "proof": {
+              "id": "01ac16ec25a243ba9a2670a92cedc703f9d57f88e9592d891dd1d5d293518cb949",
+              "amount": 1000,
+              "secret": "release4-daemon-outcome",
+              "C": "022222222222222222222222222222222222222222222222222222222222222222"
+            },
+            "mintUrl": "https://mint.example",
+            "state": "available",
+            "asset": {
+              "kind": "Outcome",
+              "conditionId": "abababababababababababababababababababababababababababababababab",
+              "outcomeSetId": "YES",
+              "baseAsset": "sat",
+              "unit": "msat"
+            },
+            "createdAt": "2026-11-09T13:20:08.666Z",
+            "updatedAt": "2026-11-09T13:20:08.666Z"
+          }
+        ],
+        "keysetCounters": {}
+      },
+      "proofOperations": {
+        "release4-daemon-send": {
+          "operationId": "release4-daemon-send",
+          "kind": "wallet-send",
+          "state": "prepared",
+          "mintUrl": "https://mint.example",
+          "inputs": [
+            {
+              "id": "01ac16ec25a243ba9a2670a92cedc703f9d57f88e9592d891dd1d5d293518cb949",
+              "amount": 8,
+              "secret": "release4-daemon-sats",
+              "C": "022222222222222222222222222222222222222222222222222222222222222222"
+            }
+          ],
+          "outputs": {},
+          "metadata": {
+            "source": "release4-fixture"
+          },
+          "lastError": null,
+          "createdAt": 1794230408858,
+          "updatedAt": 1794230408858
+        }
+      },
+      "orders": {}
+    },
+    "walletBalance": {
+      "totalAvailableSats": 9,
+      "totalReservedSats": 0,
+      "totalLockedSats": 0,
+      "byMint": [
+        {
+          "mintUrl": "https://mint.example",
+          "availableSats": 9,
+          "reservedSats": 0,
+          "lockedSats": 0
+        }
+      ],
+      "outcomePositions": [
+        {
+          "mintUrl": "https://mint.example",
+          "conditionId": "abababababababababababababababababababababababababababababababab",
+          "outcomeSetId": "YES",
+          "availableSats": 1,
+          "reservedSats": 0,
+          "lockedSats": 0
+        }
+      ]
+    },
+    "oracleCreation": {
+      "creationId": "release4-oracle",
+      "eventId": "event-release4-oracle",
+      "canonicalInput": "{\"outcomes\":[\"YES\",\"NO\"]}",
+      "walletScopeId": "custody:wallet:d838805de7febb07eb958c39f06532a86049d348f037fdc6265ec36e734a48fb",
+      "walletId": "d838805de7febb07eb958c39f06532a86049d348f037fdc6265ec36e734a48fb",
+      "creatorPublicKeyHex": "6776bee20c9bf74c421e703c23a132f6dbdf6c882c7f6634b128e66820139db1",
+      "nonceIndex": 0,
+      "createdAtMs": 1794230409160,
+      "backupTerminal": false,
+      "announcement": {
+        "conditionId": "abababababababababababababababababababababababababababababababab",
+        "announcementTlvHex": "aabb",
+        "announcementNostrEventJson": "{\"kind\":88}"
+      },
+      "chosenOutcome": null,
+      "explanationDraft": null,
+      "attestation": null,
+      "marketCreation": null,
+      "relayPublished": false,
+      "engineEvidence": null,
+      "explanationEventJson": null,
+      "explanationRelayPublished": false
+    }
+  }
+}

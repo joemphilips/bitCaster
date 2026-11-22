@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
   assertCtfRangeOrderPreparationTransition,
+  bindCtfRangeOrderPreparationAdmission,
   bindCtfRangeOrderPreparationCapability,
   decodeCtfRangeOrderPreparationArtifact,
   decodeCtfRangeOrderPreparationCapability,
@@ -247,11 +248,10 @@ test('capability and lifecycle validation reject partial or illegal authority', 
     () => assertCtfRangeOrderPreparationTransition('prepared', 'capability-bound'),
     /transition/,
   )
-  assert.doesNotThrow(() =>
-    assertCtfRangeOrderPreparationTransition('prepared', 'capability-requested'),
-  )
-  assert.doesNotThrow(() =>
-    assertCtfRangeOrderPreparationTransition('capability-bound', 'submission-rejected'),
+  assert.doesNotThrow(() => assertCtfRangeOrderPreparationTransition('prepared', 'order-requested'))
+  assert.throws(
+    () => assertCtfRangeOrderPreparationTransition('capability-bound', 'submission-rejected'),
+    /transition/,
   )
   assert.doesNotThrow(() =>
     assertCtfRangeOrderPreparationTransition('submission-rejected', 'terminal'),
@@ -326,18 +326,24 @@ test('capability and lifecycle validation reject partial or illegal authority', 
 test('generic transitions and persisted capability pairing cover the complete lifecycle matrix', () => {
   const lifecycles = [
     'prepared',
+    'order-requested',
+    'order-request-rejected',
     'capability-requested',
     'capability-bound',
     'order-submitted',
     'submission-rejected',
     'terminal',
   ] as const
+  // The one-step path never writes capability-requested. Records of the old
+  // two-step path keep their own transitions until they end.
   const genericTransitions = new Set([
     'prepared:terminal',
-    'prepared:capability-requested',
+    'prepared:order-requested',
+    'order-requested:order-request-rejected',
+    'order-requested:terminal',
+    'order-request-rejected:terminal',
     'capability-requested:terminal',
     'capability-bound:order-submitted',
-    'capability-bound:submission-rejected',
     'capability-bound:terminal',
     'order-submitted:terminal',
     'submission-rejected:terminal',
@@ -364,11 +370,15 @@ test('generic transitions and persisted capability pairing cover the complete li
           capability,
           updatedAtMs: identity.createdAtMs + 1,
         })
+      const withoutCapability = new Set([
+        'prepared',
+        'order-requested',
+        'order-request-rejected',
+        'capability-requested',
+      ])
       const pairingIsValid =
         lifecycleState === 'terminal' ||
-        (lifecycleState === 'prepared' || lifecycleState === 'capability-requested'
-          ? capability === null
-          : capability !== null)
+        (withoutCapability.has(lifecycleState) ? capability === null : capability !== null)
       if (pairingIsValid) {
         assert.doesNotThrow(decode)
       } else {
@@ -376,6 +386,93 @@ test('generic transitions and persisted capability pairing cover the complete li
       }
     }
   }
+})
+
+test('an accepted one-step request moves order-requested to order-submitted with its capability', () => {
+  const identity = preparationIdentity()
+  const requested = decodeCtfRangeOrderPreparationRecord({
+    ...identity,
+    lifecycleState: 'order-requested',
+    revision: 1,
+    capability: null,
+    updatedAtMs: identity.createdAtMs + 1,
+  })
+  const submitted = bindCtfRangeOrderPreparationAdmission({
+    current: requested,
+    expectedRevision: 1,
+    capability: CAPABILITY,
+    updatedAtMs: identity.createdAtMs + 2,
+  })
+  assert.equal(submitted.lifecycleState, 'order-submitted')
+  assert.equal(submitted.revision, 2)
+  assert.equal(submitted.updatedAtMs, identity.createdAtMs + 2)
+  assert.equal(sameCtfRangeOrderPreparationCapability(submitted.capability, CAPABILITY), true)
+
+  // A second read of the same accepted order is idempotent.
+  assert.deepEqual(
+    bindCtfRangeOrderPreparationAdmission({
+      current: submitted,
+      expectedRevision: 1,
+      capability: CAPABILITY,
+      updatedAtMs: identity.createdAtMs + 3,
+    }),
+    submitted,
+  )
+  // Another capability, a stale revision, or a record of the old path is refused.
+  assert.throws(
+    () =>
+      bindCtfRangeOrderPreparationAdmission({
+        current: submitted,
+        expectedRevision: 2,
+        capability: { ...CAPABILITY, bindingDigest: '55'.repeat(32) },
+        updatedAtMs: identity.createdAtMs + 3,
+      }),
+    /revision or lifecycle/,
+  )
+  assert.throws(
+    () =>
+      bindCtfRangeOrderPreparationAdmission({
+        current: requested,
+        expectedRevision: 0,
+        capability: CAPABILITY,
+        updatedAtMs: identity.createdAtMs + 3,
+      }),
+    /revision or lifecycle/,
+  )
+  const capabilityRequested = decodeCtfRangeOrderPreparationRecord({
+    ...requested,
+    lifecycleState: 'capability-requested',
+  })
+  assert.throws(
+    () =>
+      bindCtfRangeOrderPreparationAdmission({
+        current: capabilityRequested,
+        expectedRevision: 1,
+        capability: CAPABILITY,
+        updatedAtMs: identity.createdAtMs + 3,
+      }),
+    /revision or lifecycle/,
+  )
+  // The old two-step bind cannot move a one-step record.
+  assert.throws(
+    () =>
+      bindCtfRangeOrderPreparationCapability({
+        current: requested,
+        expectedRevision: 1,
+        capability: CAPABILITY,
+        updatedAtMs: identity.createdAtMs + 3,
+      }),
+    /revision or lifecycle/,
+  )
+  assert.throws(
+    () =>
+      decodeCtfRangeOrderPreparationRecord({
+        ...requested,
+        lifecycleState: 'order-request-rejected',
+        capability: CAPABILITY,
+      }),
+    /lifecycle authority/,
+  )
 })
 
 test('page inputs are bounded and reject ambiguous cursors', () => {

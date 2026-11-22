@@ -2766,7 +2766,7 @@ describe("MarketDetailPage live market status", () => {
         await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
         fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
         const waiting = await screen.findByTestId("trade-quotes-refreshing");
-        expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+        expect(waiting).toHaveTextContent("Waiting for the order book");
         expect(screen.getAllByTestId("trade-confirm")[0]).toBeDisabled();
         expect(submissionSignal?.aborted).toBe(false);
         if (action === "empty-book") {
@@ -2820,6 +2820,52 @@ describe("MarketDetailPage live market status", () => {
           "Wallet recovery continues.",
         );
       }
+    },
+  );
+
+  // The coordinator ends a stopped wait as a refused request, because no
+  // attempt committed. The engine refused nothing, so the page must not say so.
+  it.each([
+    ["a user stop", true, false],
+    ["an engine refusal", false, true],
+  ] as const)(
+    "shows an engine refusal in the trade status only when the engine refused: %s",
+    async (_case, stop, shown) => {
+      mocks.walletState.setupComplete = true;
+      mocks.walletState.activeMintUrl = "https://mint.example";
+      mocks.settingsState.nostrSignerMode = "nsec";
+      vi.mocked(fetchMarketDetail).mockResolvedValue(fundedSatYesNoMarket({ state: "open" }));
+      vi.mocked(fetchOrderBook).mockImplementation(async (marketId) =>
+        marketId === "condition-yesno-Yes" ? askBook(400) : emptyBook,
+      );
+      const refusal = "The engine rejected the order. It will not retry.";
+      let finish: (() => void) | undefined;
+      vi.mocked(submitBrowserCtfRangeOrder).mockImplementation(async (input) => {
+        input.onQuotesRefreshing?.({ attempt: 1, remainingMs: 50_000 });
+        await new Promise<void>((resolve) => {
+          finish = resolve;
+        });
+        throw new BrowserCtfRangeOrderError("order-submission-rejected", refusal);
+      });
+      render(<MarketDetailPage />);
+      await screen.findByRole("heading", { name: "Will it happen?" });
+      fireEvent.click(screen.getAllByTestId("trade-outcome-yes")[0]);
+      fireEvent.change(screen.getAllByTestId("trade-amount-input")[0], {
+        target: { value: "1" },
+      });
+      await screen.findByTestId("fok-preview-ready");
+      await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      fireEvent.click(screen.getAllByTestId("trade-confirm")[0]);
+      const waiting = await screen.findByTestId("trade-quotes-refreshing");
+      if (stop) fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
+      await act(async () => {
+        finish?.();
+      });
+      // The submission ended: the confirm control is available again.
+      await waitFor(() => expect(screen.getAllByTestId("trade-confirm")[0]).toBeEnabled());
+      expect(screen.queryByTestId("trade-quotes-refreshing")).not.toBeInTheDocument();
+      if (shown) expect(screen.getByTestId("trade-submit-status")).toHaveTextContent(refusal);
+      else expect(screen.queryByText(refusal)).not.toBeInTheDocument();
     },
   );
 

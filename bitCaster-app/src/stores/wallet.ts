@@ -20,13 +20,13 @@ import {
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
-import { activeBrowserEncryptedWalletBackupV2RuntimeDriver } from "@/lib/encryptedWalletBackupDriver";
-import { resolveEncryptedWalletBackupConfiguration } from "@/lib/encryptedWalletBackupConfig";
 import i18n from "@/i18n";
 import {
-  BrowserEncryptedWalletBackupV2SeedHandoffRefusal,
-  handoffBrowserEncryptedWalletBackupV2Seed,
-} from "@/lib/browserEncryptedWalletBackupV2SeedHandoff";
+  RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND,
+  recoveryIndexCliGapCommand,
+} from "@bitcaster/client-sdk/recoveryIndexRestore";
+import { BrowserSeedHandoffRefusal, handoffBrowserSeed } from "@/lib/browserSeedHandoff";
+import { prepareBrowserRecoveryIndexHandoff } from "@/lib/browserRecoveryIndex";
 import {
   activateBrowserWalletDatabase,
   db,
@@ -35,7 +35,7 @@ import {
   type BitcasterDB,
 } from "./proof-db";
 import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter-db";
-import { recordGeneratedBrowserSeed } from "./seed-restore-db";
+import { recordEnteredBrowserSeed, recordGeneratedBrowserSeed } from "./seed-restore-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
 import { readPublicMintMetadata } from "@bitcaster/client-sdk";
@@ -60,6 +60,15 @@ export interface StoredMint {
   info?: Record<string, unknown>;
 }
 
+/**
+ * A replacement warning that the user can accept. The dialog translates it
+ * and shows its CLI command as code.
+ */
+export interface WalletReplacementWarning {
+  readonly code: Extract<BrowserSeedHandoffRefusal["code"], "backup-partial" | "counter-gap">;
+  readonly command: string;
+}
+
 interface WalletState {
   mnemonic: string;
   setupComplete: boolean;
@@ -73,7 +82,21 @@ interface WalletState {
   ensureImplicitWallet: () => Promise<void>;
   markWalletBackupConfirmed: () => void;
   acknowledgeWalletSeedReminder: () => void;
-  recoverFromMnemonic: (words: string[]) => Promise<{ valid: boolean; error?: string }>;
+  /**
+   * Open the wallet of a seed phrase. A replacement whose current wallet has a
+   * partial backup returns a `backup-partial` warning, and one whose GUI
+   * restore can miss funds after a long run of unused counters returns a
+   * `counter-gap` warning. The user then accepts the warning, and a later call
+   * with `acceptPartialBackup` or `acceptCounterGap` continues.
+   */
+  recoverFromMnemonic: (
+    words: string[],
+    options?: { readonly acceptPartialBackup?: boolean; readonly acceptCounterGap?: boolean },
+  ) => Promise<{
+    valid: boolean;
+    error?: string;
+    warning?: WalletReplacementWarning;
+  }>;
   testMintConnection: (url: string) => Promise<MintConnectionTestStatus>;
   /**
    * Internal walletOps primitive. Registers a mint and SETS it as active.
@@ -164,7 +187,8 @@ class WalletReplacementRefusal extends Error {
 }
 
 const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
-  WalletReplacementRefusal["code"] | BrowserEncryptedWalletBackupV2SeedHandoffRefusal["code"],
+  | WalletReplacementRefusal["code"]
+  | Exclude<BrowserSeedHandoffRefusal["code"], WalletReplacementWarning["code"]>,
   string
 > = {
   "pending-orders": "wallet.replaceBlockedPendingOrders",
@@ -175,14 +199,40 @@ const WALLET_REPLACEMENT_REFUSAL_I18N_KEYS: Record<
   "seed-backup-unconfirmed": "wallet.replaceBlockedSeedBackup",
 };
 
-function walletReplacementErrorMessage(error: unknown): string {
-  if (
-    error instanceof WalletReplacementRefusal ||
-    error instanceof BrowserEncryptedWalletBackupV2SeedHandoffRefusal
-  ) {
-    return i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]);
+/** The refusal result: a warning that the user can accept, or an error. */
+function walletReplacementRefusalResult(
+  error: unknown,
+): { valid: false; error: string } | { valid: false; warning: WalletReplacementWarning } {
+  if (error instanceof BrowserSeedHandoffRefusal) {
+    switch (error.code) {
+      case "backup-partial":
+        return {
+          valid: false,
+          warning: { code: error.code, command: RECOVERY_INDEX_CLI_ALL_CONDITIONS_COMMAND },
+        };
+      case "counter-gap":
+        return {
+          valid: false,
+          warning: { code: error.code, command: recoveryIndexCliGapCommand(error.cliGapLimit!) },
+        };
+      default:
+        return { valid: false, error: i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]) };
+    }
   }
-  return i18n.t("wallet.replaceBlockedSafetyChecks");
+  if (error instanceof WalletReplacementRefusal) {
+    return { valid: false, error: i18n.t(WALLET_REPLACEMENT_REFUSAL_I18N_KEYS[error.code]) };
+  }
+  return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
+}
+
+/**
+ * A seed entry makes the seed restore run for the entered wallet (ADR-039).
+ * The write starts before the profile activates, so the first recovery pass
+ * waits for it.
+ */
+function recordBrowserSeedEntry(mnemonic: string): void {
+  const scopeId = browserWalletScopeIdFromMnemonic(mnemonic);
+  if (scopeId !== null) void recordEnteredBrowserSeed(scopeId).catch(() => undefined);
 }
 
 /** Create a counter source that stays bound to one active wallet profile. */
@@ -242,7 +292,7 @@ export const useWalletStore = create<WalletState>()(
       generateMnemonic: () => {
         const previousWallet = get();
         if (previousWallet.mnemonic) {
-          throw new Error("Seed switching requires an acknowledged encrypted backup.");
+          throw new Error("Seed switching uses recoverFromMnemonic.");
         }
         const words = bip39.generate();
         const mnemonic = words.join(" ");
@@ -314,7 +364,7 @@ export const useWalletStore = create<WalletState>()(
         set({ walletSeedReminderAcknowledgedScopeId: scopeId });
       },
 
-      recoverFromMnemonic: async (words: string[]) => {
+      recoverFromMnemonic: async (words, options) => {
         if (words.length !== 12 && words.length !== 24) {
           return { valid: false, error: i18n.t("wallet.seedphraseWordCountError") };
         }
@@ -341,30 +391,14 @@ export const useWalletStore = create<WalletState>()(
           if (oldWalletId === null) {
             return { valid: false, error: i18n.t("wallet.replaceBlockedSafetyChecks") };
           }
-          const backupDriver = activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId);
-          let replacementCommitted = false;
           try {
-            const backupConfigured = resolveEncryptedWalletBackupConfiguration() !== null;
-            const ownerHandoff = await backupDriver?.prepareSeedHandoffOwnerAuthority();
-            await backupDriver?.quiesceForSeedHandoff();
-            await handoffBrowserEncryptedWalletBackupV2Seed({
+            await handoffBrowserSeed({
               database: oldDatabase,
               scopeId: oldScopeId,
-              ownerScopeId: ownerHandoff?.ownerScopeId ?? null,
-              ...(ownerHandoff === null || ownerHandoff === undefined
-                ? {}
-                : {
-                    ownerAuthorityStore: ownerHandoff.ownerAuthorityStore,
-                    loadCurrentOwnerReachabilityEvidence:
-                      ownerHandoff.loadCurrentOwnerReachabilityEvidence,
-                  }),
-              ...(backupConfigured
-                ? {}
-                : {
-                    withoutBackupConfiguration: {
-                      currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
-                    },
-                  }),
+              currentSeedBackupConfirmed: previousWalletBackupState === "confirmed",
+              acceptPartialBackup: options?.acceptPartialBackup === true,
+              acceptCounterGap: options?.acceptCounterGap === true,
+              prepareRecoveryIndex: () => prepareBrowserRecoveryIndexHandoff(oldScopeId),
               isCurrentProfile: () => activeBrowserWalletScopeId() === oldScopeId,
               assertNoPendingOrders: () => {
                 const pendingTrades = usePendingTradesStore.getState();
@@ -377,6 +411,7 @@ export const useWalletStore = create<WalletState>()(
               },
               invalidateOldProfile: () => setActiveBrowserWalletProfile(""),
               activateNewProfile: async () => {
+                recordBrowserSeedEntry(mnemonic);
                 activateWalletProfile(mnemonic);
                 set({
                   mnemonic,
@@ -397,21 +432,8 @@ export const useWalletStore = create<WalletState>()(
                 }
               },
             });
-            replacementCommitted = true;
           } catch (error) {
-            return {
-              valid: false,
-              error: walletReplacementErrorMessage(error),
-            };
-          } finally {
-            if (
-              !replacementCommitted &&
-              backupDriver !== null &&
-              activeBrowserWalletScopeId() === oldScopeId &&
-              activeBrowserEncryptedWalletBackupV2RuntimeDriver(oldScopeId) === backupDriver
-            ) {
-              backupDriver.resumeAfterSeedHandoff();
-            }
+            return walletReplacementRefusalResult(error);
           }
           requestWalletStoragePersistence(mnemonic);
           return { valid: true };
@@ -435,6 +457,7 @@ export const useWalletStore = create<WalletState>()(
           }
           throw error;
         }
+        recordBrowserSeedEntry(mnemonic);
         activateWalletProfile(mnemonic);
         requestWalletStoragePersistence(mnemonic);
         return { valid: true };

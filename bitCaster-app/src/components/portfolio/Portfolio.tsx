@@ -5,13 +5,21 @@ import { Zap } from "lucide-react";
 import { ProfileCard } from "./ProfileCard";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
 import { PLChart } from "./PLChart";
-import { StatsRow } from "./StatsRow";
+import { StatsRow, shownTotalValueKnown } from "./StatsRow";
 import { PositionsList } from "./PositionsList";
 import { FundsList } from "./FundsList";
 import { ActivityFeed } from "./ActivityFeed";
 import { MyMarkets } from "./MyMarkets";
 import { LikedMarkets } from "./LikedMarkets";
-import { useSeedPositionRestoreStatus } from "@/hooks/useSeedPositionRestoreStatus";
+import { useWalletProfileExpected, useWalletRecoveryStatus } from "@/hooks/useWalletRecoveryStatus";
+import { WalletRecoveryStatusRow } from "@/components/shared/WalletRecoveryStatusRow";
+import { SeedRestoreResult } from "@/components/shared/SeedRestoreResult";
+import { useSeedRestoreResult } from "@/hooks/useSeedRestoreResult";
+import {
+  walletRecoveryDisplay,
+  walletRecoveryHoldingsUnknown,
+  walletRecoveryZeroUnknown,
+} from "@/lib/walletRecoveryDisplay";
 
 type MainTab = "positions" | "funds" | "activity";
 
@@ -125,8 +133,20 @@ function LoadMoreAssets({
 export function Portfolio(props: PortfolioProps) {
   const { t } = useTranslation();
   const [mainTab, setMainTab] = useState<MainTab>("positions");
-  // While a seed restore runs or failed, the position totals are not known.
-  const positionsRestoring = useSeedPositionRestoreStatus().kind !== "idle";
+  // One status read gates the status row, the empty states and the totals.
+  const recoveryStatus = useWalletRecoveryStatus();
+  const profileExpected = useWalletProfileExpected();
+  const recoveryDisplay = walletRecoveryDisplay({
+    status: recoveryStatus,
+    profileExpected,
+    reads: [props.holdings.funds, props.holdings.positions],
+  });
+  // The restore result shows once the recovery row is gone (ADR-039).
+  const restoreResult = useSeedRestoreResult();
+  // While the wallet recovery checks, waits or failed, the totals are not known.
+  const positionsRestoring = walletRecoveryHoldingsUnknown(recoveryDisplay);
+  // After limited coverage, a zero total or count is not final either (ADR-039).
+  const zeroUnknown = walletRecoveryZeroUnknown(recoveryStatus, recoveryDisplay);
   const positionsRequestKey = props.positionsRequest?.key;
   useEffect(() => {
     if (positionsRequestKey !== undefined) setMainTab("positions");
@@ -196,7 +216,7 @@ export function Portfolio(props: PortfolioProps) {
             chartData={props.plChartData}
             selectedTimeRange={props.selectedTimeRange}
             totalValueSats={props.stats.totalValueSats}
-            totalValueKnown={positionsRestoring ? false : props.stats.totalValueKnown}
+            totalValueKnown={shownTotalValueKnown(props.stats, positionsRestoring, zeroUnknown)}
             totalValueLoading={props.stats.totalValueLoading}
             onTimeRangeChange={props.onTimeRangeChange}
           />
@@ -204,7 +224,11 @@ export function Portfolio(props: PortfolioProps) {
       </div>
 
       {/* Stats Row */}
-      <StatsRow stats={props.stats} positionsRestoring={positionsRestoring} />
+      <StatsRow
+        stats={props.stats}
+        positionsRestoring={positionsRestoring}
+        zeroUnknown={zeroUnknown}
+      />
 
       {/* Deposit / Withdraw Buttons */}
       <div className="grid grid-cols-2 gap-3">
@@ -221,6 +245,9 @@ export function Portfolio(props: PortfolioProps) {
           {t("common.withdraw")}
         </button>
       </div>
+
+      <WalletRecoveryStatusRow display={recoveryDisplay} />
+      {recoveryDisplay.state === "complete" && <SeedRestoreResult result={restoreResult} />}
 
       {/* Main Tabs: Positions | Funds | Activity */}
       <div className="bg-white dark:bg-slate-800 rounded-xl border border-slate-200 dark:border-slate-700">
@@ -250,6 +277,8 @@ export function Portfolio(props: PortfolioProps) {
             <>
               <PositionsList
                 positions={props.positions}
+                read={props.holdings.positions}
+                recoveryStatus={recoveryStatus}
                 positionsTab={props.positionsTab}
                 onPositionsTabChange={props.onPositionsTabChange}
                 onSellPosition={props.onSellPosition}
@@ -277,7 +306,11 @@ export function Portfolio(props: PortfolioProps) {
           )}
           {mainTab === "funds" && (
             <>
-              <FundsList funds={props.funds} />
+              <FundsList
+                funds={props.funds}
+                read={props.holdings.funds}
+                recoveryStatus={recoveryStatus}
+              />
               <LoadMoreAssets monitoring={props.monitoring} onLoadMore={props.onLoadMoreAssets} />
             </>
           )}

@@ -270,7 +270,7 @@ describe("TradingPanel", () => {
       expect(screen.getByTestId("trade-amount-input")).toBe(amount);
       expect(amount).toHaveValue(5);
       expect(screen.getByTestId("trade-quotes-refreshing")).toBe(waiting);
-      expect(waiting).toHaveTextContent("Waiting for fresh quotes");
+      expect(waiting).toHaveTextContent("Waiting for the order book");
       expect(screen.getByTestId("trade-confirm")).toBeDisabled();
       fireEvent.click(within(waiting).getByRole("button", { name: "Stop waiting" }));
       expect(stop).toHaveBeenCalledTimes(1);

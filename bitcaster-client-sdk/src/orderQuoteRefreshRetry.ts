@@ -32,11 +32,30 @@ export function requireOrderRequestTimeoutMs(value: number): number {
 
 export class OrderQuoteRefreshWaitStopped extends Error {
   readonly reason: 'cancelled' | 'expired' | 'budget'
-  constructor(reason: 'cancelled' | 'expired' | 'budget') {
+  /**
+   * True when every sent attempt got a resendable refusal, which commits
+   * nothing (or when no attempt was sent). False when the stop interrupted an
+   * attempt in flight, whose result is unknown.
+   */
+  readonly allAttemptsRefused: boolean
+  /** The code of the last refusal, or null when no attempt was refused. */
+  readonly lastRefusalCode: string | null
+  constructor(
+    reason: 'cancelled' | 'expired' | 'budget',
+    allAttemptsRefused = false,
+    lastRefusalCode: string | null = null,
+  ) {
     super('Order waiting stopped; the original operation still requires reconciliation')
     this.name = 'OrderQuoteRefreshWaitStopped'
     this.reason = reason
+    this.allAttemptsRefused = allAttemptsRefused
+    this.lastRefusalCode = lastRefusalCode
   }
+}
+
+function refusalCode(error: unknown): string | null {
+  const code = (error as { code?: unknown } | null)?.code
+  return typeof code === 'string' ? code : null
 }
 
 /** Timers, original expiry and attempt count bound one live submission action. */
@@ -52,15 +71,17 @@ export async function runOrderQuoteRefreshRetry<T>(
   if (!Number.isSafeInteger(expiryMs) || expiryMs <= 0)
     throw new Error('Order authorization expiry is invalid')
   const startedAt = performance.now()
+  // Every stop below an attempt in flight follows only refusals that commit nothing.
+  let lastRefusal: string | null = null
+  const stopped = (reason: 'cancelled' | 'expired' | 'budget') =>
+    new OrderQuoteRefreshWaitStopped(reason, true, lastRefusal)
   const remaining = () => Math.min(60_000 - (performance.now() - startedAt), expiryMs - Date.now())
   // Stop unless more than reservedMs is left before both the wait deadline
   // and the authorization expiry.
   const stop = (reservedMs: number) => {
-    if (options.signal?.aborted) throw new OrderQuoteRefreshWaitStopped('cancelled')
+    if (options.signal?.aborted) throw stopped('cancelled')
     if (remaining() <= reservedMs)
-      throw new OrderQuoteRefreshWaitStopped(
-        expiryMs - Date.now() <= reservedMs ? 'expired' : 'budget',
-      )
+      throw stopped(expiryMs - Date.now() <= reservedMs ? 'expired' : 'budget')
   }
   for (let attempt = 1; attempt <= 30; attempt++) {
     stop(0)
@@ -90,15 +111,18 @@ export async function runOrderQuoteRefreshRetry<T>(
             .finally(() => controller.signal.removeEventListener('abort', aborted))
       })
     } catch (error) {
-      if (options.signal?.aborted) throw new OrderQuoteRefreshWaitStopped('cancelled')
+      // A cancel during an attempt leaves that attempt's result unknown.
+      if (options.signal?.aborted)
+        throw new OrderQuoteRefreshWaitStopped('cancelled', false, lastRefusal)
       // A timeout is ambiguous even if a late transport yields a readiness error.
       if (controller.signal.aborted || !isRefreshing(error)) throw error
       refreshing = true
+      lastRefusal = refusalCode(error)
     } finally {
       clearTimeout(timer)
       options.signal?.removeEventListener('abort', abort)
     }
-    if (!refreshing || attempt === 30) throw new OrderQuoteRefreshWaitStopped('budget')
+    if (!refreshing || attempt === 30) throw stopped('budget')
     const delayMs = attempt === 1 ? 1_000 : 2_000
     stop(delayMs)
     options.quoteRefreshRetry.onWaiting?.({
@@ -109,7 +133,7 @@ export async function runOrderQuoteRefreshRetry<T>(
       const abort = () => {
         clearTimeout(timer)
         options.signal?.removeEventListener('abort', abort)
-        reject(new OrderQuoteRefreshWaitStopped('cancelled'))
+        reject(stopped('cancelled'))
       }
       const timer = setTimeout(() => {
         options.signal?.removeEventListener('abort', abort)
@@ -119,5 +143,5 @@ export async function runOrderQuoteRefreshRetry<T>(
       if (options.signal?.aborted) abort()
     })
   }
-  throw new OrderQuoteRefreshWaitStopped('budget')
+  throw stopped('budget')
 }

@@ -23,6 +23,7 @@ const mocks = vi.hoisted(() => ({
   }>,
   readCustody: vi.fn(),
   activeScopeId: "custody:wallet:" + "a".repeat(64),
+  activations: new Map<string, { scopeId: string; epoch: number }>(),
   localQueries: [] as (() => Promise<unknown>)[],
   localQueryDependencies: [] as unknown[][],
   positionSnapshot: null as null | {
@@ -68,6 +69,13 @@ const localFund: Fund = {
   mintUrl: "https://mint.example",
 };
 
+// Where each mocked local read began. The recovery status is not under test here.
+const localReadStart = {
+  scopeId: "custody:wallet:" + "a".repeat(64),
+  tag: { activation: { scopeId: "custody:wallet:" + "a".repeat(64), epoch: 1 }, mintSetTag: "[]" },
+  afterPassSeq: 0,
+};
+
 vi.mock("dexie-react-hooks", () => ({
   useLiveQuery: vi.fn((query: () => Promise<unknown>, dependencies: unknown[] = []) => {
     mocks.localQueries.push(query);
@@ -75,7 +83,7 @@ vi.mock("dexie-react-hooks", () => ({
     mocks.liveQueryCalls += 1;
     return mocks.liveQueryCalls % 2 === 1
       ? {
-          scopeId: "custody:wallet:" + "a".repeat(64),
+          ...localReadStart,
           ...(mocks.positionSnapshot ?? {
             positions: [localPosition],
             marketCatalogue: new Map(),
@@ -83,10 +91,10 @@ vi.mock("dexie-react-hooks", () => ({
           }),
         }
       : mocks.localFundsState === "null"
-        ? null
+        ? { ...localReadStart, funds: null }
         : mocks.localFundsState === "undefined"
           ? undefined
-          : { scopeId: "custody:wallet:" + "a".repeat(64), funds: [localFund] };
+          : { ...localReadStart, funds: [localFund] };
   }),
 }));
 
@@ -112,6 +120,16 @@ vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: (mnemonic: string) =>
     "custody:wallet:" + (mnemonic === "test mnemonic" ? "a" : "c").repeat(64),
   activeBrowserWalletScopeId: () => mocks.activeScopeId,
+  // One stable activation of each scope. The tag of a holdings read needs it.
+  activeBrowserWalletActivation: () => {
+    const activation = mocks.activations.get(mocks.activeScopeId) ?? {
+      scopeId: mocks.activeScopeId,
+      epoch: mocks.activations.size + 1,
+    };
+    mocks.activations.set(mocks.activeScopeId, activation);
+    return activation;
+  },
+  subscribeBrowserWalletActivation: () => () => {},
 }));
 vi.mock("@/lib/nostr", () => ({
   getNostrSignerRevision: () => mocks.signerRevision,
@@ -928,7 +946,8 @@ describe("usePortfolioState monitoring facade", () => {
     mocks.readCustody.mockResolvedValue(null);
     renderHook(() => usePortfolioState());
 
-    await expect(mocks.localQueries[0]!()).resolves.toBeUndefined();
+    // A null custody read is a failed read, not an empty position list.
+    await expect(mocks.localQueries[0]!()).resolves.toMatchObject({ positions: null });
   });
 
   it.each([51, 101])(

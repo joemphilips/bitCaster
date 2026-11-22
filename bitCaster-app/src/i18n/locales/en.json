@@ -81,59 +81,41 @@
     "invalidSeedphraseWord": "Invalid word: {{word}}",
     "seedphraseChecksumError": "This seedphrase is not valid. Check the words and their order.",
     "replaceWallet": "Replace Wallet",
+    "replaceWalletAnyway": "Replace Anyway",
     "replaceWalletHint": "You can return to this wallet only if you saved its seed phrase.",
     "replaceWalletTitle": "Replace This Wallet",
     "replaceWalletDesc": "Enter the seed phrase for the wallet you want to use in this browser.",
     "replaceWalletWarning": "Back up your current seed phrase before replacing this wallet.",
     "replaceBlockedPendingOrders": "This wallet has unfinished orders. Finish or recover them before replacing the wallet.",
     "replaceBlockedUnscopedOrders": "An older order has no wallet identity. Resolve it before replacing the wallet.",
-    "replaceBlockedBackup": "The current wallet lacks a current backup for every asset. Complete and acknowledge the backup before replacing it.",
+    "replaceBlockedBackup": "The wallet backup could not be confirmed. Try again later. The current wallet was kept.",
+    "replaceBackupPartial": "The backup of this wallet is incomplete. To restore this wallet fully after the replacement, use {{command}}.",
+    "replaceCounterGap": "A restore in another browser can miss some funds of this wallet. To find them, use {{command}}.",
     "replaceBlockedSeedBackup": "Back up your current seed phrase in Seed Backup before replacing this wallet.",
     "replaceBlockedActiveWork": "A wallet operation is unfinished. Finish or recover it before replacing the wallet.",
     "replaceBlockedBrowserLock": "This browser cannot safely lock the wallet. Keep this wallet and retry in a browser that supports wallet locking.",
-    "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept."
+    "replaceBlockedSafetyChecks": "Wallet replacement was blocked because backup or recovery safety checks did not pass. The current wallet was kept.",
+    "recovery": {
+      "checking": "Checking wallet…",
+      "recovering": "Recovering wallet…",
+      "waitingForMint": "Waiting for the mint…",
+      "resumesAt": "Recovery resumes at {{time}}",
+      "failed": "Wallet recovery failed.",
+      "readFailed": "Wallet data could not be read.",
+      "profileUnavailable": "The wallet is not open.",
+      "reload": "Reload"
+    },
+    "restoreResult": {
+      "partial": "Some positions may be missing. Use {{command}}.",
+      "gapLimit": "Missing funds? Use {{command}}."
+    },
+    "operationFailed": "The wallet operation could not start. Try again."
   },
-  "walletBackupRecovery": {
-    "changeAccount": "Open ID settings",
-    "localWalletKept": "Your local wallet, funds, and unfinished work are unchanged.",
+  "walletBackup": {
     "blocked": {
-      "wrong-account": {
-        "title": "This backup uses a different ID",
-        "description": "Sign in with the ID that first enabled backup for this recovery phrase."
-      },
-      "inactive": {
-        "title": "This backup is inactive",
-        "description": "Backup cannot continue for this ID. Keep your local wallet. CLI seed recovery is available for supported regular-msat funds within the scanned range."
-      },
-      "incompatible-discovery": {
-        "title": "This backup needs compatibility support",
-        "description": "The backup records cannot be used safely. Keep your local wallet. Do not create a replacement backup for this recovery phrase."
-      }
-    },
-    "preparingTitle": "Preparing wallet backup",
-    "preparingDescription": "Wait for wallet backup before adding funds or making other wallet changes.",
-    "failedTitle": "Wallet backup stopped",
-    "failedDescription": "Your local wallet keeps your funds and unfinished work. Retry wallet backup before making a new wallet change.",
-    "retryStartup": "Retry wallet backup",
-    "topUpNotReady": "Wallet backup is not ready. Wait for it to finish, or use Retry wallet backup if it has stopped.",
-    "topUpRecoveryRequired": "This wallet needs recovery before you can add funds. Follow the wallet recovery message.",
-    "topUpFailed": "The wallet operation could not start. Try again.",
-    "preparingReasons": {
-      "authentication": "Checking this wallet's backup.",
-      "leadership-wait": "This wallet is open in another tab. Close that tab if you no longer need it.",
-      "retry": "Wallet backup will try again. Keep this page open and wait.",
-      "driver-unavailable": "Sign in to start this wallet's backup. If you are already signed in, reload this page."
-    },
-    "title": "Wallet actions are paused",
-    "description": "New wallet actions stay paused until recovery completes.",
-    "retry": "Retry recovery",
-    "reasons": {
-      "remote-unavailable": "The backup service or mint is unavailable.",
-      "remote-head-changed": "Another browser changed the backup again. Retry to check its latest state.",
-      "local-predecessor-unspent": "Some funds stored in this browser remain unspent. This browser keeps them while recovery is incomplete.",
-      "local-predecessor-unknown": "The mint has not confirmed the state of funds stored in this browser.",
-      "submitted-work-unresolved": "An earlier wallet operation is unresolved. An unpaid invoice can also block recovery. Retrying may not clear it.",
-      "local-state-changed": "Wallet state changed during recovery."
+      "undecodable": "The wallet backup cannot be read, so it is not updated. Your funds in this browser are unchanged.",
+      "unsupported-version": "The wallet backup uses a newer format. Update the app to keep the backup current.",
+      "over-cap": "The wallet backup is full. New markets are not in the backup. Your funds in this browser are unchanged."
     }
   },
   "auth": {
@@ -420,7 +402,7 @@
     "confirmLimitBuy": "Place Limit Order for {{amount}}",
     "confirmLimitSell": "Place Sell Limit Order for {{amount}}",
     "submittingOrder": "Submitting order...",
-    "waitingForQuotes": "Waiting for fresh quotes…",
+    "waitingForQuotes": "Waiting for the order book…",
     "stoppingQuoteWait": "Stopping the wait…",
     "stopWaiting": "Stop waiting",
     "quoteWaitRecovery": "We will retry your unchanged order for up to a minute. Stopping may still require wallet recovery.",
@@ -462,9 +444,6 @@
     "predictions": "Predictions",
     "noPositions": "No {{tab}} positions",
     "noActivePositions": "No active positions",
-    "restoringPositions": "Restoring positions…",
-    "restorePositionsFailed": "Positions could not be restored from the mint.",
-    "restorePositionsRetry": "Retry",
     "noClosedPositions": "No closed positions",
     "won": "Won",
     "lost": "Lost",
@@ -1037,12 +1016,20 @@
   "settlementProgress": {
     "journalUnavailable": "Wallet progress is unavailable. Keep your wallet data and reload to try again.",
     "title": "Active trade progress",
+    "failedTitle": "Trade failed",
+    "dismissFailure": "Dismiss the failed order on “{{market}}”",
+    "failed": "This order was not completed.",
+    "orderOnMarket": "Order on “{{market}}”",
+    "endedWithoutTrade": "This order ended without a trade.",
+    "fundsPending": "Your funds, less preparation and refund fees, return to this wallet after the order expires.",
+    "fundsReturned": "Your funds, less preparation and refund fees, were returned to this wallet.",
+    "withFunds": "{{reason}} {{funds}}",
     "first": "First operations",
     "refresh": "Refresh status",
     "prepared": "The wallet is preparing this order. The order submission is not confirmed.",
+    "orderRequested": "The wallet sent the order. The engine has not confirmed it yet; the wallet reads its status and does not send it again.",
     "capabilityRequested": "The wallet is requesting a settlement capability. The order submission is not confirmed.",
     "capabilityBound": "The engine created a settlement capability. The order submission is not confirmed; recovery will inspect this operation.",
-    "submissionRejected": "The engine rejected the order submission. The wallet will not retry it; funds recovery is separate.",
     "orderSubmitted": "The engine accepted the order submission. Settlement is not confirmed yet.",
     "terminal": "The wallet operation is complete.",
     "complete": "Trade complete.",
@@ -1054,10 +1041,8 @@
     "SubmissionPending": "Settlement is pending. The trade is not complete.",
     "Reconciling": "The engine is checking an uncertain settlement result.",
     "Confirmed": "The mint confirmed settlement. Wallet recovery can still be pending.",
-    "DefinitivelyRejected": "This settlement did not complete. This does not mean funds were refunded.",
-    "Refundable": "The engine found refund eligibility. The wallet must still verify and complete recovery.",
-    "ExpiredBeforeSubmission": "The authorization expired before submission. Funds recovery is separate.",
-    "RejectedBeforeSubmission": "The engine stopped settlement before submission. Funds recovery is separate.",
+    "OwnOutputReused": "This order was not completed because this wallet was used in another browser or device at the same time. A Participation Score penalty was charged.",
+    "GroupOutputReused": "This order was not completed because another order in the same settlement failed. No penalty was charged.",
     "fees": "Preparation and refund fees can apply even when no trade completes."
   },
   "walletRecovery": {
@@ -1067,7 +1052,7 @@
     "operation": "Operation: {{operationId}}",
     "mintCode": "Mint code: {{code}}",
     "retry": "Retry",
-    "fundsReleased": "The mint refused this order. No order was submitted. The reserved funds are available again.",
+    "fundsReleased": "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
     "dismiss": "Dismiss this wallet alert",
     "morePending": "More wallet alerts are waiting. Select Next to see them.",
     "firstAlerts": "First alerts",
@@ -1082,17 +1067,17 @@
       "custody-commit-failed": "The wallet could not save the durable operation.",
       "capability-creation-failed": "The settlement capability result is uncertain. The order was not submitted.",
       "capability-validation-failed": "The engine returned an invalid settlement capability.",
-      "order-attempt-ended": "The prepared order attempt ended before capability creation. No order was submitted.",
+      "order-attempt-ended": "The prepared order attempt ended before the order request. No order was submitted.",
       "settlement-capability-invalid-request": "The engine rejected the capability request because its fields are invalid.",
       "settlement-capability-invalid-artifact": "The engine rejected the capability artifact.",
       "settlement-capability-policy-rejected": "The engine rejected the capability because it does not meet admission policy.",
       "settlement-capability-score-required": "The engine requires more Participation Score for this capability.",
       "settlement-capability-not-found": "The engine could not find the capability request.",
-      "settlement-capability-conflict": "The capability request conflicts with an existing operation.",
+      "settlement-capability-conflict": "The capability request conflicts with an earlier request.",
       "settlement-capability-market-unavailable": "The market is not available for this capability.",
       "settlement-capability-request-too-large": "The capability request exceeds a supported size or count limit.",
-      "settlement-capability-admission-limited": "Capability admission is busy. The capability result may be uncertain.",
-      "settlement-capability-capacity-exhausted": "Capability admission capacity is exhausted. The capability result may be uncertain.",
+      "settlement-capability-admission-limited": "Order admission is busy. No order was placed.",
+      "settlement-capability-capacity-exhausted": "Order admission capacity is exhausted. No order was placed.",
       "settlement-capability-admission-unavailable": "Capability admission is temporarily unavailable. The capability result may be uncertain.",
       "order-invalid-request": "The engine rejected the order request because its fields are invalid.",
       "order-invalid-comment": "The engine rejected the order comment.",
@@ -1187,7 +1172,16 @@
     "name": "Participation Score",
     "helpLabel": "About Participation Score",
     "help": "An anti-spam fee. bitCaster charges a few sats of Score when your order uses the order book. It is not refundable.",
-    "purchaseAtConfirm": "Score top-up at confirm (kept as balance)"
+    "purchaseAtConfirm": "Score top-up at confirm (kept as balance)",
+    "history": "Score history",
+    "historyEmpty": "No Score changes yet.",
+    "historyUnavailable": "Score history is unavailable.",
+    "kinds": {
+      "purchase": "Purchase",
+      "capability-binding": "Order admission",
+      "invalid-capability-validation": "Invalid proof check",
+      "reused-output-penalty": "Penalty: wallet used in two places"
+    }
   },
   "sort": {
     "label": "Sort markets",

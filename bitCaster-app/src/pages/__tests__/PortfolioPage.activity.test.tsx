@@ -21,6 +21,7 @@ vi.mock("../usePortfolioState", () => ({
       stats: { positionsValueSats: 0, totalValueSats: 0, predictionsCount: 0 },
       positions: [],
       funds: [],
+      holdings: { funds: { kind: "unhydrated" }, positions: { kind: "unhydrated" } },
       activity: controlled.activity,
       createdMarkets: [],
       positionsTab: "active",
@@ -55,11 +56,17 @@ vi.mock("@/stores/wallet", () => ({
     getState: () => ({ mnemonic: null }),
   },
 }));
-vi.mock("@/lib/browserWalletProfile", () => ({
-  activeBrowserWalletScopeId: () => "activity-wallet",
-  browserWalletIdFromMnemonic: vi.fn(),
-  isActiveBrowserWalletId: vi.fn(),
-}));
+vi.mock("@/lib/browserWalletProfile", () => {
+  // The wallet recovery status reads the activation. No profile is active here.
+  const noActivation = Object.freeze({ scopeId: null, epoch: 0 });
+  return {
+    activeBrowserWalletScopeId: () => "activity-wallet",
+    activeBrowserWalletActivation: () => noActivation,
+    subscribeBrowserWalletActivation: () => () => {},
+    browserWalletIdFromMnemonic: vi.fn(),
+    isActiveBrowserWalletId: vi.fn(),
+  };
+});
 vi.mock("@/lib/identityOps", () => ({ createImplicitWalletAndNostrIdentity: vi.fn() }));
 vi.mock("@/lib/browserPortfolioClaim", () => ({ claimPortfolioPosition: vi.fn() }));
 vi.mock("@/lib/browserPortfolioRemove", () => ({ removePortfolioPosition: vi.fn() }));

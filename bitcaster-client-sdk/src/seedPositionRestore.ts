@@ -3,17 +3,30 @@ import { readAllocationBoundedJsonResponse } from './boundedJsonResponse.ts'
 import {
   bindExactSeedRecoveryResponse,
   planExactSeedRecoveryBatch,
+  validateConditionalKeysetSeedRecoveryAuthority,
   validateConditionalKeysetSeedRecoveryDescriptor,
+  type ConditionalKeysetSeedRecoveryAuthority,
   type ConditionalKeysetSeedRecoveryDescriptor,
   type ExactSeedRecoveryCandidate,
 } from './conditionalKeysetSeedRecovery.ts'
+import { classifyCashuMintFailure } from './mintRefusal.ts'
+import type { RecoveryIndexEntry, RecoveryIndexKeysetAuthority } from './recoveryIndexDocument.ts'
 
-// The seed restore event of ADR-039 (amendment 2026-11-04). It finds the
-// conditional keysets on which a wallet seed holds signed outputs, with only
-// the seed, the public engine catalogue, and the mint. It sends no engine
-// identity, Nostr key, or wallet id to the mint.
+// The mint reads of a seed restore. They send no engine identity, Nostr key,
+// or wallet id to the mint.
+//
+// - The GUI restore (ADR-039, amendment 2026-11-09) scans the listed, the
+//   regular and the hinted keysets with the recovery index planner and scan
+//   (`recoveryIndexRestore`). It uses this module only to list the keysets of
+//   a hinted condition and to resolve the mint authority of each target. It
+//   never reads the market catalogue or the whole mint listing.
+// - The CLI `wallet recover-seed --all-conditions` (ADR-033, amendment
+//   2026-11-09) is the only broad recovery. It reads the catalogue, or the
+//   strict mint listing, and probes the first counters of each market.
+// - The browser keyset re-sync (ADR-033) probes the counters above a local
+//   cursor after evidence of another client.
 
-/** Counters probed at the start of each keyset that no hint names. */
+/** Counters that the CLI broad recovery probes at the start of each keyset. */
 export const SEED_POSITION_PROBE_COUNTERS = 128
 /** Counters probed above the local cursor of a keyset that this client uses. */
 export const SEED_POSITION_RESYNC_COUNTERS = 100
@@ -78,7 +91,7 @@ export function seedRestoreMarketFromCatalogueEntry(value: unknown): SeedRestore
   return Object.freeze({ conditionId, outcomes: Object.freeze([...(outcomes as string[])]) })
 }
 
-/** Reads one page of every market in the public catalogue, in every state. */
+/** Reads one page of every market in the public catalogue, in every state. CLI only. */
 export async function readSeedRestoreCataloguePage(input: {
   readonly engineBaseUrl: string
   readonly fetchImpl: typeof fetch
@@ -120,7 +133,7 @@ export async function readSeedRestoreCataloguePage(input: {
 
 /**
  * Reads one page of the unfiltered mint listing and returns its condition ids.
- * Use it only when the catalogue is not available. Each condition then needs
+ * CLI only: use it when the catalogue is not available. Each condition then needs
  * `listSeedRestoreConditionKeysets` with no outcome list.
  */
 export async function readSeedRestoreMintConditionPage(input: {
@@ -264,6 +277,148 @@ export async function probeSeedRestoreKeysets(input: {
   }
   if (pending.length > 0) await send(pending)
   return highest
+}
+
+/** The mint reads that resolve the authority of one GUI restore target. */
+export interface SeedRestoreKeysetMint extends SeedRestoreMintListing {
+  getKeys(keysetId: string): Promise<unknown>
+}
+
+export type SeedRestoreKeysetResolution =
+  | {
+      readonly status: 'resolved'
+      readonly keyset: RecoveryIndexKeysetAuthority
+      /** The authority of a conditional keyset, with its outcome collection. Null for a regular keyset. */
+      readonly conditional: ConditionalKeysetSeedRecoveryAuthority | null
+    }
+  /** The mint names no matching keyset. The entry stays in the index. */
+  | { readonly status: 'unverifiable' }
+
+const UNVERIFIABLE: SeedRestoreKeysetResolution = Object.freeze({ status: 'unverifiable' })
+/** The NUT error code of a keyset that the mint does not know. */
+const MINT_UNKNOWN_KEYSET_REFUSAL_CODE = 12001
+
+/**
+ * Finds the mint authority of one target of the GUI restore (ADR-039,
+ * "Restore order"). A regular keyset takes the keys of the mint. A
+ * conditional keyset also needs its outcome collection: the index holds only
+ * its id, and only the listing of its condition names the collection. The
+ * recovery index scan then checks that the keys derive the keyset id of the
+ * entry. A failed mint request rejects, so the caller keeps the target.
+ */
+export async function resolveSeedRestoreKeyset(input: {
+  readonly entry: RecoveryIndexEntry
+  readonly mint: SeedRestoreKeysetMint
+  /** The bitCaster keysets of one condition, for example a cached `listSeedRestoreConditionKeysets`. */
+  readonly conditionKeysets: (conditionId: string) => Promise<SeedRestoreKeysetListing>
+}): Promise<SeedRestoreKeysetResolution> {
+  const { entry } = input
+  let response: unknown
+  try {
+    response = await input.mint.getKeys(entry.keysetId)
+  } catch (error) {
+    const failure = classifyCashuMintFailure(error)
+    if (failure.kind === 'refusal' && failure.code === MINT_UNKNOWN_KEYSET_REFUSAL_CODE) {
+      return UNVERIFIABLE
+    }
+    throw error
+  }
+  const keys = mintKeysetKeys(response, entry.keysetId)
+  if (keys === null || keys.unit !== 'msat') return UNVERIFIABLE
+  switch (entry.kind) {
+    case 'regular':
+      return Object.freeze({ status: 'resolved', keyset: keys, conditional: null })
+    case 'conditional': {
+      const listing = await input.conditionKeysets(entry.conditionId)
+      const descriptor = listing.keysets.find(
+        ({ id, outcomeCollectionId }) =>
+          id === entry.keysetId && outcomeCollectionId === entry.outcomeCollectionId,
+      )
+      if (descriptor === undefined) return UNVERIFIABLE
+      let conditional: ConditionalKeysetSeedRecoveryAuthority
+      try {
+        conditional = validateConditionalKeysetSeedRecoveryAuthority({
+          id: descriptor.id,
+          unit: descriptor.unit,
+          active: descriptor.active,
+          input_fee_ppk: descriptor.inputFeePpk,
+          ...(descriptor.finalExpiry === null ? {} : { final_expiry: descriptor.finalExpiry }),
+          condition_id: descriptor.conditionId,
+          outcome_collection: descriptor.outcomeCollection,
+          outcome_collection_id: descriptor.outcomeCollectionId,
+          registered_at: descriptor.registeredAt,
+          keys: { ...keys.keys },
+        })
+      } catch {
+        return UNVERIFIABLE
+      }
+      return Object.freeze({
+        status: 'resolved',
+        keyset: Object.freeze({
+          id: conditional.id,
+          unit: conditional.unit,
+          keys: conditional.keys,
+          inputFeePpk: conditional.inputFeePpk,
+          finalExpiry: conditional.finalExpiry,
+        }),
+        conditional,
+      })
+    }
+    default:
+      return assertNever(entry)
+  }
+}
+
+/** The restore entries of the keysets of one hinted condition at one mint. */
+export function seedRestoreHintEntries(
+  mintUrl: string,
+  listing: SeedRestoreKeysetListing,
+): readonly RecoveryIndexEntry[] {
+  return Object.freeze(
+    listing.keysets.map((descriptor) =>
+      Object.freeze({
+        kind: 'conditional' as const,
+        mintUrl,
+        keysetId: descriptor.id,
+        conditionId: descriptor.conditionId,
+        outcomeCollectionId: descriptor.outcomeCollectionId,
+      }),
+    ),
+  )
+}
+
+/** The keys of one keyset in a NUT-01 response, or null when the mint does not name it. */
+function mintKeysetKeys(value: unknown, keysetId: string): RecoveryIndexKeysetAuthority | null {
+  if (!isRecord(value) || !Array.isArray(value.keysets)) {
+    throw new Error('seed restore mint keys are invalid')
+  }
+  const keyset = value.keysets.find((candidate) => isRecord(candidate) && candidate.id === keysetId)
+  if (!isRecord(keyset) || typeof keyset.unit !== 'string' || !isRecord(keyset.keys)) return null
+  const keys: Record<string, string> = {}
+  for (const [amount, key] of Object.entries(keyset.keys)) {
+    if (typeof key !== 'string') return null
+    keys[amount] = key
+  }
+  const fee = keyset.input_fee_ppk ?? 0
+  const expiry = keyset.final_expiry ?? null
+  if (
+    !Number.isSafeInteger(fee) ||
+    (fee as number) < 0 ||
+    (expiry !== null && (!Number.isSafeInteger(expiry) || (expiry as number) <= 0))
+  ) {
+    return null
+  }
+  return Object.freeze({
+    id: keysetId,
+    unit: keyset.unit,
+    keys: Object.freeze(keys),
+    inputFeePpk: fee as number,
+    finalExpiry: expiry as number | null,
+  })
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled seed restore entry: ${JSON.stringify(value)}`)
 }
 
 function filterDescriptor(value: unknown): ConditionalKeysetSeedRecoveryDescriptor | null {

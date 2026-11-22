@@ -48,13 +48,37 @@ const RECORD_FIELDS = [
 ] as const
 const CAPABILITY_FIELDS = ['artifactId', 'bindingDigest', 'artifactDigest', 'orderId'] as const
 
+/**
+ * The order journal states (ADR-037 amendment of 2026-11-13, decision 6).
+ *
+ * The one-step path: `prepared` -> `order-requested` -> `order-submitted` or
+ * `order-request-rejected` -> `terminal`. The client commits `order-requested`
+ * before the first send of the admission-form order request.
+ *
+ * The two-step path of release 4 (`capability-requested`, `capability-bound`,
+ * `submission-rejected`) is never written for a new order. A stored record in
+ * one of those states still recovers through the old route.
+ */
 export type CtfRangeOrderPreparationLifecycle =
   | 'prepared'
+  | 'order-requested'
+  | 'order-request-rejected'
   | 'capability-requested'
   | 'capability-bound'
   | 'order-submitted'
   | 'submission-rejected'
   | 'terminal'
+
+const LIFECYCLE_STATES = [
+  'prepared',
+  'order-requested',
+  'order-request-rejected',
+  'capability-requested',
+  'capability-bound',
+  'order-submitted',
+  'submission-rejected',
+  'terminal',
+] as const satisfies readonly CtfRangeOrderPreparationLifecycle[]
 
 export interface CtfRangeOrderPreparationCapability {
   readonly artifactId: string
@@ -215,18 +239,7 @@ export function decodeCtfRangeOrderPreparationCapability(
 export function decodeCtfRangeOrderPreparationLifecycle(
   value: unknown,
 ): CtfRangeOrderPreparationLifecycle {
-  return requireClosed(
-    value,
-    [
-      'prepared',
-      'capability-requested',
-      'capability-bound',
-      'order-submitted',
-      'submission-rejected',
-      'terminal',
-    ],
-    'lifecycle state',
-  )
+  return requireClosed(value, LIFECYCLE_STATES, 'lifecycle state')
 }
 
 export function assertCtfRangeOrderPreparationTransition(
@@ -238,13 +251,22 @@ export function assertCtfRangeOrderPreparationTransition(
   let legal: boolean
   switch (from) {
     case 'prepared':
-      legal = to === 'capability-requested' || to === 'terminal'
+      legal = to === 'order-requested' || to === 'terminal'
+      break
+    // `order-requested` -> `order-submitted` binds the capability of the
+    // accepted order, so only bindCtfRangeOrderPreparationAdmission makes it.
+    case 'order-requested':
+      legal = to === 'order-request-rejected' || to === 'terminal'
+      break
+    case 'order-request-rejected':
+      legal = to === 'terminal'
       break
     case 'capability-requested':
       legal = to === 'terminal'
       break
+    // A release 4 record: recovery finds its order or refunds it.
     case 'capability-bound':
-      legal = to === 'order-submitted' || to === 'submission-rejected' || to === 'terminal'
+      legal = to === 'order-submitted' || to === 'terminal'
       break
     case 'order-submitted':
     case 'submission-rejected':
@@ -259,17 +281,41 @@ export function assertCtfRangeOrderPreparationTransition(
   if (!legal) throw new Error('CTF range preparation lifecycle transition is invalid')
 }
 
-export function bindCtfRangeOrderPreparationCapability(input: {
+interface CapabilityBindingInput {
   readonly current: CtfRangeOrderPreparationRecord
   readonly expectedRevision: number
   readonly capability: CtfRangeOrderPreparationCapability
   readonly updatedAtMs: number
-}): CtfRangeOrderPreparationRecord {
+}
+
+/** Old two-step path: the stage route bound the capability (`capability-requested` -> `capability-bound`). */
+export function bindCtfRangeOrderPreparationCapability(
+  input: CapabilityBindingInput,
+): CtfRangeOrderPreparationRecord {
+  return bindCapability(input, 'capability-requested', 'capability-bound')
+}
+
+/**
+ * One-step path: the engine accepted the order request, and the response or the
+ * order lookup gave its capability (`order-requested` -> `order-submitted`). The
+ * caller checks the artifact digest before this call.
+ */
+export function bindCtfRangeOrderPreparationAdmission(
+  input: CapabilityBindingInput,
+): CtfRangeOrderPreparationRecord {
+  return bindCapability(input, 'order-requested', 'order-submitted')
+}
+
+function bindCapability(
+  input: CapabilityBindingInput,
+  from: 'capability-requested' | 'order-requested',
+  to: 'capability-bound' | 'order-submitted',
+): CtfRangeOrderPreparationRecord {
   const current = decodeCtfRangeOrderPreparationRecord(input.current)
   const capability = decodeCtfRangeOrderPreparationCapability(input.capability)
   const expectedRevision = requireNonnegativeSafeInteger(input.expectedRevision, 'revision')
   const updatedAtMs = requireNonnegativeSafeInteger(input.updatedAtMs, 'updated time')
-  if (current.lifecycleState !== 'capability-requested' || current.revision !== expectedRevision) {
+  if (current.lifecycleState !== from || current.revision !== expectedRevision) {
     if (
       current.capability !== null &&
       sameCtfRangeOrderPreparationCapability(current.capability, capability)
@@ -283,7 +329,7 @@ export function bindCtfRangeOrderPreparationCapability(input: {
   }
   return {
     ...current,
-    lifecycleState: 'capability-bound',
+    lifecycleState: to,
     revision: current.revision + 1,
     capability,
     updatedAtMs: Math.max(updatedAtMs, current.updatedAtMs),
@@ -441,6 +487,8 @@ function assertLifecycleCapability(
 ): void {
   switch (lifecycle) {
     case 'prepared':
+    case 'order-requested':
+    case 'order-request-rejected':
     case 'capability-requested':
       if (capability !== null) {
         throw new Error('CTF range preparation lifecycle authority is invalid')

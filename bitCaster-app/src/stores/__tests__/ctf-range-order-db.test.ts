@@ -12,6 +12,7 @@ import {
 import {
   appendCtfRangePreparationConsolidation,
   appendCtfRangePreparationConsolidationInTransaction,
+  bindCtfRangePreparationAdmission,
   bindCtfRangePreparationCapability,
   hasSubmittedCtfRangeOrder,
   hasActiveCtfRangePreparation,
@@ -132,22 +133,95 @@ describe("browser CTF range order journal", () => {
     expect(await insertCtfRangePreparation(input, database)).toEqual(inserted);
   });
 
-  it("binds capability and advances lifecycle with revision CAS", async () => {
+  it("records the one-step lifecycle with revision CAS", async () => {
     const database = createDatabase();
     const input = identity("range-bind", "client-bind", 20);
     await insertCtfRangePreparation(input, database);
-    await transitionCtfRangePreparation(
+    // The one-step path never writes capability-requested.
+    await expect(
+      transitionCtfRangePreparation(
+        {
+          scopeId: input.scopeId,
+          rangeOperationId: input.rangeOperationId,
+          expectedRevision: 0,
+          from: "prepared",
+          to: "capability-requested",
+          updatedAtMs: 21,
+        },
+        database,
+      ),
+    ).rejects.toThrow(/transition is invalid/);
+    const requested = await transitionCtfRangePreparation(
       {
         scopeId: input.scopeId,
         rangeOperationId: input.rangeOperationId,
         expectedRevision: 0,
         from: "prepared",
-        to: "capability-requested",
+        to: "order-requested",
         updatedAtMs: 21,
       },
       database,
     );
+    expect(requested.capability).toBeNull();
+    const capability = {
+      artifactId: "11111111-1111-4111-8111-111111111111",
+      bindingDigest: "22".repeat(32),
+      artifactDigest: "33".repeat(32),
+      orderId: "44444444-4444-4444-8444-444444444444",
+    };
+    await expect(
+      bindCtfRangePreparationCapability(
+        { ...requested, expectedRevision: 1, capability, updatedAtMs: 22 },
+        database,
+      ),
+    ).rejects.toThrow(/revision or lifecycle changed/);
+    const submitted = await bindCtfRangePreparationAdmission(
+      {
+        scopeId: input.scopeId,
+        rangeOperationId: input.rangeOperationId,
+        expectedRevision: 1,
+        capability,
+        updatedAtMs: 22,
+      },
+      database,
+    );
+    expect(submitted.lifecycleState).toBe("order-submitted");
+    expect(submitted.revision).toBe(2);
+    expect(submitted.capability).toEqual(capability);
 
+    const rejectedInput = identity("range-rejected", "client-rejected", 30);
+    await insertCtfRangePreparation(rejectedInput, database);
+    for (const [from, to, expectedRevision] of [
+      ["prepared", "order-requested", 0],
+      ["order-requested", "order-request-rejected", 1],
+      ["order-request-rejected", "terminal", 2],
+    ] as const) {
+      const next = await transitionCtfRangePreparation(
+        {
+          scopeId: rejectedInput.scopeId,
+          rangeOperationId: rejectedInput.rangeOperationId,
+          expectedRevision,
+          from,
+          to,
+          updatedAtMs: 31 + expectedRevision,
+        },
+        database,
+      );
+      expect(next.lifecycleState).toBe(to);
+      expect(next.capability).toBeNull();
+    }
+  });
+
+  it("binds a release 4 capability-requested record through the old route", async () => {
+    const database = createDatabase();
+    const input = identity("range-release4", "client-release4", 20);
+    const inserted = await insertCtfRangePreparation(input, database);
+    // Only the release 4 writer produced capability-requested.
+    await database.ctfRangePreparations.put({
+      ...inserted,
+      lifecycleState: "capability-requested",
+      revision: 1,
+    });
     const bound = await bindCtfRangePreparationCapability(
       {
         scopeId: input.scopeId,
@@ -165,21 +239,6 @@ describe("browser CTF range order journal", () => {
     );
     expect(bound.lifecycleState).toBe("capability-bound");
     expect(bound.revision).toBe(2);
-
-    await expect(
-      transitionCtfRangePreparation(
-        {
-          scopeId: input.scopeId,
-          rangeOperationId: input.rangeOperationId,
-          expectedRevision: 1,
-          from: "capability-bound",
-          to: "order-submitted",
-          updatedAtMs: 23,
-        },
-        database,
-      ),
-    ).rejects.toThrow(/revision or lifecycle changed/);
-
     const submitted = await transitionCtfRangePreparation(
       {
         scopeId: input.scopeId,
@@ -249,7 +308,7 @@ describe("browser CTF range order journal", () => {
         rangeOperationId: records[0]!.rangeOperationId,
         expectedRevision: 0,
         from: "prepared",
-        to: "capability-requested",
+        to: "order-requested",
         updatedAtMs: 100,
       },
       database,
@@ -359,12 +418,12 @@ async function transitionToSubmitted(
       rangeOperationId: input.rangeOperationId,
       expectedRevision: 0,
       from: "prepared",
-      to: "capability-requested",
+      to: "order-requested",
       updatedAtMs: input.createdAtMs + 1,
     },
     database,
   );
-  await bindCtfRangePreparationCapability(
+  await bindCtfRangePreparationAdmission(
     {
       scopeId: input.scopeId,
       rangeOperationId: input.rangeOperationId,
@@ -376,17 +435,6 @@ async function transitionToSubmitted(
         orderId: "44444444-4444-4444-8444-444444444444",
       },
       updatedAtMs: input.createdAtMs + 2,
-    },
-    database,
-  );
-  await transitionCtfRangePreparation(
-    {
-      scopeId: input.scopeId,
-      rangeOperationId: input.rangeOperationId,
-      expectedRevision: 2,
-      from: "capability-bound",
-      to: "order-submitted",
-      updatedAtMs: input.createdAtMs + 3,
     },
     database,
   );

@@ -652,6 +652,14 @@ export function normalizeSqliteSchemaSql(sql: string): string {
   return normalized.trim().replace(/;$/, '').trim()
 }
 
+/** Validates an open profile database against one frozen manifest; a forward-only upgrade uses it. */
+export function validateOpenProfileDatabase(
+  database: DatabaseSync,
+  manifest: ProfileSchemaManifest,
+): void {
+  validateOpenDatabase(database, manifest)
+}
+
 function validateOpenDatabase(database: DatabaseSync, manifest: ProfileSchemaManifest): void {
   const quickCheck = database.prepare('PRAGMA quick_check(1)').all() as Record<string, unknown>[]
   if (

@@ -21,7 +21,7 @@ import {
 import {
   insertCtfRangePreparation,
   transitionCtfRangePreparation,
-  bindCtfRangePreparationCapability,
+  bindCtfRangePreparationAdmission,
 } from "@/stores/ctf-range-order-db";
 import { db } from "@/stores/proof-db";
 import { usePendingTradesStore } from "@/stores/pendingTrades";
@@ -109,10 +109,10 @@ async function observeResultApplication({
     rangeOperationId,
     expectedRevision: 0,
     from: "prepared",
-    to: "capability-requested",
+    to: "order-requested",
     updatedAtMs: 2,
   });
-  await bindCtfRangePreparationCapability({
+  await bindCtfRangePreparationAdmission({
     scopeId,
     rangeOperationId,
     expectedRevision: 1,
@@ -123,14 +123,6 @@ async function observeResultApplication({
       orderId,
     },
     updatedAtMs: 3,
-  });
-  await transitionCtfRangePreparation({
-    scopeId,
-    rangeOperationId,
-    expectedRevision: 2,
-    from: "capability-bound",
-    to: "order-submitted",
-    updatedAtMs: 4,
   });
   // This test owns the reactive consumer. Coordinator tests prove the full
   // production writer. Here SDK transitions supply canonical stored records.

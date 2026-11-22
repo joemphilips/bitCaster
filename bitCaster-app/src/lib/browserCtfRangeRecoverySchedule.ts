@@ -1,11 +1,21 @@
+import {
+  CTF_RANGE_RECOVERY_REFUSAL_LIMIT,
+  countCtfRangeRecoveryRefusal,
+  decodeCtfRangeRefusedRequest,
+  resumeCtfRangeRecoveryRefusalCount,
+  type CtfRangeRecoveryRefusalCount,
+  type CtfRangeRefusedRequest,
+} from "@bitcaster/client-sdk/ctfRangeRecoveryRefusal";
+
 /**
  * Per-operation retry schedule for range-order recovery.
  *
  * Recovery sends NUT-07 checks, exact replays, and NUT-09 restores to the
  * mint. Each operation waits a capped exponential delay with jitter after a
- * failed pass. A run of identical non-final refusals stops the automatic
- * replay until the user asks for a retry. The schedule is a load control, not
- * funds authority: losing it only allows an earlier retry.
+ * failed pass. A run of identical non-final refusals of one request stops the
+ * automatic replay until the user asks for a retry (the SDK refusal count).
+ * The schedule is a load control, not funds authority: losing it only allows
+ * an earlier retry.
  *
  * Tabs of one wallet share the schedule through `localStorage`. Their passes
  * already serialize under the wallet profile Web Lock, so a shared schedule
@@ -14,12 +24,17 @@
 
 export const BROWSER_CTF_RANGE_RECOVERY_BACKOFF_BASE_MS = 15_000;
 export const BROWSER_CTF_RANGE_RECOVERY_BACKOFF_MAX_MS = 15 * 60_000;
-/** Identical non-final refusals before automatic replay stops. */
-export const BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT = 5;
+/** Identical non-final refusals of one request before automatic replay stops. */
+export const BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT = CTF_RANGE_RECOVERY_REFUSAL_LIMIT;
 
 const RETRY_AFTER_MAX_MS = 24 * 60 * 60_000;
 const SCOPE_OPERATION_LIMIT = 128;
-const STORAGE_KEY_PREFIX = "bitcaster:ctf-range-recovery-schedule:v1:";
+// v2 counts refusals for each refused request. A v1 schedule of release 4 is
+// read once and converted: its refusals name no request, and its halts stay.
+const STORAGE_KEY_PREFIX = "bitcaster:ctf-range-recovery-schedule:v2:";
+const V1_STORAGE_KEY_PREFIX = "bitcaster:ctf-range-recovery-schedule:v1:";
+
+type StoredScheduleVersion = 1 | 2;
 
 export interface BrowserCtfRangeRecoveryMintError {
   readonly code: number;
@@ -29,11 +44,16 @@ export interface BrowserCtfRangeRecoveryMintError {
 export type BrowserCtfRangeRecoveryScheduleState =
   | { readonly kind: "due" }
   | { readonly kind: "waiting"; readonly nextAttemptAtMs: number }
-  | { readonly kind: "halted"; readonly mintError: BrowserCtfRangeRecoveryMintError };
+  /** A halt without a mint error comes from other evidence, such as a replaced refund plan. */
+  | { readonly kind: "halted"; readonly mintError: BrowserCtfRangeRecoveryMintError | null };
 
 export interface BrowserCtfRangeRecoveryFailure {
   /** A mint refusal outside the final set, or null for any other failure. */
   readonly mintError: BrowserCtfRangeRecoveryMintError | null;
+  /** The request that the mint refused. Refusals count for each request and each code. */
+  readonly refusedRequest?: CtfRangeRefusedRequest | null;
+  /** Automatic replay cannot settle the operation. It halts at once, without a mint error. */
+  readonly halt?: boolean;
   readonly retryAfterMs: number | null;
   /** A protocol time when the next pass can make progress, such as authorization expiry. */
   readonly notAfterMs?: number | null;
@@ -47,7 +67,7 @@ export type BrowserCtfRangeRecoveryScheduleStorage = Pick<
 interface ScheduleEntry {
   attempt: number;
   nextAttemptAtMs: number;
-  refusal: { code: number; detail: string; count: number } | null;
+  refusal: CtfRangeRecoveryRefusalCount | null;
   halted: boolean;
 }
 
@@ -68,10 +88,13 @@ export class BrowserCtfRangeRecoverySchedule {
   state(scopeId: string, operationId: string, nowMs: number): BrowserCtfRangeRecoveryScheduleState {
     const entry = this.#read(scopeId)[operationId];
     if (entry === undefined) return { kind: "due" };
-    if (entry.halted && entry.refusal !== null) {
+    if (entry.halted) {
       return {
         kind: "halted",
-        mintError: { code: entry.refusal.code, detail: entry.refusal.detail },
+        mintError:
+          entry.refusal === null
+            ? null
+            : { code: entry.refusal.code, detail: entry.refusal.detail },
       };
     }
     return entry.nextAttemptAtMs > nowMs
@@ -102,18 +125,22 @@ export class BrowserCtfRangeRecoverySchedule {
     if (notAfterMs !== null && notAfterMs > nowMs) {
       nextAttemptAtMs = Math.min(nextAttemptAtMs, notAfterMs);
     }
+    // A failure without a mint refusal keeps the count of the last refusal.
     let refusal = previous?.refusal ?? null;
-    if (failure.mintError !== null) {
-      refusal = {
+    let halted = false;
+    if (failure.halt === true) {
+      // The halt is not a mint refusal, so the alert shows no mint code.
+      refusal = null;
+      halted = true;
+    } else if (failure.mintError !== null) {
+      const counted = countCtfRangeRecoveryRefusal(refusal, {
+        request: failure.refusedRequest ?? null,
         code: failure.mintError.code,
         detail: failure.mintError.detail,
-        count: refusal?.code === failure.mintError.code ? refusal.count + 1 : 1,
-      };
+      });
+      refusal = counted.refusal;
+      halted = counted.halted;
     }
-    const halted =
-      failure.mintError !== null &&
-      refusal !== null &&
-      refusal.count >= BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT;
     entries[operationId] = { attempt, nextAttemptAtMs, refusal, halted };
     this.#write(scopeId, entries);
     return { halted };
@@ -139,27 +166,26 @@ export class BrowserCtfRangeRecoverySchedule {
       ...entry,
       nextAttemptAtMs: 0,
       halted: false,
-      refusal:
-        entry.refusal === null
-          ? null
-          : {
-              ...entry.refusal,
-              count: Math.min(entry.refusal.count, BROWSER_CTF_RANGE_RECOVERY_REFUSAL_LIMIT - 1),
-            },
+      refusal: entry.refusal === null ? null : resumeCtfRangeRecoveryRefusalCount(entry.refusal),
     };
     this.#write(scopeId, entries);
   }
 
   #read(scopeId: string): Record<string, ScheduleEntry> {
     let raw: string | null;
+    let version: StoredScheduleVersion = 2;
     try {
       raw = this.#storage.getItem(storageKey(scopeId));
+      if (raw === null) {
+        raw = this.#storage.getItem(v1StorageKey(scopeId));
+        version = 1;
+      }
     } catch {
       return {};
     }
     if (raw === null) return {};
     try {
-      return decodeEntries(JSON.parse(raw));
+      return decodeEntries(JSON.parse(raw), version);
     } catch {
       // The schedule is only a load control. A corrupt copy restarts it.
       return {};
@@ -177,6 +203,8 @@ export class BrowserCtfRangeRecoverySchedule {
           storageKey(scopeId),
           JSON.stringify({ entries: Object.fromEntries(bounded) }),
         );
+      // The v2 copy now holds every converted v1 entry.
+      this.#storage.removeItem(v1StorageKey(scopeId));
     } catch {
       // A full or blocked storage keeps the previous schedule.
     }
@@ -197,6 +225,10 @@ function storageKey(scopeId: string): string {
   return `${STORAGE_KEY_PREFIX}${scopeId}`;
 }
 
+function v1StorageKey(scopeId: string): string {
+  return `${V1_STORAGE_KEY_PREFIX}${scopeId}`;
+}
+
 function memoryStorage(): BrowserCtfRangeRecoveryScheduleStorage {
   const values = new Map<string, string>();
   return {
@@ -206,7 +238,10 @@ function memoryStorage(): BrowserCtfRangeRecoveryScheduleStorage {
   };
 }
 
-function decodeEntries(value: unknown): Record<string, ScheduleEntry> {
+function decodeEntries(
+  value: unknown,
+  version: StoredScheduleVersion,
+): Record<string, ScheduleEntry> {
   if (typeof value !== "object" || value === null) throw new Error("schedule is invalid");
   const entries = (value as { entries?: unknown }).entries;
   if (typeof entries !== "object" || entries === null || Array.isArray(entries)) {
@@ -214,12 +249,12 @@ function decodeEntries(value: unknown): Record<string, ScheduleEntry> {
   }
   const decoded: Record<string, ScheduleEntry> = {};
   for (const [operationId, entry] of Object.entries(entries)) {
-    decoded[operationId] = decodeEntry(entry);
+    decoded[operationId] = decodeEntry(entry, version);
   }
   return decoded;
 }
 
-function decodeEntry(value: unknown): ScheduleEntry {
+function decodeEntry(value: unknown, version: StoredScheduleVersion): ScheduleEntry {
   const entry = value as Partial<ScheduleEntry> | null;
   if (
     entry === null ||
@@ -236,14 +271,24 @@ function decodeEntry(value: unknown): ScheduleEntry {
     (typeof refusal !== "object" ||
       !Number.isSafeInteger(refusal?.code) ||
       typeof refusal?.detail !== "string" ||
-      !Number.isSafeInteger(refusal?.count))
+      !Number.isSafeInteger(refusal?.count) ||
+      (version === 1 && Object.hasOwn(refusal, "request")))
   ) {
     throw new Error("schedule refusal is invalid");
   }
   return {
     attempt: entry.attempt!,
     nextAttemptAtMs: entry.nextAttemptAtMs!,
-    refusal: refusal === undefined || refusal === null ? null : { ...refusal },
+    refusal:
+      refusal === undefined || refusal === null
+        ? null
+        : {
+            // A v1 refusal names no request.
+            request: version === 1 ? null : decodeCtfRangeRefusedRequest(refusal.request),
+            code: refusal.code,
+            detail: refusal.detail,
+            count: refusal.count,
+          },
     halted: entry.halted,
   };
 }

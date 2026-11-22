@@ -1,8 +1,7 @@
-import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import App from "../App";
-import { useWalletBackupPresentation } from "@/hooks/WalletBackupPresentation";
 
 const mocks = vi.hoisted(() => ({
   wallet: {
@@ -22,7 +21,6 @@ const mocks = vi.hoisted(() => ({
   watchBolt11: vi.fn(),
   stopWatchingBolt11: vi.fn(),
   recoverMelts: vi.fn(),
-  backup: { recoveryStatus: { kind: "failed" }, retryRecovery: vi.fn() },
 }));
 
 vi.mock("react-i18next", () => ({
@@ -37,18 +35,14 @@ vi.mock("@/components/shell", () => ({
     </>
   ),
   DurableWalletErrors: () => null,
-  EncryptedWalletBackupRecoveryStatus: () => null,
+  RecoveryIndexStatus: () => null,
+  ShellBanners: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
+// The recovery index has its own tests. It needs no Nostr signer.
+vi.mock("@/hooks/useBrowserRecoveryIndex", () => ({ useBrowserRecoveryIndex: () => undefined }));
 vi.mock("@/components/shell/SettlementProgress", () => ({ SettlementProgress: () => null }));
 vi.mock("@/components/ui/Toast", () => ({ ToastContainer: () => null }));
-vi.mock("@/pages/MarketsPage", () => ({
-  MarketsPage: () => {
-    const backup = useWalletBackupPresentation();
-    return (
-      <button onClick={backup?.retryRecovery}>App backup: {backup?.recoveryStatus.kind}</button>
-    );
-  },
-}));
+vi.mock("@/pages/MarketsPage", () => ({ MarketsPage: () => null }));
 vi.mock("@/pages/MarketDetailPage", () => ({ MarketDetailPage: () => null }));
 vi.mock("@/pages/PortfolioPage", () => ({ PortfolioPage: () => null }));
 vi.mock("@/pages/CreatorPage", () => ({ CreatorPage: () => null }));
@@ -85,9 +79,6 @@ vi.mock("@/hooks/useLikedMarketCloseReconcile", () => ({ useLikedMarketCloseReco
 vi.mock("@/hooks/useHeldPositionCloseNotifications", () => ({
   useHeldPositionCloseNotifications: vi.fn(),
 }));
-vi.mock("@/hooks/useEncryptedWalletBackupDriver", () => ({
-  useEncryptedWalletBackupDriver: () => mocks.backup,
-}));
 vi.mock("@/hooks/useAssetMonitoringReporter", () => ({ useAssetMonitoringReporter: vi.fn() }));
 vi.mock("@/hooks/useBrowserCtfRangeOrderRecovery", () => ({
   useBrowserCtfRangeOrderRecovery: vi.fn(),
@@ -114,15 +105,16 @@ vi.mock("@/lib/cashu", () => ({ captureBrowserMintPersistenceContext: () => ({})
 vi.mock("@/lib/browserWalletProfile", () => ({
   browserWalletScopeIdFromMnemonic: (mnemonic: string) => (mnemonic ? `scope:${mnemonic}` : null),
 }));
+// App.headerBalance.test.tsx covers the header balance during the wallet recovery.
+vi.mock("@/hooks/useWalletHeaderBalance", () => ({
+  useWalletHeaderBalance: (balance: number) => balance,
+}));
 vi.mock("@/lib/browserDurableBolt11MintQuote", () => ({
   recoverBrowserDurableBolt11MintQuotesInPass: mocks.recoverBolt11,
   watchPendingBrowserDurableBolt11MintQuotes: mocks.watchBolt11,
 }));
 vi.mock("@/lib/browserDurableWalletMelt", () => ({
   recoverBrowserDurableWalletMeltsInPass: mocks.recoverMelts,
-}));
-vi.mock("@/lib/encryptedWalletBackupDriver", () => ({
-  resumeBrowserEncryptedWalletBackupV2AfterRecovery: vi.fn(),
 }));
 
 beforeEach(() => {
@@ -142,13 +134,6 @@ beforeEach(() => {
 });
 
 describe("App NIP-17 listener lifecycle", () => {
-  it("shares the single app-owned backup state and Retry with route content", () => {
-    mocks.backup.retryRecovery.mockClear();
-    render(<App />);
-    fireEvent.click(screen.getByRole("button", { name: "App backup: failed" }));
-    expect(mocks.backup.retryRecovery).toHaveBeenCalledOnce();
-  });
-
   it("passes explicit opt-out to the listener and cleans up the old subscription", async () => {
     const view = render(<App />);
     await waitFor(() => expect(mocks.startListener).toHaveBeenCalledOnce());

@@ -2,14 +2,19 @@
 import "fake-indexeddb/auto";
 import Dexie from "dexie";
 import {
+  Amount,
   CheckStateEnum,
   Keyset,
+  OutputData,
+  createBlindSignature,
+  createDLEQProof,
   deriveKeysetId,
   hashToCurve,
+  pointFromHex,
   type MintKeys,
-  type OutputData,
   type Proof,
 } from "@cashu/cashu-ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import type { RedeemWallet } from "@bitcaster/client-sdk/ctfRedeem";
 import { buildKeysetRedeemOperationId } from "@bitcaster/client-sdk/ctfRedeem";
 import { deserializeOutputGroups } from "@bitcaster/client-sdk/ctfSplit";
@@ -28,6 +33,7 @@ import { claimPortfolioPosition } from "../browserPortfolioClaim";
 import {
   CONDITION,
   MINT,
+  MINT_PRIVATE_KEY,
   OUTCOME,
   REGULAR_KEYSET,
   fixture,
@@ -42,7 +48,6 @@ const mocks = vi.hoisted(() => ({
   seed: new Uint8Array(64),
   getWalletForUnit: vi.fn(),
   getWalletForMnemonicUnit: vi.fn(),
-  requireNewWritePermission: vi.fn(),
   restoreOutputs: vi.fn(),
 }));
 
@@ -56,9 +61,6 @@ vi.mock("@/stores/wallet", () => ({
     }),
   },
   getWalletForMnemonicUnit: mocks.getWalletForMnemonicUnit,
-}));
-vi.mock("../browserWalletNewWritePermission", () => ({
-  requireBrowserWalletNewWritePermission: mocks.requireNewWritePermission,
 }));
 vi.mock("../walletProfileLock", () => ({
   withWalletProfileLock: async (_scopeId: string, action: () => Promise<unknown>) => action(),
@@ -75,7 +77,7 @@ let activeFixture: Awaited<ReturnType<typeof fixture>> | null = null;
 let activeDatabaseName: string | null = null;
 
 type TestWallet = {
-  readonly batchRestore: ReturnType<typeof vi.fn>;
+  readonly keyChain: { readonly ensureKeysetKeys: ReturnType<typeof vi.fn> };
   readonly groupProofsByState: ReturnType<typeof vi.fn>;
   readonly getKeyset: ReturnType<typeof vi.fn>;
   readonly loadMint: ReturnType<typeof vi.fn>;
@@ -85,8 +87,38 @@ type TestWallet = {
     readonly mintUrl: string;
     readonly getKeys: ReturnType<typeof vi.fn>;
     readonly getKeySets: ReturnType<typeof vi.fn>;
+    readonly restore: ReturnType<typeof vi.fn>;
   };
 };
+
+// The mint signed counters 0 to 4 of the regular keyset earlier, and their
+// proofs are spent. Counter recovery admits none and moves the cursor to 5.
+const EARLIER_COUNTERS = [0, 1, 2, 3, 4];
+
+function earlierOutput(counter: number): OutputData {
+  return OutputData.createSingleDeterministicData(0, mocks.seed, counter, REGULAR_KEYSET.id);
+}
+
+function restoreEarlierOutputs({ outputs }: { outputs: { B_: string; id: string }[] }) {
+  const earlier = new Set(
+    EARLIER_COUNTERS.map((counter) => earlierOutput(counter).blindedMessage.B_),
+  );
+  const signed = outputs.filter(({ B_ }) => earlier.has(B_));
+  return {
+    outputs: signed,
+    signatures: signed.map(({ B_ }) => {
+      const dleq = createDLEQProof(pointFromHex(B_), MINT_PRIVATE_KEY);
+      return {
+        id: REGULAR_KEYSET.id,
+        amount: Amount.from(1),
+        C_: createBlindSignature(pointFromHex(B_), MINT_PRIVATE_KEY, REGULAR_KEYSET.id).C_.toHex(
+          true,
+        ),
+        dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+      };
+    }),
+  };
+}
 
 type SerializedOutputGroups = Parameters<typeof deserializeOutputGroups>[0];
 
@@ -98,6 +130,12 @@ function makeWallet(): TestWallet {
       mintUrl: MINT,
       getKeySets: vi.fn(async () => ({ keysets: [activeMintKeyset()] })),
       getKeys: vi.fn(async () => ({ keysets: [activeMintKeyset()] })),
+      restore: vi.fn(async (payload: { outputs: { B_: string; id: string }[] }) =>
+        restoreEarlierOutputs(payload),
+      ),
+    },
+    keyChain: {
+      ensureKeysetKeys: vi.fn(async (id: string) => walletKeysets.get(id)),
     },
     loadMint: vi.fn(async () => undefined),
     getKeyset: vi.fn((id = REGULAR_KEYSET.id) => {
@@ -105,12 +143,16 @@ function makeWallet(): TestWallet {
       if (keyset === undefined) throw new Error("test wallet keyset is missing");
       return keyset;
     }),
-    batchRestore: vi.fn(async () => ({ proofs: [] as Proof[], lastCounterWithSignature: 4 })),
-    groupProofsByState: vi.fn(async (proofs: Proof[]) => ({
-      unspent: proofs,
-      pending: [],
-      spent: [],
-    })),
+    groupProofsByState: vi.fn(async (proofs: Proof[]) => {
+      const earlier = new Set(
+        EARLIER_COUNTERS.map((counter) => new TextDecoder().decode(earlierOutput(counter).secret)),
+      );
+      return {
+        unspent: proofs.filter(({ secret }) => !earlier.has(secret)),
+        pending: [],
+        spent: proofs.filter(({ secret }) => earlier.has(secret)),
+      };
+    }),
     checkProofsStates: vi.fn(async (inputs: readonly Proof[]) =>
       inputs.map((input) => ({
         Y: hashToCurve(new TextEncoder().encode(input.secret)).toHex(true),
@@ -219,8 +261,6 @@ beforeEach(() => {
   mocks.seed = new Uint8Array(64);
   mocks.getWalletForUnit.mockReset();
   mocks.getWalletForMnemonicUnit.mockReset();
-  mocks.requireNewWritePermission.mockReset();
-  mocks.requireNewWritePermission.mockResolvedValue(undefined);
   mocks.restoreOutputs.mockReset();
   mocks.restoreOutputs.mockImplementation(
     async (_mintUrl: string, outputs: SerializedOutputGroups) => restoreTestOutputGroups(outputs),
@@ -259,7 +299,7 @@ describe("Claim with the browser's durable NUT-13 counter", () => {
     await counters.reserveInContext({ mintUrl: MINT, unit: "msat" }, REGULAR_KEYSET.id, 0, false);
     const before = await entry.adapter.readProof(entry.scope.scopeId, entry.proof.proofId);
     if (before === null) throw new Error("test input proof is missing");
-    testWallet.batchRestore.mockRejectedValueOnce(
+    testWallet.mint.restore.mockRejectedValueOnce(
       new Error("secret-like mint failure: disposable recovery detail"),
     );
 
@@ -283,7 +323,7 @@ describe("Claim with the browser's durable NUT-13 counter", () => {
     if (refused.kind !== "error") throw new Error("test claim refusal was not an error");
     expect(refused.error.operationRef).toBeUndefined();
     expect(JSON.stringify(refused)).not.toContain("secret-like mint failure");
-    expect(testWallet.batchRestore).toHaveBeenCalledOnce();
+    expect(testWallet.mint.restore).toHaveBeenCalledOnce();
     expect(testWallet.checkProofsStates).not.toHaveBeenCalled();
     expect(testWallet.redeemOutcomeProofs).not.toHaveBeenCalled();
     expect(await entry.database.custodyOperations.count()).toBe(0);
@@ -304,10 +344,6 @@ describe("Claim with the browser's durable NUT-13 counter", () => {
       selectability: "selectable",
     });
 
-    testWallet.batchRestore.mockResolvedValueOnce({
-      proofs: [],
-      lastCounterWithSignature: 4,
-    });
     const recovered = await claimPortfolioPosition({
       mintUrl: MINT,
       conditionId: CONDITION,
@@ -319,12 +355,49 @@ describe("Claim with the browser's durable NUT-13 counter", () => {
       committedPayoutAmount: 1,
       committedLegs: 1,
     });
-    expect(testWallet.batchRestore).toHaveBeenCalledTimes(2);
+    // The second scan starts again at counter 0.
+    const [secondScan] = testWallet.mint.restore.mock.calls[1]!;
+    expect((secondScan as { outputs: { B_: string }[] }).outputs[0]!.B_).toBe(
+      earlierOutput(0).blindedMessage.B_,
+    );
     expect(testWallet.redeemOutcomeProofs).toHaveBeenCalledOnce();
     expect(
       await counters.isRecoveryComplete({ mintUrl: MINT, unit: "msat" }, REGULAR_KEYSET.id),
     ).toBe(true);
     expect(await counters.snapshot()).toEqual({ [REGULAR_KEYSET.id]: 6 });
+  });
+
+  it("admits recovered regular proofs under the claim owner, then pays the leg", async () => {
+    const entry = await createRealCounterFixture();
+    await entry.adapter.releaseScope(entry.scope, { ...entry.owner, observedAtMs: 4 });
+    // A seed restore in a new browser: the mint signed counters 0 to 4 for
+    // this seed, their proofs are unspent, and this browser has no record of
+    // them. The claim admits them in its counter readiness step.
+    testWallet.groupProofsByState.mockImplementation(async (proofs: Proof[]) => ({
+      unspent: proofs,
+      pending: [],
+      spent: [],
+    }));
+
+    const claimed = await claimPortfolioPosition({
+      mintUrl: MINT,
+      conditionId: CONDITION,
+      outcomeCollection: OUTCOME,
+    });
+
+    expect(claimed, JSON.stringify(claimed)).toMatchObject({
+      kind: "completed",
+      committedPayoutAmount: 1,
+      committedLegs: 1,
+    });
+    expect(testWallet.redeemOutcomeProofs).toHaveBeenCalledOnce();
+    const regular = (await entry.database.custodyProofs.toArray()).filter(
+      (row) => row.keysetId === REGULAR_KEYSET.id && row.selectability === "selectable",
+    );
+    // Five recovered proofs and one payout proof.
+    expect(regular).toHaveLength(EARLIER_COUNTERS.length + 1);
+    expect(await counterStore(entry).snapshot()).toEqual({ [REGULAR_KEYSET.id]: 6 });
+    expect((await entry.database.custodyScopes.get(entry.scope.scopeId))?.state.owner).toBeNull();
   });
 
   it("replays a retained payout after keyset rotation without reserving a new cursor", async () => {

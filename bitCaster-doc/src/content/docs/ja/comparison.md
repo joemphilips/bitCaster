@@ -14,7 +14,7 @@ bitCaster のウォレットは通常の proof inventory を制御します。�
 
 [Polymarket](https://polymarket.com) は Polygon で CTF 取引を決済します。bitCaster は sat 建て Cashu ecash と、各アトミック決済グループに対するミント conversion を使用します。
 
-両方のシステムは complementary conversion と mint conversion の概念を使用します。Polymarket は merge conversion もサポートします。bitCaster はこのリリースで merge conversion を提供しません。bitCaster は 1 件以上の fill をグループ化し、1 件の複数当事者 mint conversion を送信します。ミントはグループを確定すると、正確な result entry を返します。
+両方のシステムは complementary conversion、mint conversion、merge conversion の概念を使用します。merge conversion では、売り注文が補集合のアウトカムの売り注文と約定し、ミントが 2 つのポジションを担保に統合します。bitCaster は 1 件以上の fill をグループ化し、1 件の複数当事者 mint conversion を送信します。ミントはグループを確定すると、正確な result entry を返します。
 
 bitCaster は公開ブロックチェーントランザクション、gas token、bridge を必要としません。ecash モデルはトランザクションのプライバシーを改善しますが、オンチェーントランザクションの公開監査記録は提供しません。
 

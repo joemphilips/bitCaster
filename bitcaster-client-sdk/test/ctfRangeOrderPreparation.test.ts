@@ -39,6 +39,7 @@ import {
   previewCtfRangeSettlementCapabilityWorkFacts,
   settlementCapabilityWorkFacts,
   validateAndProjectCtfRangeSettlementCapabilityResponse,
+  ctfRangeOrderAdmissionIdentity,
   type CtfRangeOrderRequest,
 } from '../src/ctfRangeOrderProtocol.ts'
 import {
@@ -49,6 +50,7 @@ import {
 import { deriveRootCtfOutcomeCollectionId } from '../src/durableCtfRangeOperation.ts'
 import {
   createPoolSettlementCapabilityArtifact,
+  decodeSettlementCapabilityArtifactBytes,
   deriveSettlementCapabilityArtifactDigest,
   encodeSettlementCapabilityArtifact,
 } from '../src/settlementCapabilityArtifact.ts'
@@ -60,6 +62,7 @@ import {
 } from '../src/ctfRangeSourceOperation.ts'
 import { deserializeDurableCustodyOutput } from '../src/durableCustodyProofOperation.ts'
 import { planCtfRangeCapabilitySource } from '../src/ctfRangeCapabilitySourcePlan.ts'
+import { ctfRangeSourceSeedOutputs } from '../src/ctfRangeOrderOutputCheck.ts'
 import {
   completeCtfRangeMixedSourceOperation,
   ctfRangeMixedSourceChangeDerivationLocators,
@@ -541,6 +544,35 @@ test('builds one capability request and validates its exact engine projection', 
   )
 })
 
+test('the admission identity holds the digest of the exact local capability artifact', () => {
+  const preparation = persistedPreparation('range-operation-admission')
+  const operation = completedOperation(preparation)
+  const identity = ctfRangeOrderAdmissionIdentity(preparation, operation)
+  assert.deepEqual(identity, {
+    rangeOperationId: preparation.operationId,
+    conditionId: preparation.conditionId,
+    clientOrderId: preparation.request.clientOrderId,
+    marketId: preparation.request.marketId,
+    artifactDigest: deriveSettlementCapabilityArtifactDigest(
+      decodeSettlementCapabilityArtifactBytes(
+        Buffer.from(
+          createCtfRangeSettlementCapabilityRequest(preparation, operation).artifact,
+          'base64',
+        ),
+      ),
+    ),
+    authorizationExpiresAtUnixSeconds: preparation.expiry,
+  })
+  assert.throws(
+    () =>
+      ctfRangeOrderAdmissionIdentity(preparation, {
+        ...operation,
+        sourceOperationId: 'foreign-source-operation',
+      }),
+    /foreign to its persisted order preparation/,
+  )
+})
+
 test('prepares one exact persisted range source through the shared wallet boundary', async () => {
   const preparation = persistedPreparation('range-operation-source')
   const reservations: Array<{ keysetId: string; count: number }> = []
@@ -780,6 +812,22 @@ test('prepares one exact collateral conversion with locked offer and ordinary co
   assert.equal(operation.metadata?.complementPlan === null, false)
   assert.equal(operation.metadata?.collateralChangePlan === null, false)
   assert.deepEqual(validateCtfRangeCollateralSourceOperation(operation, preparation), operation)
+  // The order output check covers the complement and the collateral change.
+  const complementCount = operation.outputs.complement!.length
+  assert.deepEqual(ctfRangeSourceSeedOutputs(operation), [
+    ...plannedPlainOutputs(
+      new Uint8Array(64).fill(7),
+      preparation.complementKeyset.id,
+      11,
+      complementCount,
+    ),
+    ...plannedPlainOutputs(
+      new Uint8Array(64).fill(7),
+      preparation.receiveKeyset.id,
+      11 + complementCount,
+      operation.outputs['collateral-change']!.length,
+    ),
+  ])
   let request: CtfConvertRequest | null = null
   const completed = await completeCtfRangeCollateralSourceOperation({
     operation,
@@ -910,6 +958,13 @@ test('persists and replays one exact mixed held-share conversion with separate c
     preparation.receiveKeyset.id,
   )
   assert.deepEqual(validateCtfRangeMixedSourceOperation(operation, preparation), operation)
+  // The order output check covers both change groups at their own counters.
+  const offeredCount = operation.outputs['offered-change']!.length
+  const collateralCount = operation.outputs['collateral-change']!.length
+  assert.deepEqual(ctfRangeSourceSeedOutputs(operation), [
+    ...plannedPlainOutputs(seed, preparation.offerKeyset.id, 11, offeredCount),
+    ...plannedPlainOutputs(seed, preparation.receiveKeyset.id, 11 + offeredCount, collateralCount),
+  ])
 
   const requests: CtfConvertRequest[] = []
   const transport = {
@@ -1100,6 +1155,16 @@ test('rejects wallet substitution of exact range authorization outputs', async (
     /changed exact authorization outputs/,
   )
 })
+
+/** The NUT-13 outputs of counters [start, start + count), as a seed scan derives them. */
+function plannedPlainOutputs(seed: Uint8Array, keysetId: string, start: number, count: number) {
+  return Array.from({ length: count }, (_, index) => ({
+    keysetId,
+    counter: start + index,
+    B_: OutputData.createSingleDeterministicData(1, seed, start + index, keysetId).blindedMessage
+      .B_,
+  }))
+}
 
 function counterSource(
   start = 0,

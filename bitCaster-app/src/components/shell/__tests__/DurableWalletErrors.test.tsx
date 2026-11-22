@@ -1,6 +1,8 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { DurableWalletErrors } from "../DurableWalletErrors";
+import { useNotificationsStore } from "@/stores/notifications";
+import en from "@/i18n/locales/en.json";
 
 const mocks = vi.hoisted(() => ({
   acknowledge: vi.fn().mockResolvedValue(undefined),
@@ -33,6 +35,8 @@ const mocks = vi.hoisted(() => ({
       fundsReleased?: true;
     }>,
     nextCursor: null,
+    orderMarkets: {} as Record<string, string>,
+    orderFunds: {} as Record<string, "pending" | "refunded">,
   },
 }));
 
@@ -56,9 +60,92 @@ vi.mock("@/stores/ctf-range-order-messages", () => ({
 vi.mock("@/lib/browserCtfRangeRecoveryRetry", () => ({
   retryBrowserCtfRangeOrderRecovery: mocks.retry,
 }));
+vi.mock("@/stores/ctf-range-order-db", () => ({
+  readCtfRangePreparation: vi.fn().mockResolvedValue(null),
+}));
 
 describe("DurableWalletErrors", () => {
-  beforeEach(() => vi.clearAllMocks());
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.readPage.mockResolvedValue({ messages: [], nextCursor: null });
+    useNotificationsStore.setState({ items: [] });
+  });
+
+  it.each([
+    ["pending", en.settlementProgress.fundsPending],
+    ["refunded", en.settlementProgress.fundsReturned],
+  ] as const)(
+    "adds the %s funds sentence, with its fees, to a refused order request",
+    (funds, sentence) => {
+      const original = mocks.page;
+      const base = original.messages[0]!;
+      mocks.page = {
+        ...original,
+        messages: [
+          { ...base, operationId: "range-1", code: "order-submission-rejected", kind: "order" },
+          { ...base, operationId: "range-2", code: "order-submission-uncertain", kind: "order" },
+        ],
+        orderMarkets: { "range-1": "condition-a-Alpha", "range-2": "condition-a-Alpha" },
+        orderFunds: { "range-1": funds },
+      };
+      try {
+        render(<DurableWalletErrors />);
+
+        const [refused, uncertain] = screen.getAllByRole("alert");
+        expect(refused).toHaveTextContent(
+          `${en.walletRecovery.errors["order-submission-rejected"]} ${sentence}`,
+        );
+        // No refund follows from an uncertain result, so it names no funds.
+        expect(uncertain).not.toHaveTextContent(/Your funds/);
+      } finally {
+        mocks.page = original;
+      }
+    },
+  );
+
+  it("names the order of an order alert by its market, and keeps the operation of a funds alert", () => {
+    const original = mocks.page;
+    const funds = original.messages[0]!;
+    mocks.page = {
+      ...original,
+      messages: [
+        { ...funds, operationId: "range-1", code: "order-submission-rejected", kind: "order" },
+        { ...funds, operationId: "range-2", code: "order-market-closed", kind: "order" },
+        { ...funds, operationId: "range-3" },
+      ],
+      orderMarkets: { "range-1": "condition-a-Alpha", "range-2": "condition-b-Beta" },
+    };
+    useNotificationsStore.setState({
+      items: [
+        {
+          id: "order-1-failed",
+          kind: "Failed",
+          orderId: "order-1",
+          marketId: "condition-a-Alpha",
+          filledAmountSubunits: 0,
+          remainingAmountSubunits: 1_000,
+          unit: "sat",
+          divisibility: 1_000,
+          marketTitle: "Will Alice win the cup?",
+          occurredAt: 1,
+          read: false,
+        },
+      ],
+    });
+    try {
+      render(<DurableWalletErrors />);
+
+      const [titled, untitled, fundsAlert] = screen.getAllByRole("alert");
+      expect(titled).toHaveTextContent("Order on “Will Alice win the cup?”");
+      expect(titled).not.toHaveTextContent(/Operation/);
+      // Without a stored title, the alert names the outcome.
+      expect(untitled).toHaveTextContent("Order on “Beta”");
+      expect(untitled).not.toHaveTextContent(/Operation/);
+      expect(fundsAlert).toHaveTextContent("Operation: range-3");
+    } finally {
+      mocks.page = original;
+    }
+  });
 
   it("restores a durable funds error and acknowledges only its exact revision", () => {
     render(<DurableWalletErrors />);
@@ -142,7 +229,7 @@ describe("DurableWalletErrors", () => {
       const alert = screen.getByRole("alert");
       expect(alert).toHaveTextContent("Order was not completed");
       expect(alert).toHaveTextContent(
-        "The mint refused this order. No order was submitted. The reserved funds are available again.",
+        "The mint refused this order. No order was submitted. The reserved funds, less any consolidation fee already paid, are available again.",
       );
       expect(alert).toHaveTextContent("Mint code: 11008");
     } finally {
@@ -181,6 +268,15 @@ describe("DurableWalletErrors", () => {
     render(<DurableWalletErrors />);
 
     expect(screen.queryByRole("button", { name: "About Participation Score" })).toBeNull();
+  });
+
+  // An empty row in the stack would add one more uneven gap.
+  it("renders no paging row when there is no other page", () => {
+    render(<DurableWalletErrors />);
+
+    const section = screen.getByRole("region", { name: en.walletRecovery.title });
+    expect(section.children).toHaveLength(1);
+    expect(section.firstElementChild).toHaveAttribute("role", "alert");
   });
 
   it("can read later alerts without dismissing an unresolved alert", () => {

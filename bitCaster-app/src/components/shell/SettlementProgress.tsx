@@ -1,24 +1,40 @@
-import { useMemo, useState, useSyncExternalStore } from "react";
+import { useEffect, useMemo, useState, useSyncExternalStore } from "react";
 import { useLiveQuery } from "dexie-react-hooks";
 import { useTranslation } from "react-i18next";
-import type {
-  CtfRangeOrderPreparationLifecycle,
-  CtfRangeOrderPreparationPageCursor,
-} from "@bitcaster/client-sdk/ctfRangeOrderJournal";
+import { AlertCircle, X } from "lucide-react";
+import type { CtfRangeOrderPreparationPageCursor } from "@bitcaster/client-sdk/ctfRangeOrderJournal";
 import { pageActiveCtfRangePreparations } from "@/stores/ctf-range-order-db";
+import { readBrowserCtfRangeOrderRefusalOperations } from "@/stores/ctf-range-order-messages";
+import {
+  dismissOrderFailureNotice,
+  isFinalFunds,
+  orderFailureFundsReader,
+  orderFailureNoticeKey,
+  readOrderFailureFundsObservations,
+  showsOrderFailure,
+  useOrderFailureNotices,
+  type OrderFailureNotice,
+} from "@/stores/orderFailureNotices";
+import { orderFailureText, withFundsSentence } from "@/lib/orderFailureText";
 import { useWalletStore } from "@/stores/wallet";
 import {
   browserWalletIdFromMnemonic,
   browserWalletScopeIdFromMnemonic,
 } from "@/lib/browserWalletProfile";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "@/lib/nostr";
+import { assertNever } from "@/lib/enumDiscipline";
+import { marketLabel, useMarketTitles } from "@/hooks/useMarketTitles";
+import { isLocalCtfRangeOrderRefusal } from "@/lib/ctfRangeOrderLifecycle";
 import {
+  settlementEntryDisplay,
   useSettlementProgress,
+  type SettlementEntryDisplay,
   type SettlementProgressEntry,
   type SettlementProgressScope,
 } from "@/hooks/useSettlementProgress";
 
 const NO_ENTRIES: readonly SettlementProgressEntry[] = [];
+const NO_OPERATIONS: readonly string[] = [];
 
 export function SettlementProgress({ canReadStatus }: { canReadStatus: boolean }) {
   const mnemonic = useWalletStore((state) => state.mnemonic);
@@ -30,12 +46,104 @@ export function SettlementProgress({ canReadStatus }: { canReadStatus: boolean }
     getNostrSignerRevision,
   );
   return scopeId === null || walletId === null ? null : (
-    <ProgressPages
-      key={`${scopeId}:${signerRevision}:${canReadStatus}`}
-      scope={{ scopeId, walletId, signerRevision }}
-      canReadStatus={canReadStatus}
-    />
+    <>
+      <TradeFailures scopeId={scopeId} />
+      <ProgressPages
+        key={`${scopeId}:${signerRevision}:${canReadStatus}`}
+        scope={{ scopeId, walletId, signerRevision }}
+        canReadStatus={canReadStatus}
+      />
+    </>
   );
+}
+
+/**
+ * A final order failure stays after wallet recovery ends the journal
+ * operation, until the user dismisses it.
+ */
+function TradeFailures({ scopeId }: { scopeId: string }) {
+  const { t } = useTranslation();
+  const stored = useOrderFailureNotices((state) => state.notices);
+  const notices = useMemo(() => visibleFailures(stored, scopeId), [stored, scopeId]);
+  const titles = useMarketTitles();
+  useRefundObservation(stored, scopeId);
+  if (notices.length === 0) return null;
+  return (
+    <section
+      className="mb-4 rounded-lg border border-rose-200 bg-rose-50 p-3 text-rose-800 dark:border-rose-800 dark:bg-rose-950/30 dark:text-rose-200"
+      aria-label={t("settlementProgress.failedTitle")}
+    >
+      <h2 className="flex items-center gap-2 font-medium">
+        <AlertCircle className="h-4 w-4 shrink-0" aria-hidden="true" />
+        {t("settlementProgress.failedTitle")}
+      </h2>
+      <ul className="mt-2 space-y-2">
+        {notices.map((notice) => {
+          const market = marketLabel(notice.marketId, titles, notice.marketTitle);
+          return (
+            <li key={notice.operationId} className="flex items-start gap-3 text-sm">
+              <div className="min-w-0 flex-1">
+                <p className="break-words font-medium">
+                  {t("settlementProgress.orderOnMarket", { market })}
+                </p>
+                <p>{orderFailureText(t, notice)}</p>
+              </div>
+              <button
+                type="button"
+                className="rounded p-1 hover:bg-rose-100 dark:hover:bg-rose-900/50"
+                aria-label={t("settlementProgress.dismissFailure", { market })}
+                onClick={() => void dismissOrderFailureNotice(notice.scopeId, notice.operationId)}
+              >
+                <X className="h-4 w-4" aria-hidden="true" />
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </section>
+  );
+}
+
+/**
+ * Settle the funds of this wallet's notices when the refund, or another end,
+ * changes the journal. The query reads the journal and the custody operation,
+ * so a refund that commits both together updates it. It reads only the
+ * database of this wallet; while another wallet's database is active, the
+ * notices stay pending.
+ */
+function useRefundObservation(
+  stored: Readonly<Record<string, OrderFailureNotice>>,
+  scopeId: string,
+) {
+  const key = JSON.stringify(
+    Object.values(stored)
+      .filter((notice) => notice.scopeId === scopeId && !isFinalFunds(notice.funds))
+      .map((notice) => notice.operationId)
+      .sort(),
+  );
+  const observed = useLiveQuery(async () => {
+    const read = orderFailureFundsReader(scopeId);
+    return read === null
+      ? {}
+      : readOrderFailureFundsObservations(scopeId, JSON.parse(key) as string[], read);
+  }, [scopeId, key]);
+  useEffect(() => {
+    if (observed !== undefined) useOrderFailureNotices.getState().settleFunds(observed);
+  }, [observed]);
+}
+
+function visibleFailures(
+  notices: Readonly<Record<string, OrderFailureNotice>>,
+  scopeId: string,
+): OrderFailureNotice[] {
+  return Object.values(notices)
+    .filter(
+      (notice) => notice.scopeId === scopeId && !notice.dismissed && showsOrderFailure(notice),
+    )
+    .sort(
+      (left, right) =>
+        left.recordedAtMs - right.recordedAtMs || left.operationId.localeCompare(right.operationId),
+    );
 }
 
 function ProgressPages({
@@ -66,9 +174,21 @@ function ProgressPages({
           lifecycleState: record.lifecycleState,
           orderId: record.capability?.orderId ?? null,
         })),
+        refused: await refusedOperations(
+          scopeId,
+          result.preparations
+            .filter((record) => isLocalCtfRangeOrderRefusal(record.lifecycleState))
+            .map((record) => record.rangeOperationId),
+        ),
       };
     } catch {
-      return { generation, unavailable: true, nextCursor: null, entries: [] };
+      return {
+        generation,
+        unavailable: true,
+        nextCursor: null,
+        entries: [],
+        refused: NO_OPERATIONS,
+      };
     }
   }, [scopeId, after]);
   const current = page?.generation === generation ? page : null;
@@ -77,11 +197,34 @@ function ProgressPages({
   const key = JSON.stringify(visibleEntries);
   const entries = useMemo(() => visibleEntries, [key]);
   const progress = useSettlementProgress(entries, canReadStatus, scope);
+  // A failed order shows under its failure heading, also after its dismissal.
+  const failures = useOrderFailureNotices((state) => state.notices);
+  const { observations } = progress;
+  const refused = current?.refused ?? NO_OPERATIONS;
+  const inProgress = useMemo(
+    () =>
+      entries.flatMap((entry) => {
+        if (failures[orderFailureNoticeKey(scopeId, entry.operationId)] !== undefined) return [];
+        const item = progressItem(
+          settlementEntryDisplay(
+            entry.lifecycleState,
+            observations[entry.operationId],
+            canReadStatus,
+          ),
+          refused.includes(entry.operationId),
+        );
+        return item === null ? [] : [{ entry, ...item }];
+      }),
+    [entries, failures, scopeId, observations, canReadStatus, refused],
+  );
+  // Keep the section while a later page exists, also when this page holds
+  // only failed or refused orders.
   if (
     current === null ||
     (!current.unavailable &&
-      entries.length === 0 &&
+      inProgress.length === 0 &&
       progress.completed.length === 0 &&
+      current.nextCursor === null &&
       after === undefined)
   )
     return null;
@@ -94,7 +237,7 @@ function ProgressPages({
       {current.unavailable && (
         <p className="text-sm">{t("settlementProgress.journalUnavailable")}</p>
       )}
-      <ProgressItems entries={entries} canReadStatus={canReadStatus} {...progress} />
+      <ProgressItems items={inProgress} canReadStatus={canReadStatus} {...progress} />
       <div className="mt-2 flex gap-3 text-sm">
         {after && (
           <button type="button" className="underline" onClick={() => setAfter(undefined)}>
@@ -111,39 +254,68 @@ function ProgressPages({
   );
 }
 
+/**
+ * The progress text of an entry, or null when another place shows it: a final
+ * failure under its failure heading, and a refused request in its wallet alert.
+ */
+function progressItem(
+  display: SettlementEntryDisplay,
+  refusedByAlert: boolean,
+): { message: string; final: boolean } | null {
+  switch (display.kind) {
+    case "failed":
+      return null;
+    case "refusal":
+      return refusedByAlert ? null : { message: display.message, final: true };
+    case "progress":
+      return { message: display.message, final: display.final };
+    default:
+      return assertNever(display);
+  }
+}
+
+/** A failed alert read shows the neutral text; the alert itself still shows the refusal. */
+async function refusedOperations(
+  scopeId: string,
+  operationIds: readonly string[],
+): Promise<readonly string[]> {
+  if (operationIds.length === 0) return NO_OPERATIONS;
+  try {
+    return [...(await readBrowserCtfRangeOrderRefusalOperations(scopeId, operationIds))].sort();
+  } catch {
+    return NO_OPERATIONS;
+  }
+}
+
 function ProgressItems({
-  entries,
+  items,
   canReadStatus,
   observations,
   completed,
   loading,
   refresh,
 }: {
-  entries: readonly SettlementProgressEntry[];
+  items: readonly { entry: SettlementProgressEntry; message: string; final: boolean }[];
   canReadStatus: boolean;
 } & ReturnType<typeof useSettlementProgress>) {
   const { t } = useTranslation();
+  const titles = useMarketTitles();
+  // A final entry ended without a trade; only its refund is active.
+  const active = items.some((item) => !item.final);
   return (
     <>
       <ul className="mt-2 space-y-2">
-        {entries.map((entry) => {
+        {items.map(({ entry, message, final }) => {
           const observation = observations[entry.operationId];
-          const localMessage = localLifecycleMessage(entry.lifecycleState);
-          const message =
-            localMessage ??
-            (!canReadStatus
-              ? "authenticationRequired"
-              : observation?.group
-                ? observation.group.status
-                : observation?.unavailable
-                  ? "unavailable"
-                  : "orderSubmitted");
+          const text = t(`settlementProgress.${message}`);
           return (
             <li key={entry.operationId} className="text-sm">
-              <p className="break-all font-mono text-xs">
-                {t("walletRecovery.operation", { operationId: entry.operationId })}
+              <p className="break-words text-xs font-medium">
+                {t("settlementProgress.orderOnMarket", {
+                  market: marketLabel(entry.marketId, titles),
+                })}
               </p>
-              <p>{t(`settlementProgress.${message}`)}</p>
+              <p>{final ? withFundsSentence(t, text, "pending") : text}</p>
               {observation?.group && observation.unavailable && (
                 <p>{t("settlementProgress.stale")}</p>
               )}
@@ -152,8 +324,10 @@ function ProgressItems({
         })}
         {completed.map((entry) => (
           <li key={entry.operationId} className="text-sm">
-            <p className="break-all font-mono text-xs">
-              {t("walletRecovery.operation", { operationId: entry.operationId })}
+            <p className="break-words text-xs font-medium">
+              {t("settlementProgress.orderOnMarket", {
+                market: marketLabel(entry.marketId, titles),
+              })}
             </p>
             <p className="text-emerald-700 dark:text-emerald-300">
               {t("settlementProgress.complete")}
@@ -161,10 +335,8 @@ function ProgressItems({
           </li>
         ))}
       </ul>
-      {entries.length > 0 && (
-        <p className="mt-2 text-xs text-slate-500">{t("settlementProgress.fees")}</p>
-      )}
-      {canReadStatus && entries.length > 0 && (
+      {active && <p className="mt-2 text-xs text-slate-500">{t("settlementProgress.fees")}</p>}
+      {canReadStatus && active && (
         <button
           type="button"
           className="mt-2 text-sm underline disabled:opacity-50"
@@ -176,27 +348,4 @@ function ProgressItems({
       )}
     </>
   );
-}
-
-function localLifecycleMessage(lifecycleState: CtfRangeOrderPreparationLifecycle): string | null {
-  switch (lifecycleState) {
-    case "prepared":
-      return "prepared";
-    case "capability-requested":
-      return "capabilityRequested";
-    case "capability-bound":
-      return "capabilityBound";
-    case "submission-rejected":
-      return "submissionRejected";
-    case "order-submitted":
-      return null;
-    case "terminal":
-      return "terminal";
-    default:
-      return assertNever(lifecycleState);
-  }
-}
-
-function assertNever(value: never): never {
-  throw new Error(`Unhandled CTF range preparation lifecycle: ${value}`);
 }

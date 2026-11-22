@@ -12,7 +12,6 @@ import {
   getMarketThumbnail,
   mapCatalogueEntryToMarket,
   latestConfirmedTradesAuthorityValid,
-  submitOrder,
   windowPriceHistory,
   applyMarketPriceHistory,
   applyMarketComments,
@@ -697,62 +696,6 @@ describe("legacy mintd-list path (markets list) is fully removed", () => {
   it("no longer exports a mapConditionToMarket() function", async () => {
     const mod = await import("../markets");
     expect(Object.prototype.hasOwnProperty.call(mod, "mapConditionToMarket")).toBe(false);
-  });
-});
-
-describe("submitOrder", () => {
-  let fetchMock: ReturnType<typeof vi.fn>;
-  let originalFetch: typeof globalThis.fetch;
-
-  beforeEach(() => {
-    originalFetch = globalThis.fetch;
-    fetchMock = vi.fn(() =>
-      Promise.resolve(
-        new Response(
-          JSON.stringify({
-            orderId: "bfe9f76c-0993-47c1-a301-a7d4022f8272",
-            status: "resting",
-            remainingAmountSubunits: 10_000,
-            fills: [],
-            baseAsset: "sat",
-            divisibility: 1_000,
-            activeSettlementGroup: null,
-          }),
-          { status: 200 },
-        ),
-      ),
-    );
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-  });
-
-  afterEach(() => {
-    globalThis.fetch = originalFetch;
-    vi.restoreAllMocks();
-  });
-
-  it("submits an authenticated order without a maker heartbeat preflight", async () => {
-    await submitOrder("cond-123-YES", {
-      settlementCapability: {
-        artifactId: "artifact-1",
-        bindingDigest: "a".repeat(64),
-      },
-      comment: null,
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect((fetchMock.mock.calls[0] as [string, RequestInit])[0]).toContain(
-      "/api/v1/cond-123-YES/orders",
-    );
-    const init = (fetchMock.mock.calls[0] as [string, RequestInit])[1];
-    expect(init.method).toBe("POST");
-    expect(JSON.parse(String(init.body))).toEqual({
-      settlementCapability: {
-        artifactId: "artifact-1",
-        bindingDigest: "a".repeat(64),
-      },
-      comment: null,
-    });
-    expect((init.headers as Record<string, string>).Authorization).toMatch(/^Nostr /);
   });
 });
 

@@ -43,9 +43,19 @@ Score ポイントと受領額は別の値です。
 
 ウォレットは公開 FOK の 1 回の試行を 1 件の `PAY_TO_UNLOCK` capability で認可します。注文受付では capability を確認します。受付時にミントへのネットワーク呼び出しは行いません。
 
+ウォレットは capability を注文リクエストに含めて送信します。
+`POST /api/v1/{marketId}/orders` に `settlementCapabilityAdmission` を指定します。
+この値は capability リクエストと同じ項目を持ち、その `marketId` はルートと一致します。
+1 回のリクエストで capability を紐付けて注文を受け付けるか、エンジンは何も書き込みません。
+拒否は課金されません。応答の `settlementCapability` は受け付けた注文の capability です。
+従来の 2 段階のルート (`POST /api/v1/settlement-capabilities` の後に `settlementCapability` の参照を送る) も引き続き使用できます。
+クライアントは 1 件の注文に 1 つのルートだけを使います。一方のルートのキーや capability は、もう一方のルートで競合します。
+
 認可はその試行で許可された range を対象とします。公開 FOK は板に残らず、残余注文も残しません。要求数量全体を約定できない場合、エンジンは注文全体を取り消します。この取消では capability を使用せず、返金も開始しません。
 
 ## Capability API のエラー
+
+capability API と注文リクエストの admission 形式は、以下のエラーを返します。
 
 capability API のアプリケーションエラーは、RFC 9457 の
 `application/problem+json` で返ります。クライアントは HTTP ステータスと
@@ -104,12 +114,28 @@ capability の復旧が成功したという理由だけで注文を送信しな
 | 503 | `order-processing-unavailable` | 注文処理を一時的に利用できません。 |
 | 503 | `order-quotes-refreshing` | 提示価格の準備ができていません。注文は受け付け前に拒否されました。 |
 
-アプリケーションの `409` で再試行できるのは `order-book-conflict` だけです。
-すべての競合に同じ規則を適用しないでください。
-自動で再試行できる `503` は `order-quotes-refreshing` だけです。
-これは、たとえばサービスの起動直後に返ることがあります。
-[気配値の更新を待つ](/ja/technical/architecture/trading-model/#気配値の更新を待つ)の上限内で、同一のリクエストを再試行してください。
-`order-admission-unavailable` と `order-processing-unavailable` では、この再試行を行わないでください。SDK は `403` と `503` に対して元の操作を保持します。
+admission 形式では、capability API の `settlement-capability-` のコードも返ることがあります。
+たとえば `402` の `settlement-capability-score-required` や `409` の `settlement-capability-conflict` です。
+400,000 バイトを超える本文は、認証の前に `413` になります。
+`order-submit` のレート制限と受付の上限は `429` を返します。
+
+クライアントは応答ごとに 1 つの結果を使います。
+
+- 文書化された拒否は何も書き込みません。`400`、`402`、`404` の `order-market-not-found` と `settlement-capability-not-found`、
+  `409` の `order-processing-conflict`、`order-market-closed`、`settlement-capability-conflict`、`settlement-capability-market-unavailable`、`413`、`429` です。
+  ウォレットは拒否を記録します。予約済み資金は、認可の有効期限の後に返金で戻ります。
+- `403` の `market-closed`、`404` の `order-capability-not-found`、`409` の `order-capability-route-mismatch` と `order-capability-not-current` は、
+  注文がすでに存在する再送リクエストへの応答の場合もあります。クライアントはこれらを結果不明として扱います。
+- `order-quotes-refreshing` と `order-book-conflict` は受け付け前の拒否で、何も確定しません。
+  送信フローで待っている間だけ、クライアントは
+  [気配値の更新を待つ](/ja/technical/architecture/trading-model/#気配値の更新を待つ)の上限内で同一のリクエストを再送します。
+  待機が終わり、すべての送信がこれらの拒否を受けた場合、クライアントは拒否を記録します。
+- その他の応答はすべて結果が不明です。たとえばタイムアウト、`order-admission-unavailable`、
+  `order-processing-unavailable`、一般的な `503` です。クライアントは注文を再送しません。
+  下記の注文照会で注文を読み取ります。
+
+すべての競合にこの再送の規則を適用しないでください。
+`order-quotes-refreshing` は、たとえばサービスの起動直後に返ることがあります。SDK は `403` と `503` に対して元の操作を保持します。
 エラーは返金完了の証拠でも、ウォレット記録を削除する許可でもありません。
 受付済みリクエストの同一再送には、以前の受付結果を返します。
 存在しない capability と他のユーザーの capability は同じ応答になります。
@@ -124,6 +150,24 @@ CLI はこの応答の後に注文を自動で再送しません。
 
 入金でも、共通の市場閉鎖チェックは `market-closed` を返します。
 フレームワークのエラー本文は別の形式の場合があります。
+
+## 注文照会
+
+`GET /api/v1/conditions/{conditionId}/orders/by-client-order-id?clientOrderId=` は、
+認証済みの所有者の受付済み注文を 1 件読み取ります。応答は `orderId`、`marketId`、
+`status` (`accepted` または `processed`)、`settlementCapability`、`artifactDigest` を持ちます。
+存在しない注文、他の所有者の注文、注文が受け付けられていない capability は、同じ `404` の `order-not-found` になります。
+この照会はステージ、検証、受付を行いません。主体ごとの専用のレート制限 `order-lookup` (1 分あたり 30 回) があります。
+
+結果が不明な応答の後や再起動の後、ウォレットはこの照会だけを使います。
+注文を作成できるリクエストは送信しません。
+
+- 見つかった注文は、`artifactDigest` がローカルの capability artifact のダイジェストと一致する場合だけ有効です。
+  その場合、ウォレットは送信済みの注文として記録します。
+- 認可の有効期限より前に見つからない場合は、最終結果ではありません。
+  ウォレットは 5 秒後に再度読み取り、読み取るたびに待ち時間を 2 倍にします。上限は 60 秒です。
+  照会への `429` は読み取りとして数えません。次の読み取りは少なくとも `Retry-After` まで待ちます。
+- 認可の有効期限の時刻以降は、ウォレットはミントを照会し (NUT-09 と NUT-07)、未使用の入力を返金します。
 
 ## バッチ、取消し、読み取りのエラー
 
@@ -207,7 +251,7 @@ API の構造化エラー形式とは別です。
 
 エンジンは、期限が来るまで互換性がある fill をグループに追加できます。conversion を送信する前にグループを確定します。
 
-エンジンはグループに対して 1 件の複数当事者 conversion をミントに送信します。現在のプロダクトは complementary conversion と mint conversion をサポートします。ミントが conversion の結果を決定します。NUT は merge conversion も定義しますが、bitCaster はこのリリースで提供しません。
+エンジンはグループに対して 1 件の複数当事者 conversion をミントに送信します。現在のプロダクトは complementary conversion、mint conversion、merge conversion をサポートします。merge conversion は、売り注文と補集合のアウトカムの売り注文を担保に変換します。ミントが conversion の結果を決定します。
 
 ## 確定と回復
 

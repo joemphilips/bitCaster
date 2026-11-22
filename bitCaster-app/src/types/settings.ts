@@ -1,3 +1,4 @@
+import type { ParticipationScoreHistoryResponse } from "@bitcaster/client-sdk/engineClient";
 import type { BrowserProfileEditView, BrowserProfileSaveResult } from "@/lib/browserNostrProfile";
 import type { NostrProfileEditorPatch } from "@bitcaster/client-sdk/nostrProfile";
 
@@ -152,4 +153,8 @@ export interface SettingsProps {
   ) => Promise<BrowserProfileSaveResult>;
   onAddRelay?: (url: string) => void;
   onRemoveRelay?: (url: string) => void;
+  /** Reads the signed-in account's Score history. The panel is shown only with this reader. */
+  onLoadParticipationScoreHistory?: (
+    signal: AbortSignal,
+  ) => Promise<ParticipationScoreHistoryResponse>;
 }

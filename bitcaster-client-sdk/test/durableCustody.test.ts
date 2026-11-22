@@ -521,6 +521,41 @@ test('custody transaction rebuilds recovery indexes for exact selected subsets o
   }
 })
 
+test('a claim under the owner lock supersedes and fences an owner that ended without release', () => {
+  const unowned: DurableCustodyScopeState = {
+    schemaVersion: 1,
+    scope: scope(),
+    fencingEpoch: 0,
+    owner: null,
+    effectiveClock: { highWaterMarkMs: 10 },
+  }
+  // The first owner ended inside its lease and never released the scope.
+  const ended = claimDurableCustodyScope(unowned, {
+    incarnationId: 'ended-page',
+    observedAtMs: 11,
+    leaseExpiresAtMs: 611,
+  })
+  const next = claimDurableCustodyScope(ended, {
+    incarnationId: 'next-page',
+    observedAtMs: 12,
+    leaseExpiresAtMs: 612,
+  })
+  assert.equal(next.fencingEpoch, 2)
+  assert.deepEqual(next.owner, { incarnationId: 'next-page', leaseExpiresAtMs: 612 })
+  assert.equal(next.effectiveClock.highWaterMarkMs, 12)
+  const transportAttempt = (incarnationId: string, fencingEpoch: number) =>
+    reduceDurableCustodyState(
+      { scopeState: next, operation: intent() },
+      {
+        kind: 'mark-transport-attempted',
+        authorization: { incarnationId, fencingEpoch, observedAtMs: 13 },
+        expectedRevision: 0,
+      },
+    )
+  assert.throws(() => transportAttempt('ended-page', 1), /fencing/)
+  assert.equal(transportAttempt('next-page', 2).operation.operation.state, 'transport-attempted')
+})
+
 test('scope claim and reducer keep clock monotonic without invalidating the current epoch', () => {
   const walletScope = scope()
   const unowned: DurableCustodyScopeState = {

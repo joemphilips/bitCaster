@@ -150,7 +150,7 @@ Sell では、保有するコンディショナルトークンと通常の現金
 
 ## 注文の認可
 
-ウォレットは公開 FOK 注文を送信するときに 1 件の `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。
+ウォレットは公開 FOK 注文を送信するときに 1 件の `PAY_TO_UNLOCK` capability を提供します。エンジンは注文受付で capability を検証します。受付中にミントへのネットワーク呼び出しは行いません。1 回の注文リクエストが capability を運びます。エンジンは 1 回の確定で capability を紐付けて注文を受け付けるか、何も書き込みません。
 
 capability はその 1 回の試行で認可された range を対象にします。公開 FOK は板に残らず、残余注文も残しません。要求数量全体を約定できない場合、エンジンは注文全体を取り消します。この取消では capability を使用せず、返金も開始しません。
 
@@ -158,7 +158,7 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 マッチした数量ごとに 1 件の fill が作成されます。`fillId` はその実際の fill を識別します。
 
-エンジンは 1 件以上の fill を 1 件のアトミック決済グループにまとめることができます。`groupId` は決済グループを識別します。ミントはグループに対して 1 件の複数当事者 conversion を受け取ります。現在のプロダクトは complementary conversion と mint conversion をサポートします。このリリースでは merge conversion を提供しません。
+エンジンは 1 件以上の fill を 1 件のアトミック決済グループにまとめることができます。`groupId` は決済グループを識別します。ミントはグループに対して 1 件の複数当事者 conversion を受け取ります。現在のプロダクトは complementary conversion、mint conversion、merge conversion をサポートします。merge の約定では、売り注文が補集合のアウトカムの売り注文と組み合わされ、ミントが 2 つのポジションを担保に統合します。この API バージョンは merge の約定を `Complementary` として報告し、テイカーのトークン側と約定価格を示します。今後のエンジンバージョンは `Merge` を報告します。
 
 ミントが確定すると、正確な result entry を返します。クライアントは送信した operation と確定した result を保持します。クラッシュ後もこの正確な記録を回復できます。認識済みの FOK operation は operation facts と result を保存します。これらの記録はサーバーの再起動後も残ります。同じ client order ID を意図的に同じ operation facts で再利用すると、保存済みの result を返します。facts が変わると conflict を返します。結果が不確実な場合、クライアントは永続的なエンジンとミントの authority で照合します。
 
@@ -170,7 +170,11 @@ capability はその 1 回の試行で認可された range を対象にしま�
 
 ## Participation Score
 
-Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v2` の下で 1 回だけ課金します。料金は `max(1, ceil(v1 / 10))` です。ここで `v1 = 1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。以前に `settlement-capability-v1` の下で記録した課金は、`v1` の金額のままです。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。order、fill、settlement failure ごとの別料金はありません。fill、取消、settlement failure、refund、recovery は Score を debit しません。この料金は公開クライアントの capability に適用します。
+Participation Score は公開注文の受付を保護します。成功した公開 one-shot capability binding は、`settlement-capability-v2` の下で 1 回だけ課金します。料金は `max(1, ceil(v1 / 10))` です。ここで `v1 = 1 + InputCount + ceil(ManifestCount/16) + ceil(ArtifactByteCount/4096)` です。以前に `settlement-capability-v1` の下で記録した課金は、`v1` の金額のままです。認証済みの invalid proof または DLEQ validation attempt は同じ料金を使用します。この料金は、order、fill、settlement failure ごとの料金ではありません。fill、取消、settlement failure、refund、recovery では、この料金を課しません。この料金は公開クライアントの capability に適用します。次の出力の再使用ペナルティは、料金とは別の課金です。
+
+決済の出力の一つが別の操作ですでに使われていた場合、たとえば同じウォレットを別のブラウザーで使った場合、ミントはその決済を拒否します。その出力が 1 つの注文のものであることをミントの応答からエンジンが証明できる場合、エンジンはその注文と、それより後に受け付けた注文を決済から外し、残りの注文をもう一度だけ送信します。注文が残らない場合や、残りの注文を決済できない場合は、決済全体が失敗します。エンジンは外した注文の所有者に `reused-output-penalty-v1` を課します。その決済について 100 Score を 1 回だけ課します。残高は負になることがあります。同じ決済にあったために失敗しただけの注文には課しません。エンジンは自身の Bot には課しません。このペナルティは Score だけを変更します。資金は取りません。外した注文は、認可の有効期限後に通常の返金の処理に従います。
+
+外した注文の注文状態は `failed` のままで、決済グループの状態は `DefinitivelyRejected` のままです。`GET /api/v1/{marketId}/orders/{orderId}/settlement-failure` は理由を返します。課金した注文には `OwnOutputReused`、ペナルティなしで失敗した注文には `GroupOutputReused` を返します。`GET /api/v1/participation-score/history` は、残高と最近の 50 件の Score の変動を新しい順に返します。ペナルティの種類は `reused-output-penalty` です。CLI では `bitcaster-cli order settlement-failure <market-id> <order-id>` と `bitcaster-cli score history` で読み取ります。
 
 Score が不足すると、daemon は支払いを送信します。delivery state が `credited` になるまで待ってから、注文 capability を準備します。再試行には同じ delivery identity を使用します。ミントが支払いを受け取った後も、Score の反映が遅れることがあります。待機時間の上限に達しても、その支払いは回復できます。pending の delivery は、支払いの失敗を示すものではありません。
 
@@ -186,7 +190,7 @@ Score が不足すると、daemon は支払いを送信します。delivery stat
 
 ## オンチェーン CTF 取引所との比較
 
-complementary、mint、merge という名前はオンチェーン CTF システムにもあります。実装は異なります。bitCaster は現在、complementary conversion と mint conversion だけを提供します。1 件のアトミック決済グループに対して 1 件のミント conversion を使用します。peer-to-peer 決済交換やオンチェーン operator transaction は使用しません。
+complementary、mint、merge という名前はオンチェーン CTF システムにもあります。実装は異なります。bitCaster は complementary conversion、mint conversion、merge conversion を提供します。1 件のアトミック決済グループに対して 1 件のミント conversion を使用します。peer-to-peer 決済交換やオンチェーン operator transaction は使用しません。
 
 ## 気配値の更新を待つ
 
@@ -203,10 +207,10 @@ complementary、mint、merge という名前はオンチェーン CTF システ�
 バッチは残りの有効な項目について `authorityUnavailable` を返します。
 この待機は約定を保証しません。
 
-エンジンが受理前の拒否を示す正確な `order-quotes-refreshing` エラーを返した場合、
-GUI と CLI は更新を待ちます。クライアントは同じシリアライズ済みリクエストと署名済み
-コメントを再送します。元のケイパビリティ、指値、手数料への同意、有効期限を維持します。
-別の注文は作成しません。
+エンジンが正確な `order-quotes-refreshing` エラーまたは `order-book-conflict` で
+受理前に注文を拒否した場合、GUI と CLI は待つことができます。どちらの拒否も何も確定しません。
+クライアントは同じシリアライズ済みリクエストと署名済みコメントを再送します。
+元のケイパビリティ、指値、手数料への同意、有効期限を維持します。別の注文は作成しません。
 
 待機は最初の送信から最大 60 秒、送信は最大 30 回です。最初の再送まで 1 秒、
 その後は 2 秒待ちます。各リクエストは最大 30 秒です。また、待機期限と元の有効期限の
@@ -215,12 +219,15 @@ GUI と CLI は更新を待ちます。クライアントは同じシリアラ�
 
 GUI は進行状況と待機を停止する操作を表示します。CLI は標準エラー出力に進行状況を
 表示します。Ctrl-C で待機を停止できます。停止しても予約済み資金は解放されません。
-注文が受理されていない証明にもなりません。元の注文状態を確認してください。
+注文が受理されていない証明にもなりません。ウォレットは元の注文を読み取り、見つかった時点で表示します。
 ウォレットは既存の回復処理と有効期限に従う処理を続けます。
 
 一般的なサービスエラー、タイムアウト、不正な応答、結果が不明な場合は自動送信を
-停止します。クライアントは元の処理の状態を照合します。アプリを再起動しても、
-この自動送信は再開しません。
+停止します。クライアントは読み取り専用の注文照会で元の処理の状態を照合し、注文を再送しません。
+上限または停止の操作で待機が終わり、すべての送信が上記 2 つの拒否のどちらかを受けた場合、注文は存在しません。
+ウォレットは拒否を記録し、認可の有効期限の後に返金します。
+送信中の試行を停止で中断した場合は結果が不明となり、ウォレットは注文照会を使います。
+アプリを再起動しても、この自動送信は再開しません。
 
 ## 気配値の更新中に板情報を取得する
 

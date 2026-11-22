@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite'
 import { test } from 'node:test'
 import {
   appendRangePreparationConsolidation,
+  bindRangePreparationAdmission,
   bindRangePreparationCapability,
   decodeCanonicalRangePreparation,
   encodeCanonicalRangePreparation,
@@ -177,6 +178,23 @@ test('range preparation schema rejects partial capability and loose authority', 
     /constraint/,
   )
 
+  for (const lifecycleState of ['order-requested', 'order-request-rejected']) {
+    assert.throws(
+      () =>
+        statement.run(
+          ...values,
+          lifecycleState,
+          1,
+          CAPABILITY.artifactId,
+          CAPABILITY.bindingDigest,
+          CAPABILITY.artifactDigest,
+          CAPABILITY.orderId,
+          input.createdAtMs,
+          input.createdAtMs,
+        ),
+      /constraint/,
+    )
+  }
   assert.throws(
     () => seedWalletProof(database, 'available', 'unexpected-reservation'),
     /constraint/,
@@ -302,10 +320,10 @@ test('active recovery pages use lifecycle and retain submitted orders until term
     rangeOperationId: 'range-b',
     expectedRevision: 0,
     from: 'prepared',
-    to: 'capability-requested',
+    to: 'order-requested',
     updatedAtMs: 29,
   })
-  bindRangePreparationCapability(database, {
+  bindRangePreparationAdmission(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: 'range-b',
     expectedRevision: 1,
@@ -362,21 +380,111 @@ test('active recovery exposes bounded 256 and 257 preparation pages', (t) => {
   assert.equal(second.nextCursor, null)
 })
 
-test('capability binding and lifecycle transitions use revision CAS', (t) => {
+test('one-step lifecycle transitions and the admission binding use revision CAS', (t) => {
   const database = createDatabase()
   t.after(() => database.close())
   const input = preparationInput('range-transition', 'source-transition', 'client-transition', 5)
   insertRangePreparation(database, input)
+  // The one-step path never writes capability-requested.
+  assert.throws(
+    () =>
+      transitionRangePreparation(database, {
+        scopeId: SCOPE_ID,
+        rangeOperationId: input.rangeOperationId,
+        expectedRevision: 0,
+        from: 'prepared',
+        to: 'capability-requested',
+        updatedAtMs: 4,
+      }),
+    /transition is invalid/,
+  )
   const requested = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
     expectedRevision: 0,
     from: 'prepared',
-    to: 'capability-requested',
+    to: 'order-requested',
     updatedAtMs: 4,
   })
   assert.equal(requested.updatedAtMs, input.createdAtMs)
+  assert.equal(requested.capability, null)
+  // The old two-step bind cannot move a one-step record.
+  assert.throws(
+    () =>
+      bindRangePreparationCapability(database, {
+        scopeId: SCOPE_ID,
+        rangeOperationId: input.rangeOperationId,
+        expectedRevision: 1,
+        capability: CAPABILITY,
+        updatedAtMs: 6,
+      }),
+    /revision or lifecycle changed/,
+  )
+  const submitted = bindRangePreparationAdmission(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: input.rangeOperationId,
+    expectedRevision: 1,
+    capability: CAPABILITY,
+    updatedAtMs: 6,
+  })
+  assert.equal(submitted.lifecycleState, 'order-submitted')
+  assert.equal(submitted.revision, 2)
+  assert.equal(submitted.capability?.orderId, CAPABILITY.orderId)
+  assert.equal(insertRangePreparation(database, input).revision, 2)
+  assert.equal(
+    bindRangePreparationAdmission(database, {
+      scopeId: SCOPE_ID,
+      rangeOperationId: input.rangeOperationId,
+      expectedRevision: 1,
+      capability: CAPABILITY,
+      updatedAtMs: 7,
+    }).revision,
+    2,
+  )
 
+  const rejectedInput = preparationInput('range-rejected', 'source-rejected', 'client-rejected', 9)
+  insertRangePreparation(database, rejectedInput)
+  transitionRangePreparation(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: rejectedInput.rangeOperationId,
+    expectedRevision: 0,
+    from: 'prepared',
+    to: 'order-requested',
+    updatedAtMs: 9,
+  })
+  const rejected = transitionRangePreparation(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: rejectedInput.rangeOperationId,
+    expectedRevision: 1,
+    from: 'order-requested',
+    to: 'order-request-rejected',
+    updatedAtMs: 10,
+  })
+  assert.equal(rejected.lifecycleState, 'order-request-rejected')
+  assert.equal(rejected.capability, null)
+  const terminal = transitionRangePreparation(database, {
+    scopeId: SCOPE_ID,
+    rangeOperationId: rejectedInput.rangeOperationId,
+    expectedRevision: 2,
+    from: 'order-request-rejected',
+    to: 'terminal',
+    updatedAtMs: 11,
+  })
+  assert.equal(terminal.lifecycleState, 'terminal')
+})
+
+test('a release 4 record keeps its old-route transitions', (t) => {
+  const database = createDatabase()
+  t.after(() => database.close())
+  const input = preparationInput('range-release4', 'source-release4', 'client-release4', 5)
+  insertRangePreparation(database, input)
+  // Only the release 4 writer produced capability-requested.
+  database
+    .prepare(
+      `UPDATE daemon_ctf_range_preparations SET lifecycle_state = 'capability-requested', revision = 1
+       WHERE range_operation_id = ?`,
+    )
+    .run(input.rangeOperationId)
   const bound = bindRangePreparationCapability(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
@@ -385,8 +493,17 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
     updatedAtMs: 6,
   })
   assert.equal(bound.lifecycleState, 'capability-bound')
-  assert.equal(bound.revision, 2)
-  assert.equal(insertRangePreparation(database, input).revision, 2)
+  assert.throws(
+    () =>
+      bindRangePreparationAdmission(database, {
+        scopeId: SCOPE_ID,
+        rangeOperationId: input.rangeOperationId,
+        expectedRevision: 2,
+        capability: { ...CAPABILITY, bindingDigest: '55'.repeat(32) },
+        updatedAtMs: 7,
+      }),
+    /revision or lifecycle changed/,
+  )
   const submitted = transitionRangePreparation(database, {
     scopeId: SCOPE_ID,
     rangeOperationId: input.rangeOperationId,
@@ -401,53 +518,24 @@ test('capability binding and lifecycle transitions use revision CAS', (t) => {
       transitionRangePreparation(database, {
         scopeId: SCOPE_ID,
         rangeOperationId: input.rangeOperationId,
-        expectedRevision: 1,
+        expectedRevision: 2,
         from: 'capability-bound',
-        to: 'order-submitted',
+        to: 'submission-rejected',
         updatedAtMs: 8,
       }),
-    /revision or lifecycle changed/,
+    /transition is invalid/,
   )
-
-  const rejectedInput = preparationInput('range-rejected', 'source-rejected', 'client-rejected', 9)
-  insertRangePreparation(database, rejectedInput)
-  transitionRangePreparation(database, {
-    scopeId: SCOPE_ID,
-    rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 0,
-    from: 'prepared',
-    to: 'capability-requested',
-    updatedAtMs: 9,
-  })
-  bindRangePreparationCapability(database, {
-    scopeId: SCOPE_ID,
-    rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 1,
-    capability: {
-      ...CAPABILITY,
-      artifactId: '55555555-5555-4555-8555-555555555555',
-      orderId: '66666666-6666-4666-8666-666666666666',
-    },
-    updatedAtMs: 10,
-  })
-  const rejected = transitionRangePreparation(database, {
-    scopeId: SCOPE_ID,
-    rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 2,
-    from: 'capability-bound',
-    to: 'submission-rejected',
-    updatedAtMs: 11,
-  })
-  assert.equal(rejected.lifecycleState, 'submission-rejected')
-  const terminal = transitionRangePreparation(database, {
-    scopeId: SCOPE_ID,
-    rangeOperationId: rejectedInput.rangeOperationId,
-    expectedRevision: 3,
-    from: 'submission-rejected',
-    to: 'terminal',
-    updatedAtMs: 12,
-  })
-  assert.equal(terminal.lifecycleState, 'terminal')
+  assert.equal(
+    transitionRangePreparation(database, {
+      scopeId: SCOPE_ID,
+      rangeOperationId: input.rangeOperationId,
+      expectedRevision: 3,
+      from: 'order-submitted',
+      to: 'terminal',
+      updatedAtMs: 9,
+    }).lifecycleState,
+    'terminal',
+  )
 })
 
 function createDatabase(): DatabaseSync {

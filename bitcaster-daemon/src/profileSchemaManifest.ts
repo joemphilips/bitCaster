@@ -14,10 +14,12 @@ import {
 
 export const FINAL_PROFILE_APPLICATION_ID = 0x4243444d
 // The unit reset intentionally refuses every pre-release profile authority.
-export const FINAL_PROFILE_SCHEMA_VERSION = 16
+// Version 17 (release 5b) adds the one-step order journal states. A version 16
+// profile upgrades forward only (profileSchemaUpgrade.ts).
+export const FINAL_PROFILE_SCHEMA_VERSION = 17
 export const FINAL_PROFILE_SCHEMA_NAME = 'bitcaster-daemon-profile'
 export const FINAL_PROFILE_SCHEMA_MANIFEST_DIGEST =
-  'f223b7f46405480d620fc6a6e270279442b6f0b5d0bef4645a8a521701ad2d9f'
+  '233feceb8902a49f393e9e80a51dd6656a06a2f5d3199a0d6b997e1e33184dbb'
 
 const artifactBytesMax = 16 * 1_024 * 1_024
 const recordBytesMax = 64 * 1_024
@@ -26,15 +28,20 @@ const recordBytesMax = 64 * 1_024
  * The clean-start production schema has no bilateral swap authority.
  * This custody schema is not deployed, so v1 revisions replace an empty store.
  */
+/** The marker table admits exactly one schema version. */
+export function profileSchemaMarkerTableSql(schemaVersion: number): string {
+  return `CREATE TABLE profile_schema_marker (
+    singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
+    schema_name TEXT NOT NULL CHECK (schema_name = '${FINAL_PROFILE_SCHEMA_NAME}'),
+    schema_version INTEGER NOT NULL CHECK (schema_version = ${schemaVersion}),
+    initialized_at_ms INTEGER NOT NULL CHECK (initialized_at_ms >= 0)
+  ) STRICT`
+}
+
 export const FINAL_PROFILE_SCHEMA_SQL = [
   ...NATIVE_BOOKMARK_SCHEMA_SQL,
   ...NATIVE_ORACLE_SCHEMA_SQL,
-  `CREATE TABLE profile_schema_marker (
-    singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
-    schema_name TEXT NOT NULL CHECK (schema_name = '${FINAL_PROFILE_SCHEMA_NAME}'),
-    schema_version INTEGER NOT NULL CHECK (schema_version = ${FINAL_PROFILE_SCHEMA_VERSION}),
-    initialized_at_ms INTEGER NOT NULL CHECK (initialized_at_ms >= 0)
-  ) STRICT`,
+  profileSchemaMarkerTableSql(FINAL_PROFILE_SCHEMA_VERSION),
   `CREATE TABLE daemon_profile (
     singleton INTEGER PRIMARY KEY NOT NULL CHECK (singleton = 1),
     nostr_public_key_hex TEXT NOT NULL CHECK (
@@ -426,7 +433,8 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
     ),
     lifecycle_state TEXT NOT NULL CHECK (
       lifecycle_state IN (
-        'prepared', 'capability-requested', 'capability-bound',
+        'prepared', 'order-requested', 'order-request-rejected',
+        'capability-requested', 'capability-bound',
         'order-submitted', 'submission-rejected', 'terminal'
       )
     ),
@@ -496,7 +504,9 @@ export const FINAL_PROFILE_SCHEMA_SQL = [
       )
     ),
     CHECK (
-      (lifecycle_state IN ('prepared', 'capability-requested')
+      (lifecycle_state IN (
+        'prepared', 'order-requested', 'order-request-rejected', 'capability-requested'
+      )
         AND capability_artifact_id IS NULL)
       OR
       (lifecycle_state IN ('capability-bound', 'order-submitted', 'submission-rejected')

@@ -49,7 +49,6 @@ import {
   type DurableWalletProofDerivationLocator,
 } from "@bitcaster/client-sdk/durableWalletProofDerivationLocator";
 import { browserCustodyOperationId, browserWalletScope } from "./browserCtfRangeOrderSource";
-import { requireBrowserWalletNewWritePermission } from "./browserWalletNewWritePermission";
 import { browserOutgoingCounterPreparationFor } from "./browserOutgoingCounterPreparation";
 import { BrowserWalletCounterSnapshotConflictError } from "../stores/browser-wallet-counter-db";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -158,10 +157,6 @@ export async function executeBrowserDurableOutgoingCashuTransfer(
         mode: "recover",
       });
     }
-    await requireBrowserWalletNewWritePermission({
-      database: input.context.database ?? db,
-      scopeId: scope.scopeId,
-    });
     const marketFundingHead = await prepareFundingHeadMutation(input, scope.scopeId);
     input.context.requireCapturedProfile();
     let operation = await input.prepareWalletSendOperation();
