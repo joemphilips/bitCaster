@@ -13,6 +13,7 @@ import {
   createOracleExplanationTemplate,
   type OracleBackupRecord,
 } from "@bitcaster/client-sdk";
+import { buildTerminalOracleBackupRecord } from "@bitcaster/client-sdk/oracleBackupDelivery";
 import { finalizeEvent } from "nostr-tools/pure";
 import { createCreatorMarketsStore } from "@/stores/creatorMarkets";
 import { useSettingsStore } from "@/stores/settings";
@@ -1059,6 +1060,39 @@ it.each(["created", "imported"] as const)(
     expect(saved?.relayPublished).toBe(true);
     expect(saved?.attestation?.eventJson === signed.attestation?.eventJson).toBe(true);
     expect(await browserOracleAuthorityReadiness(f.record.conditionId, owner)).toBe("ready");
+  },
+);
+
+it.each(["created", "imported"] as const)(
+  "imports a terminal backup on the device whose core keeps a stale stage of a %s owner",
+  async (kind) => {
+    const f = await fixture();
+    const owner = await deliveryOwner(kind, f);
+    const attempt = engineOutagePublication(f, owner);
+    const signed = await attempt("down");
+    // An older browser read staged the saved result in the core.
+    await f.core.export_enum_authority_v2(
+      f.record.oracleEventId,
+      f.prepared.eventJson,
+      JSON.stringify(signed),
+    );
+    const relayed = await attempt("up");
+    // The terminal backup that a relay keeps holds the newer saved result.
+    const terminal = buildTerminalOracleBackupRecord({
+      binding: f.binding,
+      announcementTlvHex: f.prepared.artifactHex,
+      destinations: f.record.destinations,
+      publication: relayed,
+    });
+    // The creator data of this browser is lost. The core keeps the event and the stage.
+    await owner.getState().clear();
+
+    const restored = await importBrowserOracleBackup(terminal, owner);
+    expect(restored.kind === "imported" && restored.oracle.importComplete).toBe(true);
+    expect(await f.core.staged_enum_publication(f.record.oracleEventId)).toBeUndefined();
+    const saved = await owner.getState().readOraclePublication(f.record.conditionId);
+    expect(saved?.relayPublished).toBe(true);
+    expect(saved?.attestation?.eventJson === signed.attestation?.eventJson).toBe(true);
   },
 );
 

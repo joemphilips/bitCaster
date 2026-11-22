@@ -204,13 +204,20 @@ async function importBrowserOracleBackupRecord(
           },
           authenticatedEnvelope,
         );
+        const reconcile = () =>
+          reconcileBrowserOraclePublication({
+            binding,
+            core: browserOraclePrivateAuthorityPort(core),
+            store: locked,
+            validator: browserOracleBackupValidator,
+          });
+        // A readiness read of an older release can leave a stage in the core. After the
+        // saved result is terminal, nothing drains it, and the import merge refuses a
+        // backup with another publication record. Merge the stage into the saved result first.
+        if ((await retainedOraclePublicationStage(core, binding.oracleEventId)) !== undefined)
+          await reconcile();
         await core.import_enum_authority(privateDto);
-        await reconcileBrowserOraclePublication({
-          binding,
-          core: browserOraclePrivateAuthorityPort(core),
-          store: locked,
-          validator: browserOracleBackupValidator,
-        });
+        await reconcile();
         await locked.markImportComplete(record.conditionId);
         const owner = await locked.readOwner(record.conditionId);
         if (!owner) throw new OracleBackupError("invalid-record");
@@ -226,6 +233,19 @@ async function importBrowserOracleBackupRecord(
     if (error instanceof OracleBackupDeliveryError) throw error;
     if (error instanceof OracleBackupError && error.reason === "oversized") throw error;
     throw new OracleBackupError("invalid-record");
+  }
+}
+
+/** The publication stage of a retained event. An absent event (JsError.NotFound, 2) has none. */
+async function retainedOraclePublicationStage(
+  core: Kormir,
+  eventId: string,
+): Promise<string | undefined> {
+  try {
+    return await core.staged_enum_publication(eventId);
+  } catch (error) {
+    if (error === 2) return undefined;
+    throw error;
   }
 }
 
