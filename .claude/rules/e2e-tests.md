@@ -14,7 +14,10 @@ Do not use that removed path as a verification command.
 Run commands from `bitCaster-app/`.
 
 - Use `npm run test -- <test-file>` for a focused frontend unit test.
-- Use `npm run test:nut16-browser` for the configured browser-runtime suite.
+- Use `npm run test:browser` for the configured browser-runtime suite.
+- Use `npm run test:browser:chart-geometry` and `npm run test:browser:shell`
+  for the browser files that have their own config.
+- CI runs these three scripts.
 - Read `vitest.browser.config.ts` before adding a browser-runtime test.
 - Use `playwright-cli` for an authorized live UI inspection.
 

@@ -16,7 +16,9 @@
     "lint:wallet-ops": "bash scripts/check-wallet-ops-boundary.sh",
     "test": "vitest run",
     "test:server": "node --test server-tests/*.node-test.mjs",
-    "test:nut16-browser": "vitest run --config vitest.browser.config.ts",
+    "test:browser": "vitest run --config vitest.browser.config.ts",
+    "test:browser:chart-geometry": "vitest run --config vitest.chart-geometry.config.ts",
+    "test:browser:shell": "vitest run --config vitest.shell.config.ts",
     "test:watch": "vitest",
     "generate:api": "openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o src/generated/api.ts && openapi-typescript ../BitCaster.MatchingEngine.Contracts/specs/openapi.yaml -o ../bitcaster-client-sdk/src/generated/api.ts && prettier --write ../bitcaster-client-sdk/src/generated/api.ts"
   },

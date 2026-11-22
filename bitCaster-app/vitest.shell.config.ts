@@ -4,13 +4,18 @@ import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
 import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
+// vitest.browser.config.ts excludes these files, because they need the context below.
+export const shellBrowserTests = [
+  "src/components/shell/__tests__/AppShell.environment.browser.test.ts",
+];
+
 export default mergeConfig(
   viteConfig,
   defineConfig({
     server: { host: "127.0.0.1" },
     optimizeDeps: { include: ["react-dom/client"] },
     test: {
-      include: ["src/components/shell/__tests__/AppShell.environment.browser.test.ts"],
+      include: shellBrowserTests,
       fileParallelism: false,
       testTimeout: 20_000,
       browser: {

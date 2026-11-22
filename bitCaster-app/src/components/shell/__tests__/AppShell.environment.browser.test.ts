@@ -82,7 +82,9 @@ for (const layout of ["desktop", "mobile"] as const) {
       expect(glyphs.x).toBeGreaterThanOrEqual(brand.viewBox.baseVal.x - 1);
       expect(glyphs.x + glyphs.width).toBeLessThanOrEqual(brand.viewBox.baseVal.width + 1);
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(innerWidth + 1);
-      await page.screenshot({ path: `/tmp/p9-shell-browser/${environment}-${layout}-header.png` });
+      const captureDirectory = import.meta.env.VITE_UI_REVIEW_DIR;
+      if (captureDirectory)
+        await page.screenshot({ path: `${captureDirectory}/${environment}-${layout}-header.png` });
 
       await page
         .getByRole("button", {
@@ -128,7 +130,8 @@ for (const layout of ["desktop", "mobile"] as const) {
       expect(onNavigate).not.toHaveBeenCalled();
       expect(onLogout).not.toHaveBeenCalled();
       expect(document.documentElement.scrollWidth).toBeLessThanOrEqual(innerWidth + 1);
-      await page.screenshot({ path: `/tmp/p9-shell-browser/${environment}-${layout}-menu.png` });
+      if (captureDirectory)
+        await page.screenshot({ path: `${captureDirectory}/${environment}-${layout}-menu.png` });
     });
   }
 }

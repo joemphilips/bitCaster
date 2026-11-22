@@ -4,13 +4,18 @@ import { defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
 import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
 
+// vitest.browser.config.ts excludes these files, because they need the instances below.
+export const chartGeometryBrowserTests = [
+  "src/components/market-detail/__tests__/PriceChart.geometry.browser.test.ts",
+];
+
 export default mergeConfig(
   viteConfig,
   defineConfig({
     server: { host: "127.0.0.1" },
     optimizeDeps: { include: ["react-dom/client"] },
     test: {
-      include: ["src/components/market-detail/__tests__/PriceChart.geometry.browser.test.ts"],
+      include: chartGeometryBrowserTests,
       fileParallelism: false,
       testTimeout: 30_000,
       browser: {

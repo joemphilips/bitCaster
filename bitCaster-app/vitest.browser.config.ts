@@ -1,14 +1,18 @@
 import { defineBrowserCommand, playwright } from "@vitest/browser-playwright";
 import { mergeConfig } from "vite";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import viteConfig from "./vite.config";
 import { chromiumLaunchOptions } from "../scripts/playwright-launch.mjs";
+import { chartGeometryBrowserTests } from "./vitest.chart-geometry.config";
+import { shellBrowserTests } from "./vitest.shell.config";
 
 export default mergeConfig(
   viteConfig,
   defineConfig({
     test: {
       include: ["src/**/*.browser.test.ts"],
+      // These files need their own browser context. Their own configs run them.
+      exclude: [...configDefaults.exclude, ...chartGeometryBrowserTests, ...shellBrowserTests],
       browser: {
         enabled: true,
         // Parallel test processes must not inherit the app server's fixed port.

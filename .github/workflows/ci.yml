@@ -104,6 +104,33 @@ jobs:
       - run: npm run test
       - run: npm run test:server
 
+  # The app browser tests run in Chromium with the committed kormir WASM core.
+  # vitest.chart.config.ts does not run here: it is a renderer measurement, not a gate.
+  frontend-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: bitCaster-app
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+          submodules: recursive
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: 22
+      - run: npm ci --ignore-scripts
+        working-directory: .
+      - run: npm run patch:dependencies
+        working-directory: .
+      - name: Install Chromium for the browser tests
+        working-directory: .
+        run: npx playwright install --with-deps chromium
+      - run: npm run test:browser
+      - run: npm run test:browser:chart-geometry
+      - run: npm run test:browser:shell
+
   scripts-daemon-and-cli:
     runs-on: ubuntu-latest
     timeout-minutes: 60
