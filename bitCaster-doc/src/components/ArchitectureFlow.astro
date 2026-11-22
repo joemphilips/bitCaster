@@ -39,7 +39,7 @@ const copy = {
     order: 'Traders place orders',
     settle: 'Settle matched trades',
     result: 'Oracle signs the result',
-    payout: 'Winners are paid',
+    payout: 'Winners cash out with the signed result',
     cash: 'Deposit · withdraw',
     caption:
       'Steps 1 to 6 follow one market from creation to payout. Deposits and withdrawals can happen at any time.',
@@ -74,7 +74,7 @@ const copy = {
     order: 'トレーダーが注文を出す',
     settle: '約定した取引を決済',
     result: 'オラクルが結果に署名',
-    payout: '当たったシェアに払い出し',
+    payout: '署名された結果を添えて換金',
     cash: '入金 · 出金',
     caption:
       '1 から 6 は、1 つのマーケットの作成から払い出しまでの順番です。入金と出金はいつでもできます。',
@@ -103,12 +103,10 @@ const copy = {
     <div class="wire v both app-mint">
       <span class="line" aria-hidden="true">
         <span class="dot down" style="--i: 1"></span>
-        <span class="dot down" style="--i: 5"></span>
-        <span class="dot up" style="--i: 6"></span>
+        <span class="dot down" style="--i: 6"></span>
       </span>
       <ul>
         <li class="step" style="--i: 1"><span class="n">1</span>{copy.create}</li>
-        <li class="step" style="--i: 5"><span class="n">5</span>{copy.result}</li>
         <li class="step" style="--i: 6"><span class="n">6</span>{copy.payout}</li>
         <li>{copy.cash}</li>
       </ul>
@@ -117,9 +115,11 @@ const copy = {
     <div class="wire v down app-engine">
       <span class="line" aria-hidden="true">
         <span class="dot down" style="--i: 3"></span>
+        <span class="dot down" style="--i: 5"></span>
       </span>
       <ul>
         <li class="step" style="--i: 3"><span class="n">3</span>{copy.order}</li>
+        <li class="step" style="--i: 5"><span class="n">5</span>{copy.result}</li>
       </ul>
     </div>
 
@@ -406,8 +406,7 @@ const copy = {
     translate: -50% -50%;
   }
 
-  .dot.down,
-  .dot.up {
+  .dot.down {
     left: 50%;
   }
 
@@ -418,9 +417,6 @@ const copy = {
 
   .dot.down {
     animation-name: arch-down;
-  }
-  .dot.up {
-    animation-name: arch-up;
   }
   .dot.right {
     animation-name: arch-right;
@@ -469,26 +465,6 @@ const copy = {
     14.6%,
     100% {
       top: 100%;
-      opacity: 0;
-    }
-  }
-
-  @keyframes arch-up {
-    0% {
-      top: 100%;
-      opacity: 0;
-    }
-    1.5% {
-      top: 100%;
-      opacity: 1;
-    }
-    12% {
-      top: 0;
-      opacity: 1;
-    }
-    14.6%,
-    100% {
-      top: 0;
       opacity: 0;
     }
   }

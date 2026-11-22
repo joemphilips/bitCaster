@@ -29,7 +29,7 @@ An order sent to the matching engine carries locked funds. It states what you wa
 
 ## The oracle
 
-A market's oracle is the person who created it. They announce the event when they create the market, and they sign its result once the event is over. The signed result goes to the mint, which checks the signature before it pays anyone.
+A market's oracle is the person who created it. They announce the event when they create the market, and they sign its result once the event is over. The signed result goes to the matching engine and closes the market. Winners then hand it to the mint when they cash out, and the mint checks the signature itself before it pays anyone.
 
 Strictly speaking, the oracle is not a part of bitCaster. But you can use bitCaster to become a market creator, and so an oracle, yourself.
 
