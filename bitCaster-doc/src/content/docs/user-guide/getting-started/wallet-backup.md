@@ -8,7 +8,7 @@ sidebar:
 You have two secrets to look after: the recovery phrase of your wallet, and your Nostr key. Neither one can restore the other.
 
 :::caution
-The limited beta does not run the encrypted backup service yet. Your recovery phrase is the only backup of your wallet.
+The beta does not run the encrypted backup service yet. Your recovery phrase is the only backup of your wallet.
 :::
 
 ## The recovery phrase

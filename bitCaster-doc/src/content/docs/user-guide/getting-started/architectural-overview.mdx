@@ -5,9 +5,11 @@ sidebar:
   order: 2
 ---
 
-bitCaster is a handful of independent pieces that talk to each other over open protocols. Your wallet lives in your browser. Everything else is shared by all users.
+import ArchitectureFlow from '../../../../components/ArchitectureFlow.astro';
 
-![Architecture diagram showing Oracle, Nostr oracle network, Matching Engine, Cashu Mint, and bitCaster App](../../../../assets/architecture.svg)
+bitCaster is a handful of independent pieces that talk to each other over open protocols. Your wallet lives on your own device. Everything else is shared by all users.
+
+<ArchitectureFlow lang="en" />
 
 ## The app
 
@@ -21,9 +23,9 @@ The mint issues your ecash and your market shares, and it holds the bitcoin behi
 
 The matching engine keeps an order book for every market, matches buyers with sellers, and broadcasts prices in real time. It never holds your wallet. For each order it receives only the tokens you locked to that order, and it cannot send them anywhere you did not agree to.
 
-## Oracles
+## The oracle
 
-An oracle announces an event ahead of time and later signs its result. Oracles come from the [Discreet Log Contract (DLC)](https://www.dci.mit.edu/projects/discreet-log-contracts) world and are independent of bitCaster. Their announcements and results travel over Nostr relays. A relay only carries messages. What makes a result valid is the oracle's signature, which the mint and the matching engine both verify.
+A market's oracle is the person who created it. They announce the event when they create the market, and they sign its result once the event is over. The signed result goes to the mint, which checks the signature before it pays anyone. The oracle is not a part of bitCaster. It is one user with one key, and that key is the only thing that can decide the market.
 
 ## What is open source
 

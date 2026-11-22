@@ -9,6 +9,8 @@ export const collections = {
       extend: z.object({
         // Status notice that the landing hero shows above the page title.
         heroNotice: z.string().optional(),
+        // Second motto. The landing hero draws it as the reflection of the title in water.
+        heroReflection: z.string().optional(),
       }),
     }),
   }),

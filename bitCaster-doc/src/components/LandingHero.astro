@@ -4,7 +4,10 @@
 import DefaultHero from '@astrojs/starlight/components/Hero.astro'
 
 const { data } = Astro.locals.starlightRoute.entry
-const notice = (data as { heroNotice?: string }).heroNotice
+const { heroNotice: notice, heroReflection: reflection } = data as {
+  heroNotice?: string
+  heroReflection?: string
+}
 const { title = data.title, tagline } = data.hero ?? {}
 ---
 
@@ -15,7 +18,40 @@ const { title = data.title, tagline } = data.hero ?? {}
     <div class="landing-hero">
       <p class="notice">{notice}</p>
       {/* Starlight's skip link targets the page-title id `_top`. */}
-      <h1 id="_top" data-page-title set:html={title} />
+      <h1 id="_top" data-page-title>
+        <span class="motto" set:html={title} />
+        {reflection && (
+          <>
+            <span class="waterline" aria-hidden="true" />
+            {/* The second motto is the first one seen in water: mirrored, rippling, fading with depth. */}
+            <span class="water">
+              <span class="reflection">{reflection}</span>
+            </span>
+          </>
+        )}
+      </h1>
+      {reflection && (
+        <svg class="defs" aria-hidden="true" focusable="false">
+          {/* Rows of the text slide sideways in slow bands. Nothing moves up or down, so the letters stay readable. */}
+          <filter id="bc-ripple" x="-5%" y="-10%" width="110%" height="120%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.0015 0.032" numOctaves="1" seed="7" result="waves">
+              <animate
+                attributeName="baseFrequency"
+                dur="16s"
+                values="0.0015 0.032; 0.0015 0.046; 0.0015 0.032"
+                repeatCount="indefinite"
+              />
+            </feTurbulence>
+            <feDisplacementMap in="SourceGraphic" in2="waves" scale="7" xChannelSelector="R" yChannelSelector="A" />
+            <feGaussianBlur stdDeviation="0.35" />
+          </filter>
+          <filter id="bc-ripple-still" x="-5%" y="-10%" width="110%" height="120%">
+            <feTurbulence type="fractalNoise" baseFrequency="0.0015 0.032" numOctaves="1" seed="7" result="waves" />
+            <feDisplacementMap in="SourceGraphic" in2="waves" scale="7" xChannelSelector="R" yChannelSelector="A" />
+            <feGaussianBlur stdDeviation="0.35" />
+          </filter>
+        </svg>
+      )}
       {tagline && <p class="tagline" set:html={tagline} />}
     </div>
   )
@@ -44,6 +80,9 @@ const { title = data.title, tagline } = data.hero ?? {}
   }
 
   h1 {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
     margin: 0;
     max-width: 100%;
     color: var(--sl-color-white);
@@ -51,9 +90,6 @@ const { title = data.title, tagline } = data.hero ?? {}
     font-weight: 800;
     line-height: 1.04;
     letter-spacing: -0.04em;
-    text-wrap: balance;
-    /* Keep Japanese phrases together when the title wraps. */
-    word-break: auto-phrase;
   }
 
   /* A Japanese line has no spaces. This size keeps each line whole on a phone. */
@@ -61,8 +97,65 @@ const { title = data.title, tagline } = data.hero ?? {}
     font-size: clamp(1.75rem, 5.4vw, 4.5rem);
   }
 
-  h1 :global(span) {
+  .motto,
+  .reflection {
+    display: block;
+    text-wrap: balance;
+    /* Keep Japanese phrases together when the title wraps. */
+    word-break: auto-phrase;
+  }
+
+  /* The surface of the water: a hairline that fades out at both ends. */
+  .waterline {
+    width: min(100%, 13em);
+    height: 1px;
+    margin-block: 0.14em 0.1em;
+    background: linear-gradient(
+      to right,
+      transparent,
+      color-mix(in srgb, var(--bc-amber) 70%, transparent) 22%,
+      color-mix(in srgb, var(--bc-amber) 70%, transparent) 78%,
+      transparent
+    );
+  }
+
+  /* A faint glow under the surface gives the reflection something to sit in. */
+  .water {
+    display: block;
+    padding-bottom: 0.12em;
+    background: radial-gradient(
+      ellipse 60% 90% at 50% 0%,
+      color-mix(in srgb, var(--bc-amber) 9%, transparent),
+      transparent 75%
+    );
+    /* The reflection fades with depth. */
+    mask-image: linear-gradient(to bottom, #000 15%, rgb(0 0 0 / 0.38));
+  }
+
+  .reflection {
     color: var(--bc-amber);
+    /* Flipped top to bottom, as a reflection is. Remove the flip to show the motto upright. */
+    transform: scaleY(-1);
+    filter: url('#bc-ripple');
+    transition: transform 0.6s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+
+  /* Pointing at the title turns the reflection the right way up, for anyone who wants to read it plainly. */
+  h1:hover .reflection {
+    transform: scaleY(1);
+  }
+
+  .defs {
+    position: absolute;
+    width: 0;
+    height: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .reflection {
+      filter: url('#bc-ripple-still');
+      transition: none;
+    }
   }
 
   .tagline {
