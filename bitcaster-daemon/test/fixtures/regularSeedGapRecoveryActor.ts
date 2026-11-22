@@ -55,7 +55,15 @@ async function main(): Promise<void> {
   stage = 'fresh-profile'
   const seedFile = join(inputDirectory, 'wallet-seed.hex')
   await writeFile(seedFile, Buffer.from(seed).toString('hex'), { mode: 0o600, flag: 'wx' })
-  await cli(['config', 'set', '--engine-url', 'http://127.0.0.1:1', '--mint-url', mintUrl])
+  await cli([
+    'config',
+    'set',
+    '--engine-url',
+    'http://127.0.0.1:1',
+    '--trust-engine-url',
+    '--mint-url',
+    mintUrl,
+  ])
   await command('bitcaster-daemon/src/main.ts', [
     'init',
     '--wallet-seed-hex-file',

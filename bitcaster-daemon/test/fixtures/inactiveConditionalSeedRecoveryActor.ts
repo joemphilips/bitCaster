@@ -640,7 +640,15 @@ async function recover(metadata: Metadata): Promise<void> {
     'at least one actually funded keyset must be observed on the later page',
   )
   stage = 'fresh-profile'
-  await cli(['config', 'set', '--engine-url', 'http://127.0.0.1:1', '--mint-url', mintUrl])
+  await cli([
+    'config',
+    'set',
+    '--engine-url',
+    'http://127.0.0.1:1',
+    '--trust-engine-url',
+    '--mint-url',
+    mintUrl,
+  ])
   await command('bitcaster-daemon/src/main.ts', [
     'init',
     '--wallet-seed-hex-file',
