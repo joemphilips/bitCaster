@@ -104,7 +104,7 @@ export const NATIVE_SETTING_KEYS: readonly NativeSettingKey[] = Object.freeze(
   Object.keys(TABLE) as NativeSettingKey[],
 )
 
-/** The CLI sends the digest of its overrides in this header on each daemon request. */
+/** The CLI sends the digest of each of its overrides in this header on each daemon request. */
 export const NATIVE_SETTING_DIGEST_HEADER = 'x-bitcaster-launch-settings'
 
 /** The error code of a daemon that refuses a CLI with other overrides. */
@@ -117,6 +117,11 @@ export function isNativeSettingKey(value: string): value is NativeSettingKey {
 /** `engineUrl` gives `BITCASTER_ENGINE_URL`. */
 export function nativeSettingEnvironmentVariable(key: NativeSettingKey): string {
   return `BITCASTER_${words(key).join('_').toUpperCase()}`
+}
+
+/** `engineUrl` gives `--engine-url (BITCASTER_ENGINE_URL)`. */
+export function nativeSettingName(key: NativeSettingKey): string {
+  return `${nativeSettingOptionFlag(key)} (${nativeSettingEnvironmentVariable(key)})`
 }
 
 /** `engineUrl` gives `--engine-url`. */
@@ -211,12 +216,47 @@ export function parseNativeSettingLaunchArguments(args: readonly string[]): Nati
   return parseNativeSettingOptions(texts)
 }
 
-/** A digest of the overrides. Equal overrides give an equal digest. */
-export function nativeSettingOverridesDigest(overrides: NativeSettingOverrides): string {
-  const entries = NATIVE_SETTING_KEYS.flatMap((key) =>
-    overrides[key] === undefined ? [] : [[key, overrides[key]]],
-  )
-  return createHash('sha256').update(JSON.stringify(entries)).digest('hex')
+/**
+ * The header text of the overrides: `key=digest` for each override, in table
+ * order, separated by commas. Each digest hides its value, so the daemon can
+ * name a setting that differs without the value.
+ */
+export function nativeSettingOverrideDigests(overrides: NativeSettingOverrides): string {
+  return NATIVE_SETTING_KEYS.flatMap((key) =>
+    overrides[key] === undefined
+      ? []
+      : [
+          `${key}=${createHash('sha256')
+            .update(JSON.stringify([key, overrides[key]]))
+            .digest('hex')}`,
+        ],
+  ).join(',')
+}
+
+/**
+ * The settings whose overrides differ, in table order. Null when a text is not
+ * a list of setting digests, for example the single digest of an older CLI.
+ */
+export function differingNativeSettings(
+  clientDigests: string,
+  daemonDigests: string,
+): NativeSettingKey[] | null {
+  const client = parseNativeSettingDigests(clientDigests)
+  const daemon = parseNativeSettingDigests(daemonDigests)
+  if (client === null || daemon === null) return null
+  return NATIVE_SETTING_KEYS.filter((key) => client.get(key) !== daemon.get(key))
+}
+
+function parseNativeSettingDigests(text: string): Map<NativeSettingKey, string> | null {
+  const digests = new Map<NativeSettingKey, string>()
+  if (text === '') return digests
+  for (const part of text.split(',')) {
+    const match = /^([A-Za-z]+)=([0-9a-f]{64})$/.exec(part)
+    const key = match?.[1]
+    if (key === undefined || !isNativeSettingKey(key) || digests.has(key)) return null
+    digests.set(key, match![2]!)
+  }
+  return digests
 }
 
 /** The config of the daemon: the file config with the overrides of the starting CLI. */

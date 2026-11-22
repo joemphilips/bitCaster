@@ -22,8 +22,10 @@ import { dataDir } from '@bitcaster-market/daemon/dataDir'
 import {
   DAEMON_SETTINGS_MISMATCH_CODE,
   NATIVE_SETTING_DIGEST_HEADER,
+  isNativeSettingKey,
   nativeSettingLaunchArguments,
-  nativeSettingOverridesDigest,
+  nativeSettingName,
+  nativeSettingOverrideDigests,
   type NativeSettingOverrides,
 } from '@bitcaster-market/daemon/nativeConfigLayers'
 import { execFile, spawn } from 'node:child_process'
@@ -72,7 +74,7 @@ export function daemonRunArguments(daemonMain: string): string[] {
 }
 
 export function daemonLaunchSettingsHeaders(): Record<string, string> {
-  return { [NATIVE_SETTING_DIGEST_HEADER]: nativeSettingOverridesDigest(daemonLaunchSettings) }
+  return { [NATIVE_SETTING_DIGEST_HEADER]: nativeSettingOverrideDigests(daemonLaunchSettings) }
 }
 
 export function preventDaemonAutoStart(): void {
@@ -651,8 +653,9 @@ export async function waitForDaemon(signal?: AbortSignal): Promise<void> {
     try {
       const response = await sendAuthenticatedDaemonCommand({ method: 'health' }, token, signal)
       if (response.ok || response.code !== DAEMON_SETTINGS_MISMATCH_CODE) return
+      const names = (response.settings ?? []).filter(isNativeSettingKey).map(nativeSettingName)
       lastErr = new Error(
-        `a bitcaster-daemon with other environment or option settings answers at ${daemonAttemptAddress()}; stop it, then start it with the settings of this command`,
+        `a bitcaster-daemon with other environment or option settings answers at ${daemonAttemptAddress()}${names.length === 0 ? '' : `: ${names.join(', ')}`}; stop it, then start it with the settings of this command`,
       )
     } catch (err) {
       if (signal?.aborted) throw signal.reason ?? err

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import type { IncomingMessage, ServerResponse } from 'node:http'
@@ -13,7 +14,7 @@ import {
   nativeSettingEnvironmentVariable,
   nativeSettingLaunchArguments,
   nativeSettingOptionFlag,
-  nativeSettingOverridesDigest,
+  nativeSettingOverrideDigests,
   parseNativeSettingEnvironment,
   parseNativeSettingLaunchArguments,
   parseNativeSettingOptions,
@@ -180,35 +181,72 @@ test('a running daemon refuses a CLI with other environment or option settings',
   }
 })
 
-async function assertLaunchSettingsCheck(): Promise<void> {
-  const daemonOverrides = parseNativeSettingOptions({ engineUrl: 'https://option.example' })
-  const digest = nativeSettingOverridesDigest(daemonOverrides)
-  assert.equal(digest, nativeSettingOverridesDigest({ engineUrl: 'https://option.example' }))
-  assert.notEqual(digest, nativeSettingOverridesDigest({}))
-  assert.notEqual(digest, nativeSettingOverridesDigest({ engineUrl: 'https://other.example' }))
+const RESTART = 'Run bitcaster-cli daemon restart with the settings of this command.'
 
-  const same = await health({ [NATIVE_SETTING_DIGEST_HEADER]: digest }, digest)
+async function assertLaunchSettingsCheck(): Promise<void> {
+  const daemonDigests = nativeSettingOverrideDigests(
+    parseNativeSettingOptions({
+      engineUrl: 'https://option.example',
+      recoveryIndexRealm: 'disabled',
+    }),
+  )
+  // Each override has its own digest, so the header holds no value.
+  const digest = (key: string, value: unknown) =>
+    createHash('sha256')
+      .update(JSON.stringify([key, value]))
+      .digest('hex')
+  assert.equal(
+    daemonDigests,
+    `engineUrl=${digest('engineUrl', 'https://option.example')},` +
+      `recoveryIndexRealm=${digest('recoveryIndexRealm', 'disabled')}`,
+  )
+
+  const same = await health({ [NATIVE_SETTING_DIGEST_HEADER]: daemonDigests }, daemonDigests)
   assert.equal(same.status, 200)
-  const other = await health({}, digest)
+
+  // The CLI has another engine URL and no realm option.
+  const other = await health(
+    {
+      [NATIVE_SETTING_DIGEST_HEADER]: nativeSettingOverrideDigests({
+        engineUrl: 'https://other.example',
+      }),
+    },
+    daemonDigests,
+  )
   assert.equal(other.status, 409)
   assert.deepEqual(other.body, {
     ok: false,
     code: 'daemon-settings-mismatch',
+    settings: ['engineUrl', 'recoveryIndexRealm'],
     error:
-      'bitcaster-daemon runs with other environment or option settings. Run bitcaster-cli daemon restart with the settings of this command.',
+      'bitcaster-daemon runs with other environment or option settings: ' +
+      `--engine-url (BITCASTER_ENGINE_URL), --recovery-index-realm (BITCASTER_RECOVERY_INDEX_REALM). ${RESTART}`,
   })
+  // The refusal names each setting, never its value.
+  assert.equal(JSON.stringify(other.body).includes('example'), false)
+
+  // A client without the header has no overrides.
+  const bare = await health({}, daemonDigests)
+  assert.equal(bare.status, 409)
+  assert.deepEqual((bare.body as { settings?: unknown }).settings, [
+    'engineUrl',
+    'recoveryIndexRealm',
+  ])
   // A daemon without overrides accepts a client without the header.
-  assert.equal((await health({}, nativeSettingOverridesDigest({}))).status, 200)
-  assert.equal(
-    (await health({ [NATIVE_SETTING_DIGEST_HEADER]: digest }, nativeSettingOverridesDigest({})))
-      .status,
-    409,
-  )
+  assert.equal((await health({}, nativeSettingOverrideDigests({}))).status, 200)
+  // A header that is not a list of setting digests, for example the single
+  // digest of an older CLI, names no setting.
+  const older = await health({ [NATIVE_SETTING_DIGEST_HEADER]: 'ab'.repeat(32) }, daemonDigests)
+  assert.deepEqual(older.body, {
+    ok: false,
+    code: 'daemon-settings-mismatch',
+    error: `bitcaster-daemon runs with other environment or option settings. ${RESTART}`,
+  })
 }
 
 async function health(
   headers: Record<string, string>,
-  launchSettingsDigest: string,
+  launchSettingDigests: string,
 ): Promise<{ status: number; body: unknown }> {
   class Response extends EventEmitter {
     status = 0
@@ -231,7 +269,7 @@ async function health(
     },
   ) as unknown as IncomingMessage
   await handleRequest(request, response as unknown as ServerResponse, 'test-token', {
-    launchSettingsDigest,
+    launchSettingDigests,
   })
   return { status: response.status, body: JSON.parse(response.text) }
 }

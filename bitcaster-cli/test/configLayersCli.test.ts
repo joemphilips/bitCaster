@@ -276,7 +276,7 @@ test('the CLI starts the daemon with its environment and option settings and nam
   const home = await inProcessDataDir()
   {
     const rpc = await import('../src/rpc.ts')
-    const { nativeSettingOverridesDigest } =
+    const { nativeSettingOverrideDigests } =
       await import('../../bitcaster-daemon/src/nativeConfigLayers.ts')
     const overrides = {
       engineUrl: 'https://option.example',
@@ -291,9 +291,15 @@ test('the CLI starts the daemon with its environment and option settings and nam
       '--engine-url=https://option.example',
       '--recovery-index-realm=disabled',
     ])
-    assert.deepEqual(rpc.daemonLaunchSettingsHeaders(), {
-      'x-bitcaster-launch-settings': nativeSettingOverridesDigest(overrides),
+    const headers = rpc.daemonLaunchSettingsHeaders()
+    assert.deepEqual(headers, {
+      'x-bitcaster-launch-settings': nativeSettingOverrideDigests(overrides),
     })
+    // The header names the settings and holds a digest of each value, never the value.
+    assert.match(
+      headers['x-bitcaster-launch-settings']!,
+      /^engineUrl=[0-9a-f]{64},recoveryIndexRealm=[0-9a-f]{64}$/,
+    )
     rpc.configureDaemonLaunchSettings({})
   }
 })
@@ -308,7 +314,9 @@ test('the wait for a started daemon treats a daemon with other settings as not r
   const mismatch = {
     ok: false,
     code: 'daemon-settings-mismatch',
-    error: 'bitcaster-daemon runs with other environment or option settings.',
+    // The CLI names only the settings that it knows.
+    settings: ['engineUrl', 'notASetting'],
+    error: 'bitcaster-daemon runs with other environment or option settings: --engine-url.',
   }
   const answers: unknown[] = []
   let requests = 0
@@ -327,10 +335,20 @@ test('the wait for a started daemon treats a daemon with other settings as not r
     // A persistent mismatch ends the wait with a clear error, not a success.
     // The first answer uses up the 10-second deadline.
     elapsedMs = 10_000
-    await assert.rejects(
-      rpc.waitForDaemon(),
-      /a bitcaster-daemon with other environment or option settings answers at http:\/\/daemon\.test\/rpc/,
-    )
+    await assert.rejects(rpc.waitForDaemon(), {
+      message:
+        'a bitcaster-daemon with other environment or option settings answers at http://daemon.test/rpc: ' +
+        '--engine-url (BITCASTER_ENGINE_URL); stop it, then start it with the settings of this command',
+    })
+    assert.equal(requests, 1)
+    // A refusal that names no setting keeps the general message.
+    requests = 0
+    answers.push({ ok: false, code: 'daemon-settings-mismatch', error: 'other settings' })
+    await assert.rejects(rpc.waitForDaemon(), {
+      message:
+        'a bitcaster-daemon with other environment or option settings answers at http://daemon.test/rpc; ' +
+        'stop it, then start it with the settings of this command',
+    })
     assert.equal(requests, 1)
     // The wait goes on after a mismatch and ends at the first ready answer.
     elapsedMs = 0

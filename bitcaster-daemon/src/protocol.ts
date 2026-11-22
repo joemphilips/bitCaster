@@ -523,6 +523,8 @@ export interface DaemonResponse<T = unknown> {
   code?: string
   /** The coded mint refusal that ended an order attempt. */
   mintError?: { code: number; detail: string }
+  /** The keys of the settings that differ, for `daemon-settings-mismatch`. It holds no value. */
+  settings?: string[]
   clientOrderId?: string
   operationId?: string
   orderId?: string

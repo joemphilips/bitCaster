@@ -20,7 +20,9 @@ import { activeNativeConfig } from './nativeConfig.ts'
 import {
   DAEMON_SETTINGS_MISMATCH_CODE,
   NATIVE_SETTING_DIGEST_HEADER,
-  nativeSettingOverridesDigest,
+  differingNativeSettings,
+  nativeSettingName,
+  type NativeSettingKey,
 } from './nativeConfigLayers.ts'
 import { dispatchNativeMarketCreation } from './nativeMarketCreationRpc.ts'
 import {
@@ -236,8 +238,8 @@ export interface DaemonServerOptions {
   nativeLightningOps?: NativeLightningOps
   nativeWalletPaymentOps?: DispatchDependencies['nativeWalletPaymentOps']
   readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
-  /** The digest of the settings that the starting CLI passed. Absent: no check. */
-  launchSettingsDigest?: string
+  /** The setting digests of the overrides that the starting CLI passed. Absent: no check. */
+  launchSettingDigests?: string
 }
 
 export interface EngineClientLike {
@@ -401,8 +403,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   waitForParticipationScoreDeliveryRetry?: (attempt: number, delayMs: number) => Promise<void>
   /** The recovery index writer of the running daemon. */
   readRecoveryIndexStatus?: () => DaemonRecoveryIndexStatus
-  /** The digest of the settings that the starting CLI passed at the start. */
-  launchSettingsDigest?: string
+  /** The setting digests of the overrides that the starting CLI passed at the start. */
+  launchSettingDigests?: string
 }
 
 const PARTICIPATION_SCORE_DELIVERY_POLL_ATTEMPTS = 10
@@ -439,7 +441,7 @@ export async function startDaemonServer(options: DaemonServerOptions = {}): Prom
       nativeLightningOps: options.nativeLightningOps,
       nativeWalletPaymentOps: options.nativeWalletPaymentOps,
       readRecoveryIndexStatus: options.readRecoveryIndexStatus,
-      launchSettingsDigest: options.launchSettingsDigest,
+      launchSettingDigests: options.launchSettingDigests,
     })
   })
   if (socketPath) {
@@ -488,17 +490,13 @@ export async function handleRequest(
   // A CLI checks its own settings, such as the trust of its engine URL. So
   // the daemon serves only a CLI with the environment and option settings
   // that started it. A client without the header has no such settings.
-  if (
-    deps.launchSettingsDigest !== undefined &&
-    (headerText(req.headers[NATIVE_SETTING_DIGEST_HEADER]) ?? nativeSettingOverridesDigest({})) !==
-      deps.launchSettingsDigest
-  ) {
-    return writeJson(res, 409, {
-      ok: false,
-      code: DAEMON_SETTINGS_MISMATCH_CODE,
-      error:
-        'bitcaster-daemon runs with other environment or option settings. Run bitcaster-cli daemon restart with the settings of this command.',
-    })
+  if (deps.launchSettingDigests !== undefined) {
+    const differing = differingNativeSettings(
+      headerText(req.headers[NATIVE_SETTING_DIGEST_HEADER]) ?? '',
+      deps.launchSettingDigests,
+    )
+    if (differing === null || differing.length > 0)
+      return writeJson(res, 409, launchSettingsMismatch(differing))
   }
   const wantsSubmission = req.headers.accept === DAEMON_ORDER_SUBMISSION_MEDIA_TYPE
   const wantsWatch = req.headers.accept === DAEMON_WATCH_MEDIA_TYPE
@@ -3754,6 +3752,23 @@ async function readBody(req: IncomingMessage, maxBytes?: number): Promise<string
     chunks.push(body)
   }
   return Buffer.concat(chunks).toString('utf8')
+}
+
+/** Name each setting that differs, never its value. Null: the client sent no readable digests. */
+function launchSettingsMismatch(differing: readonly NativeSettingKey[] | null): DaemonResponse {
+  const restart = 'Run bitcaster-cli daemon restart with the settings of this command.'
+  if (differing === null)
+    return {
+      ok: false,
+      code: DAEMON_SETTINGS_MISMATCH_CODE,
+      error: `bitcaster-daemon runs with other environment or option settings. ${restart}`,
+    }
+  return {
+    ok: false,
+    code: DAEMON_SETTINGS_MISMATCH_CODE,
+    settings: [...differing],
+    error: `bitcaster-daemon runs with other environment or option settings: ${differing.map(nativeSettingName).join(', ')}. ${restart}`,
+  }
 }
 
 function headerText(value: string | string[] | undefined): string | undefined {

@@ -20,7 +20,7 @@ import {
 } from './nativeConfig.ts'
 import {
   applyNativeSettingOverrides,
-  nativeSettingOverridesDigest,
+  nativeSettingOverrideDigests,
   type NativeSettingOverrides,
 } from './nativeConfigLayers.ts'
 import type { DaemonRecoveryIndex, DaemonRecoveryIndexStatus } from './daemonRecoveryIndex.ts'
@@ -734,7 +734,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       nativeWalletPaymentOps,
       nativePaymentRequests,
       readRecoveryIndexStatus,
-      launchSettingsDigest: nativeSettingOverridesDigest(settingOverrides),
+      launchSettingDigests: nativeSettingOverrideDigests(settingOverrides),
       trackOwnedOrder: async (marketId, orderId) => {
         await orderHub.trackOrder(marketId, orderId)
         await startOrderHubWhenReady()

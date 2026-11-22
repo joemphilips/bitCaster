@@ -138,8 +138,10 @@ The default is `~/.bitcaster`.
 
 A daemon that the CLI starts uses the environment and option settings of that
 CLI. A running daemon refuses each command of a CLI that has other environment
-or option settings. The error code is `daemon-settings-mismatch`. Then run
-`bitcaster-cli daemon restart` with the settings that you want.
+or option settings. The error code is `daemon-settings-mismatch`. The error
+names each setting that differs, by its option and environment variable, but
+not its value. Then run `bitcaster-cli daemon restart` with the settings that
+you want.
 
 The daemon signs its requests to the engine, for example its orders and its
 wallet backup writes. So it starts only with a trusted engine URL: the default
