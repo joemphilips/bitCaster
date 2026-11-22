@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { nip19 } from "nostr-tools";
 import { generateSecretKey, getPublicKey } from "nostr-tools/pure";
@@ -403,4 +403,75 @@ it("ignores a stale page status response after navigation", async () => {
     expect.objectContaining({ conditionId: second.conditionId }),
   );
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+it("keeps the target pending when imported owner growth invalidates its status read", async () => {
+  const target = local();
+  const neighbor = local();
+  neighbor.conditionId = "dd".repeat(32);
+  neighbor.status.binding.conditionId = neighbor.conditionId;
+  neighbor.title = "Another imported event";
+  type StatusPage = { rows: ReturnType<typeof local>[]; nextOffset: null };
+  let finishFirst!: (value: StatusPage) => void;
+  let finishCurrent!: (value: StatusPage) => void;
+  h.local
+    .mockImplementationOnce(
+      () =>
+        new Promise<StatusPage>((resolve) => {
+          finishFirst = resolve;
+        }),
+    )
+    .mockImplementationOnce(
+      () =>
+        new Promise<StatusPage>((resolve) => {
+          finishCurrent = resolve;
+        }),
+    );
+  const page = (rows: ReturnType<typeof local>[]) => (
+    <CreatorMarketActionsProvider conditionIds={rows.map((row) => row.conditionId)}>
+      {rows.map((row) => (
+        <section key={row.conditionId} aria-label={row.title}>
+          <CreatorMarketActions
+            conditionId={row.conditionId}
+            title={row.title}
+            onPublish={h.publication}
+            publicationBusy={false}
+          />
+        </section>
+      ))}
+    </CreatorMarketActionsProvider>
+  );
+  const view = render(page([target]));
+  expect(screen.getByRole("region", { name: target.title })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Close market" })).toBeNull();
+  view.rerender(page([target, neighbor]));
+  expect(h.local).toHaveBeenCalledTimes(2);
+  expect(h.local.mock.calls[1][0].conditionIds).toEqual([target.conditionId, neighbor.conditionId]);
+  expect(() => h.local.mock.calls[0][0].requireCurrent()).toThrow();
+  await act(async () => finishFirst({ rows: [target], nextOffset: null }));
+  // A stale completion must not enable the still-mounted target while the new page is pending.
+  expect(screen.getByRole("region", { name: target.title })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Close market" })).toBeNull();
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(h.publication).not.toHaveBeenCalled();
+  await act(async () =>
+    finishCurrent({
+      rows: [
+        { ...target, chosenOutcome: "YES", signed: true, publicationState: "published" },
+        neighbor,
+      ],
+      nextOffset: null,
+    }),
+  );
+  expect(
+    within(screen.getByRole("region", { name: target.title })).getByText(
+      "Outcome: YES · Published",
+    ),
+  ).toBeInTheDocument();
+  expect(
+    within(screen.getByRole("region", { name: neighbor.title })).getByRole("button", {
+      name: "Close market",
+    }),
+  ).toBeEnabled();
+  expect(h.publication).not.toHaveBeenCalled();
 });
