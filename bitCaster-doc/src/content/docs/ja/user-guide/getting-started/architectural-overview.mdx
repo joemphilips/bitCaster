@@ -1,0 +1,38 @@
+---
+title: 'アーキテクチャ'
+description: 'bitCaster を構成する部品と、それぞれの役割、オープンソースの範囲。'
+sidebar:
+  order: 2
+---
+
+import ArchitectureFlow from '../../../../../components/ArchitectureFlow.astro';
+
+bitCaster は、オープンなプロトコルでつながった、いくつかの独立した部品でできています。
+
+<ArchitectureFlow lang="ja" />
+
+## アプリ
+
+[アプリ](https://bitcaster.market/)はブラウザーで動き、基本的には単なる Cashu のウォレットです。トークンを動かす際はミントと、マーケットを読んだり注文を出したりする際はマッチングエンジンと通信します。
+
+## ミント
+
+ミントは ecash とマーケットのシェアを発行し、その裏付けとなる bitcoin を保管します。マーケットの結果判定時には、オラクルの署名を検証し、当たったシェアに払い出します。ベータ期間中のミントは、bitCaster が運営する 1 つだけです。ミントが稼働し続け、出金に応じることを、ユーザーは信頼することになります。
+
+ミントはオープンソースかつオープンプロトコルですので、誰でも実行・監査することができます。実装は [CDK の bitCaster 用フォーク](https://github.com/joemphilips/cdk/tree/ctf-range-migration)にあり、プロトコルは [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) と [NUT-CTF-settle](https://github.com/joemphilips/nuts/blob/nut-ctf-settle/CTF-settle.md) の 2 つの仕様書で定義されています。
+
+## マッチングエンジン
+
+マッチングエンジンは、マーケットごとの注文板を管理し、買い手と売り手をマッチングし、価格をリアルタイムで配信します。ウォレットを預かることはありません。
+
+マッチングエンジンへの注文にはロックされた資産が含まれています。「XX トークンを〇〇 sats と交換したい」というユーザーの意思を表すもので、ミントの保証するスマートコントラクトだと思うとわかりやすいです。
+
+## オラクル
+
+マーケットのオラクルは、そのマーケットを作成した人です。作成時に出来事をアナウンスし、出来事が終わったら結果に署名します。署名された結果はミントに渡され、ミントは署名を検証してから払い出しに応じます。
+
+オラクルは厳密には bitCaster の一部ではありませんが、bitCaster を使ってマーケット作成者（＝オラクル）になることもできます。
+
+## オープンソースの範囲
+
+アプリ、コマンドラインクライアント、ミント、プロトコル仕様は、すべて [bitCaster リポジトリ](https://github.com/joemphilips/bitCaster)で公開されています。資金に触れる部分はすべて自分で確認できます。マッチングエンジンだけはクローズドソースです。スパム対策の裏をかかれにくくするためです。ただし [API 仕様](https://github.com/joemphilips/bitCaster/tree/main/BitCaster.MatchingEngine.Contracts/specs)は公開されているので、誰でも対応するクライアントを作れます。

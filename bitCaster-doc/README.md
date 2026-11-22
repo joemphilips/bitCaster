@@ -1,49 +1,33 @@
-# Starlight Starter Kit: Basics
+# bitCaster documentation site
 
-[![Built with Starlight](https://astro.badg.es/v2/built-with-starlight/tiny.svg)](https://starlight.astro.build)
+The source of [bitcasterdoc.com](https://bitcasterdoc.com), built with [Astro Starlight](https://starlight.astro.build).
+A push to `main` that changes this directory deploys the site.
 
-```
-npm create astro@latest -- --template starlight
-```
-
-> 🧑‍🚀 **Seasoned astronaut?** Delete this file. Have fun!
-
-## 🚀 Project Structure
-
-Inside of your Astro + Starlight project, you'll see the following folders and files:
-
-```
-.
-├── public/
-├── src/
-│   ├── assets/
-│   ├── content/
-│   │   └── docs/
-│   └── content.config.ts
-├── astro.config.mjs
-├── package.json
-└── tsconfig.json
+```bash
+npm ci
+npm run dev      # local server at localhost:4321
+npm run build    # static build to dist/
 ```
 
-Starlight looks for `.md` or `.mdx` files in the `src/content/docs/` directory. Each file is exposed as a route based on its file name.
+## Two sections, two readers
 
-Images can be added to `src/assets/` and embedded in Markdown with a relative link.
+| Section | Directory | Reader | Style |
+| --- | --- | --- | --- |
+| For Humans | `src/content/docs/user-guide/` | A person who wants to understand bitCaster | Short, plain, natural prose |
+| For AI | `src/content/docs/technical/` | AI agents and client developers who must act correctly | Complete and precise, as long as needed |
 
-Static assets, like favicons, can be placed in the `public/` directory.
+New detail goes to For AI. A For Humans page changes only when the reader's mental model changes,
+and it stays below approximately 600 English words. Do not describe the interface step by step, and
+do not state a fact in both sections. The full rules are in
+[`.claude/rules/doc-site.md`](../.claude/rules/doc-site.md).
 
-## 🧞 Commands
+## Languages
 
-All commands are run from the root of the project, from a terminal:
+English pages are in `src/content/docs/`. Japanese pages are in `src/content/docs/ja/` at the same path.
+Change both together. Use [TERMINOLOGY.md](TERMINOLOGY.md) for product terms.
 
-| Command                   | Action                                           |
-| :------------------------ | :----------------------------------------------- |
-| `npm install`             | Installs dependencies                            |
-| `npm run dev`             | Starts local dev server at `localhost:4321`      |
-| `npm run build`           | Build your production site to `./dist/`          |
-| `npm run preview`         | Preview your build locally, before deploying     |
-| `npm run astro ...`       | Run CLI commands like `astro add`, `astro check` |
-| `npm run astro -- --help` | Get help using the Astro CLI                     |
+## Layout
 
-## 👀 Want to learn more?
-
-Check out [Starlight’s docs](https://starlight.astro.build/), read [the Astro documentation](https://docs.astro.build), or jump into the [Astro Discord server](https://astro.build/chat).
+- `astro.config.mjs` defines the sidebar and its translated labels.
+- `src/components/` holds the landing page components and the diagrams.
+- `src/assets/` holds images that pages import. `public/` holds static files.

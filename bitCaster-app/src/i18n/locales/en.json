@@ -917,6 +917,8 @@
     "ammFundingAmountPositive": "Enter an amount greater than 0 sats.",
     "ammFundingWalletRequired": "Set up a wallet before funding the market maker.",
     "ammFundingDisclosure": "These funds become the market's initial liquidity and are not returned.",
+    "ammFundingHelp": "What is this?",
+    "ammFundingHelpUrl": "https://bitcasterdoc.com/user-guide/core-concepts/funding-bot-liquidity/",
     "ammFundingDivisibilityError": "Enter an amount divisible by {{divisibility}} market subunits.",
     "ammFundingConfirm": "Request funding invoice",
     "ammFundingRequestingInvoice": "Requesting invoice...",

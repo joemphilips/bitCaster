@@ -1,11 +1,34 @@
 ---
-title: 'Atomic Settlement'
-description: 'What happens after you submit a trade, and how to handle a delay.'
+title: 'Orders: preparation, settlement, and recovery'
+description: 'Order rules, wallet preparation, settlement confirmation, refunds, and what the matching engine can see.'
 sidebar:
   order: 2
+  label: 'Orders'
 ---
 
-# Atomic Settlement
+## Order rules
+
+Choose a market, an outcome, and how many shares to buy or sell.
+Review the quoted cost or sale proceeds and the separate fees before confirming.
+The order cannot buy for more, or sell for less, than the trade value you accept.
+Equal or better execution is allowed. If the current orders give a worse deal,
+the whole order is refused. Review a fresh quote before confirming a new order.
+The estimated last fill price describes the last match in your proposed order.
+It is not a promise of the next orderbook midpoint.
+The form checks your entered quantity and its fees. It warns when the current
+orders cannot fill that quantity within your price limit. A very small buy
+can be refused although the order book shows depth: the market maker's fee
+must cover the mint fee. The form then says **Too few shares**. Buy more shares.
+A preview does not reserve liquidity. Your order fills in full
+within the limit or does not fill. It does not stay on the order book for later.
+Markets can have two outcomes, such as Yes and No, or up to eight named
+outcomes. You can fund your wallet through a Lightning invoice or with an
+existing Cashu token from the supported mint. The app shows amounts in sats.
+Small amounts can have decimal places. Compact balance and market summaries
+show these digits in smaller text. The amount stays exact.
+
+Check the selected outcome before confirming. In the example above, Alpha
+means that Alpha wins. Not Alpha means that Beta or Gamma wins.
 
 Submitting an order is not the same as completing a trade. The matching engine
 finds matching orders. The Cashu mint then exchanges the authorized funds and
@@ -85,7 +108,7 @@ another trade.
 
 Do not clear browser storage or delete the wallet's local records while an
 operation is unresolved. Your recovery phrase does not reconstruct every
-pending operation or refund record. See [wallet backup and recovery](/user-guide/getting-started/wallet-backup/).
+pending operation or refund record. See [wallet backup and recovery](/technical/reference/wallet-recovery/).
 
 If settlement does not complete, the authorized funds can become refundable
 after the authorization expires. A timeout alone does not make them available
@@ -95,7 +118,7 @@ Expiry reclaim unlocks the original asset. Regular ecash keeps its currency unit
 Conditional tokens keep their condition and outcome collection.
 The mint's swap fee still applies. The protocol calls this operation `refund`.
 The mint operator's discretionary compensation policy is separate.
-See [market resolution](/user-guide/core-concepts/resolution/).
+See [market resolution](/technical/reference/resolution/).
 
 The web app keeps wallet alerts until you dismiss them. One exception applies
 when the wallet finishes an operation. Its alerts that say the order result is
@@ -149,7 +172,7 @@ same time, the panel shows the specific reason. If your wallet was used in anoth
 the same time, a Participation Score penalty was charged. If another order in
 the same settlement failed, no penalty was charged for your order. In
 **Score history**, the penalty row is **Penalty: wallet used in two places**.
-See [Check for use in another browser](/user-guide/getting-started/wallet-backup/#check-for-use-in-another-browser).
+See [Check for use in another browser](/technical/reference/wallet-recovery/#check-for-use-in-another-browser).
 
 While the wallet finishes the trade that you just submitted, the trading panel
 shows **Updating your wallet…**. This includes the refund of a failed trade.
@@ -175,9 +198,3 @@ your refund key, or your other wallet proofs.
 The engine can select only the outputs your wallet authorized. It cannot
 redirect that value or extend the authorization. It can delay settlement,
 which can keep the authorized funds unavailable until a refund becomes valid.
-
-## Further reading
-
-See the [technical settlement protocol](/technical/protocol/atomic-swap/) for
-authorization rules, fill and group identifiers, conversion types, and client
-retry requirements.

@@ -1,8 +1,9 @@
 ---
-title: 'Wallet backup'
-description: 'What to keep safe, what the wallet backup can restore, and what remains private'
+title: 'Wallet backup and recovery'
+description: 'What the recovery phrase restores, what the encrypted wallet backup holds, and CLI emergency recovery.'
 sidebar:
-  order: 3
+  order: 4
+  label: 'Wallet recovery'
 ---
 
 Keep your 12-word recovery phrase offline and safe. Keep the wallet's local
@@ -31,12 +32,6 @@ reminder.
 
 Your Nostr private key (`nsec`) is separate from your wallet recovery phrase.
 The phrase does not restore this key.
-
-For a key created by the app, open Settings, then Nostr, then **View nsec**.
-You can back up the key even if your relay profile does not load.
-Confirm the warning before you view the key. Use **Copy nsec** only in private.
-The app blurs the key after 15 seconds and hides it after 60 seconds.
-Keep the copy safe. Do not share it with support or other users.
 
 For an imported key, keep your original backup. Settings does not show backup
 controls for imported keys.
@@ -240,30 +235,6 @@ or payment changes the wallet. If the app cannot read the local wallet yet,
 the tab can show the funds that asset monitoring reports. These amounts show
 in gray.
 
-**Positions Value** and **Total Value** come from asset monitoring. The app
-reads them again after the service accepts a wallet update or a trade settles.
-While the service still builds the values, the app reads them again a few
-times. The service limits how often one account can read these values. The app
-therefore reads them at most twice in quick succession, and then at most once
-every 15 seconds. Changes in that time share one read. **Total Value** can
-therefore update about 15 seconds after the Funds tab, or later while the
-service still prepares the values. If the service
-refuses a read because of its limit, the values show as loading and the wallet
-data stays on screen. The app reads again after the wait that the service
-states, or after a delay of up to one minute. If the service refuses the read
-again and again, the values show as unavailable. An updating or unavailable
-value does not mean that funds are lost. Positions without a known price remain
-visible. Use the wallet's payment or trade flow to check which funds it can
-spend.
-
-During portfolio updates or an unfinished claim, the app can keep the last
-successful value estimate on screen. It marks that estimate as out of date.
-The estimate is not an amount available to spend. The app keeps it only in
-memory. Reloading the page, changing the wallet, or changing the signed-in
-account clears it. An unavailable initial value does not become a saved
-estimate. Claim progress comes from the wallet's current operation, not from
-the saved estimate.
-
 ## Web app restore order
 
 When the web app needs proofs for one asset, it uses the proofs in local
@@ -272,12 +243,6 @@ browser storage. The wallet backup holds no proofs.
 The web app never checks every market of the mint. Broad recovery is
 available only through the CLI command
 `bitcaster wallet recover-seed --all-conditions`.
-
-If a trade needs Participation Score and locally available funds are insufficient,
-the app checks wallet recovery. If recovery is unavailable, it offers Retry
-or Add funds. This message does not mean that other wallet funds are lost.
-Retry checks recovery again within the existing recovery limits.
-Keep browser data while a trade or payment remains unresolved.
 
 Wallet recovery supports monetary tokens with unit `msat` only. The web app
 shows their value in sats: 1,000 msat equals 1 sat. Recovery does not convert
@@ -327,6 +292,25 @@ browser listed and that this browser never used, it restores that keyset.
 Removing a resolved losing position is local to this browser. A later restore
 of the wallet in another browser can show the position again. It has no value,
 and you can remove it again.
+
+## Replace a wallet or add a CLI profile
+
+To use another wallet, open the wallet section in Settings and import its
+recovery phrase. This replaces the active wallet; it does not add a second
+named profile. First, back up the current recovery phrase in Seed Backup.
+Replacement waits until no order, refund, send, deposit, or withdrawal is
+unfinished. It also waits until the matching engine confirms the wallet
+backup. To use the old wallet again, restore it from its recovery phrase.
+Local records that the mint cannot restore, such as completed order history,
+do not come back. Your Nostr account does not change. Activity stays
+associated with the wallet that performed it.
+
+The native CLI uses separate wallet profiles instead of replacing one in place.
+Select a profile with `--datadir`. Import seed and signer files only into a fresh
+profile. Keep the old profile while it has funds or unfinished work.
+Initialization imports keys; it does not recover funds.
+`wallet recover-seed` requires explicit acknowledgment of seed-candidate disclosure
+to the mint. See [CLI wallet and signer commands](/technical/#select-and-import-a-native-wallet-profile).
 
 ## CLI privacy and emergency recovery
 

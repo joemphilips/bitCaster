@@ -463,7 +463,18 @@ export function DepositStep({
 
       <div className="mb-4 flex gap-2 rounded-lg border border-slate-800 bg-slate-900 p-3 text-xs text-slate-300">
         <Info className="mt-0.5 h-4 w-4 shrink-0 text-slate-400" strokeWidth={1.75} />
-        <p>{t("marketCreation.ammFundingDisclosure")}</p>
+        <div>
+          <p>{t("marketCreation.ammFundingDisclosure")}</p>
+          {/* The user guide explains what funding buys and why it is not returned. */}
+          <a
+            href={t("marketCreation.ammFundingHelpUrl")}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mt-1 inline-block text-blue-400 hover:underline"
+          >
+            {t("marketCreation.ammFundingHelp")}
+          </a>
+        </div>
       </div>
 
       {/* A new payment after a credit hides the old completion while it runs. The

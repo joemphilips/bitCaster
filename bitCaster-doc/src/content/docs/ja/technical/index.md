@@ -6,6 +6,8 @@ sidebar:
 
 このセクションでは、bitCaster の公開技術動作を説明します。
 
+このセクションは、AI エージェントとクライアント開発者のために書かれています。網羅的で正確であることを優先しているため、意図的に長くなっています。bitCaster を理解したい方は、まず [bitCaster 入門](/ja/user-guide/getting-started/overview/)を読んでください。
+
 ## リクエストボディの制限
 
 ボディを持つリクエストは、同時アップロード数の上限に達すると、認証前に `429` を返される場合があります。
@@ -238,7 +240,7 @@ bitcaster-cli wallet portfolio --timeframe 1W --page-size 100
 bitcaster-cli wallet assets --cursor <nextCursor> --page-size 100
 ```
 
-`wallet positions` は、ウォレットの条件付きトークンの保有記録を読みます。
+`wallet positions` は、ウォレットのコンディショナルトークンの保有記録を読みます。
 `wallet portfolio` は、`localHoldings` と、それとは別の `monitoring` を返します。
 監視状態は `available`、`disabled`、`unavailable` のいずれかです。
 監視が無効または利用不可でも、ローカル残高がゼロになったわけではありません。
@@ -424,7 +426,7 @@ Ctrl+C で監視を終了します。注文やウォレット操作は取り消�
 ウォレットへの反映が確定するのは `credited` の場合だけです。`pending` は完了ではありません。
 未完了の受取記録には `wallet request recover <request-id>` を使います。
 監視を停止しても、リクエストや受信処理は取り消しません。
-受け取りの手順は [Ecash](/ja/user-guide/core-concepts/ecash/) を参照してください。
+受け取りの手順は[入金・出金・ミント手数料](/ja/technical/reference/payments/)を参照してください。
 
 ### ウォレットなしで注文を見積もる
 
@@ -659,7 +661,7 @@ bitcaster-cli wallet remove --preview-file "$preview_file" --acknowledge-loss
 この endpoint は最大 500 件のコメントを保持します。完全なコメント履歴ではありません。
 オラクルの結果説明は、有料の取引コメントとは別です。
 確定した約定の座標を提供しません。
-[マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)を参照してください。
+[結果の報告と報酬受取](/ja/technical/reference/resolution/)を参照してください。
 
 ### マーケットの購読
 

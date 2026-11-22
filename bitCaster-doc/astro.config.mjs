@@ -47,8 +47,9 @@ export default defineConfig({
       },
       sidebar: [
         {
-          label: 'User Guide',
-          translations: { ja: 'ユーザーガイド' },
+          // Short and plain: written for people. See README.md for the rule.
+          label: 'For Humans',
+          translations: { ja: '人間向け' },
           items: [
             {
               label: 'Getting Started',
@@ -63,9 +64,20 @@ export default defineConfig({
           ],
         },
         {
-          label: 'Technical',
-          translations: { ja: '技術ドキュメント' },
+          // Complete and precise: written for AI agents and client developers.
+          label: 'For AI',
+          translations: { ja: 'AI 向け' },
           items: [
+            {
+              label: 'CLI and API',
+              translations: { ja: 'CLI と API' },
+              link: '/technical/',
+            },
+            {
+              label: 'Reference',
+              translations: { ja: 'リファレンス' },
+              autogenerate: { directory: 'technical/reference' },
+            },
             {
               label: 'Architecture',
               translations: { ja: 'アーキテクチャ' },

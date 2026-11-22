@@ -1,0 +1,260 @@
+---
+// The four layers of money that a bitCaster position rests on, drawn from layer 1 at the top to layer 4.
+// Text is real markup, not an image, so both languages and both themes share one component.
+interface Props {
+  lang?: 'en' | 'ja'
+}
+
+const { lang = 'en' } = Astro.props
+
+const copy = {
+  en: {
+    label: 'The four layers of tokens that bitCaster uses',
+    inside: 'Inside bitCaster',
+    outside: 'The Bitcoin network',
+    layer: 'Layer',
+    layers: [
+      {
+        n: 1,
+        name: 'Bitcoin',
+        trait: 'Trustless · slow',
+        text: 'The base money. Final and censorship-resistant, but too slow and costly to trade on.',
+      },
+      {
+        n: 2,
+        name: 'Lightning',
+        trait: 'Fast · trustless · online only',
+        text: 'Essentially the same security model as layer 1, but hard to handle in many ways.',
+      },
+      {
+        n: 3,
+        name: 'Ordinary ecash',
+        trait: 'Fast · private · relies on the mint',
+        text: 'A plain Cashu token. It can be exchanged one-to-one for the bitcoin that the mint holds.',
+      },
+      {
+        n: 4,
+        name: 'Conditional tokens',
+        trait: 'Your shares',
+        text: 'Unique to bitCaster. A special ecash token that stands for your position in a market. It pays out only if its outcome wins.',
+      },
+    ],
+    bridges: ['open · close a channel', 'deposit · withdraw', 'buy · sell · claim payout'],
+    caption:
+      'Value moves toward layer 4 when you want to trade, and back toward layer 1 when you want to hold. bitCaster works in layers 3 and 4.',
+  },
+  ja: {
+    label: 'bitCaster が使う 4 層のトークン',
+    inside: 'bitCaster の内側',
+    outside: 'Bitcoin ネットワーク',
+    layer: 'レイヤー',
+    layers: [
+      {
+        n: 1,
+        name: 'Bitcoin',
+        trait: 'トラストレス · 低速',
+        text: '土台となるお金です。確定的で検閲に強い一方、取引に使うには遅く、手数料もかかります。',
+      },
+      {
+        n: 2,
+        name: 'Lightning',
+        trait: '高速 · トラストレス · オンライン必須',
+        text: '基本的にはレイヤー 1 と同じセキュリティモデルですが、扱いが難しい点が多々あります。',
+      },
+      {
+        n: 3,
+        name: '通常の Ecash トークン',
+        trait: '高速 · プライベート · ミントに依存',
+        text: '通常の Ecash トークンです。ミントの保管する Bitcoin と一対一で交換できます。',
+      },
+      {
+        n: 4,
+        name: 'コンディショナルトークン',
+        trait: 'あなたのシェア',
+        text: 'bitCaster 特有の機能です。マーケットでのポジションを表す特殊な Ecash トークンで、対応する結果が当たったときだけ払い出されます。',
+      },
+    ],
+    bridges: ['チャネルの開設 · 閉鎖', '入金 · 出金', '購入 · 売却 · 報酬受取'],
+    caption:
+      '取引したいときは価値をレイヤー 4 に向けて動かし、保有したいときはレイヤー 1 に向けて戻します。bitCaster が扱うのはレイヤー 3 と 4 です。',
+  },
+}[lang]
+
+const [l1, l2, l3, l4] = copy.layers
+const [channelBridge, lightningBridge, tradeBridge] = copy.bridges
+const outside = [l1, l2]
+const inside = [l3, l4]
+---
+
+<figure class="token-layers not-content" aria-label={copy.label}>
+  <div class="zone outside">
+    <p class="zone-label">{copy.outside}</p>
+    {
+      outside.map((l, i) => (
+        <>
+          {i > 0 && (
+            <p class="bridge">
+              <span aria-hidden="true">↑↓</span>
+              {channelBridge}
+            </p>
+          )}
+          <div class="layer">
+            <p class="tag">
+              {copy.layer} {l.n}
+            </p>
+            <p class="name">{l.name}</p>
+            <p class="trait">{l.trait}</p>
+            <p class="text">{l.text}</p>
+          </div>
+        </>
+      ))
+    }
+  </div>
+  <p class="bridge between"><span aria-hidden="true">↑↓</span>{lightningBridge}</p>
+  <div class="zone inside">
+    <p class="zone-label">{copy.inside}</p>
+    {
+      inside.map((l, i) => (
+        <>
+          {i > 0 && (
+            <p class="bridge">
+              <span aria-hidden="true">↑↓</span>
+              {tradeBridge}
+            </p>
+          )}
+          <div class="layer">
+            <p class="tag">
+              {copy.layer} {l.n}
+            </p>
+            <p class="name">{l.name}</p>
+            <p class="trait">{l.trait}</p>
+            <p class="text">{l.text}</p>
+          </div>
+        </>
+      ))
+    }
+  </div>
+  <figcaption>{copy.caption}</figcaption>
+</figure>
+
+<style>
+  .token-layers {
+    margin-block: 2rem;
+  }
+
+  p {
+    margin: 0;
+  }
+
+  .zone {
+    padding: 0.75rem;
+    border: 1px solid var(--bc-rule-strong);
+    border-radius: 0.75rem;
+  }
+
+  .zone.inside {
+    border-color: var(--sl-color-accent);
+    background: color-mix(in srgb, var(--sl-color-accent) 7%, transparent);
+  }
+
+  .zone-label {
+    margin-bottom: 0.625rem;
+    color: var(--bc-muted);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-xs);
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .inside .zone-label {
+    color: var(--sl-color-accent);
+  }
+
+  .layer {
+    display: grid;
+    grid-template-columns: minmax(0, 14rem) minmax(0, 1fr);
+    column-gap: 1.5rem;
+    align-items: start;
+    padding: 0.875rem 1rem;
+    border: 1px solid var(--bc-rule);
+    border-radius: 0.5rem;
+    background: var(--bc-surface);
+  }
+
+  .tag,
+  .name,
+  .trait {
+    grid-column: 1;
+  }
+
+  .tag {
+    color: var(--bc-muted);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-xs);
+  }
+
+  .name {
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-xl);
+    font-weight: 700;
+    line-height: 1.25;
+  }
+
+  .trait {
+    margin-top: 0.125rem;
+    color: var(--bc-amber);
+    font-size: var(--sl-text-xs);
+    line-height: 1.4;
+  }
+
+  .text {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+    align-self: center;
+    color: var(--sl-color-gray-2);
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+  }
+
+  .bridge {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    justify-content: center;
+    padding-block: 0.375rem;
+    color: var(--bc-muted);
+    font-family: var(--sl-font-mono);
+    font-size: var(--sl-text-xs);
+  }
+
+  .bridge span {
+    color: var(--sl-color-white);
+    font-size: var(--sl-text-sm);
+    letter-spacing: -0.15em;
+  }
+
+  .bridge.between {
+    padding-block: 0.5rem;
+  }
+
+  figcaption {
+    margin-top: 0.75rem;
+    color: var(--bc-muted);
+    font-size: var(--sl-text-sm);
+    line-height: 1.6;
+    text-align: center;
+  }
+
+  @media (max-width: 34rem) {
+    .layer {
+      grid-template-columns: minmax(0, 1fr);
+    }
+
+    .text {
+      grid-column: 1;
+      grid-row: auto;
+      margin-top: 0.5rem;
+    }
+  }
+</style>

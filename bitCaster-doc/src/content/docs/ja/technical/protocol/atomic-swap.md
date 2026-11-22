@@ -1,6 +1,6 @@
 ---
 title: "NUT-CTF Range Settlement"
-description: "bitCaster の条件付きトークン注文に対するミント調整型決済モデル。"
+description: "bitCaster のコンディショナルトークン注文に対するミント調整型決済モデル。"
 sidebar:
   order: 5
 ---

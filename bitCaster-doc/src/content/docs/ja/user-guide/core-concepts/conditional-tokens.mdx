@@ -1,0 +1,41 @@
+---
+title: 'コンディショナルトークン'
+description: 'マーケットのポジションとは何か、そしてそれを支える 4 層のトークン。'
+sidebar:
+  order: 1
+---
+
+import TokenLayers from '../../../../../components/TokenLayers.astro';
+
+**コンディショナルトークン**は、マーケットのシェアです。ほかの ecash トークンと同じように、保有し、送り、取引できます。違うのは、特定の結果が実現したときにだけ通常のトークンと交換できるようになる点です。別の結果になった場合交換は不可能なので、基本的には無価値になります。
+
+どのマーケットも、結果ごとに 1 種類ずつ用意されたこのトークンの集まりです。どれが当たりなのかは、オラクルの発表で決まります。
+
+## アイデアの由来
+
+Conditional Token Framework (CTF) は、[Gnosis](https://gnosis.io/) が Ethereum 向けに設計したもので、[Polymarket](https://polymarket.com/) が採用したことで、オンチェーン予測市場の標準になりました。預けるお金と、保有するポジションを切り分けるのが特徴です。
+
+bitCaster は、この考え方をそのままに、素材だけを変えました。ここでのポジションは、パブリックブロックチェーン上のトークンではありません。[NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) という Cashu プロトコルの拡張のもとで発行される、Cashu の ecash トークンです。考え方は同じですが、パフォーマンスとプライバシー面で優れています。
+
+## 4 層のトークン
+
+bitCaster のポジションは、ほかの 3 種類のお金の上に成り立っています。それぞれの層は、1 つ前の層の上に作られています。
+
+<TokenLayers lang="ja" />
+
+それぞれの層にはトレードオフがあります。Bitcoin は資産の保持には理想的ですが、取引に使うには重すぎます。Lightning は速くてトラストレスですが、オンラインでいる必要があり、残高を置いておく場所としては扱いにくいものです。ecash は、速くてプライベートな残高にはぴったりですが、「Yes が当たったときだけ払い出す」という条件は表現できません。それができるのがコンディショナルトークンです。そしてマーケットの結果判定が済めば役目を終え、ecash に戻ります。
+
+## 価格と払い出し
+
+当たったシェアは 1 枚につき 1 sat が払い出され、外れたシェアには何も支払われません。そのため、パーセントで表示されるシェアの価格は、マーケットが見込む確率を表します。
+
+たとえば Yes のシェアを 30% で 100 枚買うとします。支払いは 30 sats と手数料です。Yes が当たれば 100 sats を受け取り、外れれば何も受け取れません。途中で価格が 60% まで上がれば、結果を待たずに約 60 sats で売ることもできます。
+
+[オープン中のマーケット](https://bitcaster.market/markets)で、実際に試せます。
+
+## さらに読む
+
+- [Cashu](https://cashu.space/) は、レイヤー 3 と 4 を支える ecash プロトコルです。ecash そのものの入門には、[Bitcoin Design の ecash 解説](https://bitcoin.design/guide/how-it-works/ecash/introduction/)が向いています。
+- [NUT-CTF](https://github.com/joemphilips/nuts/blob/nuts_for_prediction_markets/CTF.md) は、レイヤー 4 の仕様書です。
+- [マーケットの結果判定](/ja/user-guide/core-concepts/resolution/)では、レイヤー 4 がレイヤー 3 に戻る仕組みを説明します。
+- 正確な取引ルールは[取引モデル](/ja/technical/architecture/trading-model/)にあります。
