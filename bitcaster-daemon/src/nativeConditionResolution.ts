@@ -6,6 +6,7 @@ import {
   type ConditionOracleWitness,
   type ConditionResolution,
   type OracleAttestationRelayFilter,
+  type OracleAttestationRelays,
   type RegisteredConditionAuthority,
 } from '@bitcaster-market/client-sdk/conditionResolution'
 import {
@@ -30,14 +31,9 @@ import { createWallet, type WalletOpsDependencies, type WalletOpsSecrets } from 
 
 /** One resolution read, with the mint and the relays, cannot hold its caller longer than this. */
 export const CONDITION_RESOLUTION_READ_TIMEOUT_MS = 10_000
-/** The most relays that one resolution reads. */
-const CONDITION_RESOLUTION_RELAYS_MAX = 8
 
-export type ConditionRelayQuery = (
-  url: string,
-  filter: OracleAttestationRelayFilter,
-  signal: AbortSignal,
-) => Promise<readonly unknown[]>
+/** One page query to one oracle relay. */
+export type ConditionRelayQuery = OracleAttestationRelays['query']
 
 /**
  * The result of a condition, read without the matching engine: the mint
@@ -85,17 +81,9 @@ export function createDaemonConditionResolution(input: {
         },
         relays: {
           when: options.readRelays,
-          read: async (filter) => {
-            const urls = (await input.relayUrls(conditionId)).slice(
-              0,
-              CONDITION_RESOLUTION_RELAYS_MAX,
-            )
-            // One relay that fails does not stop the reads of the others.
-            const pages = await Promise.all(
-              urls.map((url) => queryRelay(url, filter, options.signal).catch(() => [])),
-            )
-            return pages.flat()
-          },
+          urls: () => input.relayUrls(conditionId),
+          query: queryRelay,
+          signal: options.signal,
         },
       }),
   }
@@ -109,7 +97,12 @@ async function queryOracleRelay(
   return (
     await queryNativeActivityRelay(
       url,
-      { kinds: [...filter.kinds], authors: [...filter.authors], limit: filter.limit } as Filter,
+      {
+        kinds: [...filter.kinds],
+        authors: [...filter.authors],
+        limit: filter.limit,
+        ...(filter.until === undefined ? {} : { until: filter.until }),
+      } as Filter,
       { signal },
     )
   ).events
@@ -146,13 +139,31 @@ export function verifiedConditionEvidence(
   })
 }
 
-/** The oracle evidence of a position claim. A failed read leaves the claim unverified. */
-export async function resolveDaemonConditionOracleEvidence(input: {
+/** The RPC code of a claim that the mint cannot redeem now. Nothing is saved. */
+export const POSITION_CLAIM_RESULT_UNAVAILABLE_CODE = 'position-claim-result-unavailable'
+
+/**
+ * The daemon cannot read a result with which the mint redeems this claim. A
+ * redeem operation that the mint must refuse holds custody readiness and its
+ * proof reservations until the mint records a result. Thus the claim saves no
+ * operation. A later claim reads the result again.
+ */
+export class PositionClaimResultUnavailableError extends Error {
+  readonly code = POSITION_CLAIM_RESULT_UNAVAILABLE_CODE
+}
+
+/**
+ * The result of a position claim. The claim continues with verified oracle
+ * evidence, or with a result that the mint recorded: then the mint redeems an
+ * input without a witness. Each other state refuses the claim.
+ */
+export async function readDaemonPositionClaimResult(input: {
   readonly profile: DaemonProfile
   readonly fence: CustodyScopeFence
   readonly conditionId: string
+  readonly outcomeCollection: string
   readonly resolution: DaemonConditionResolution
-}): Promise<{ readonly evidence: ConditionOracleEvidence; readonly resolvedOutcome?: string }> {
+}): Promise<{ readonly evidence: ConditionOracleEvidence; readonly resolvedOutcome: string }> {
   let read: ConditionResolution
   try {
     read = await input.resolution.read(input.conditionId, {
@@ -160,7 +171,9 @@ export async function resolveDaemonConditionOracleEvidence(input: {
       readRelays: () => true,
     })
   } catch {
-    return { evidence: unverifiedConditionOracleEvidence('unavailable') }
+    throw new PositionClaimResultUnavailableError(
+      'the condition result could not be read from the mint; try again later',
+    )
   }
   const state = read.state
   switch (state.status) {
@@ -182,20 +195,44 @@ export async function resolveDaemonConditionOracleEvidence(input: {
           resolvedOutcome: state.attestedOutcome,
         }
       } catch {
-        return { evidence: unverifiedConditionOracleEvidence('invalid') }
+        // The evidence does not bind this claim. Only a mint record can replace it.
+        if (state.source !== 'mint') throw noVerifiedResult()
+        return mintRecordedResult(input.outcomeCollection, state.attestedOutcome, 'invalid')
       }
     case 'unverified':
-      return {
-        evidence: unverifiedConditionOracleEvidence(state.reason),
-        resolvedOutcome: state.reportedOutcome,
-      }
+      return mintRecordedResult(input.outcomeCollection, state.reportedOutcome, state.reason)
     case 'pending':
-      return { evidence: unverifiedConditionOracleEvidence('missing') }
+      throw noVerifiedResult()
     case 'refused':
-      return { evidence: unverifiedConditionOracleEvidence('invalid') }
+      throw new PositionClaimResultUnavailableError(
+        `the mint does not redeem this condition by an oracle result (${state.mintStatus})`,
+      )
     default:
       return assertNever(state)
   }
+}
+
+/**
+ * Without verified evidence the mint redeems by its recorded result. It must
+ * refuse a collection that does not hold that outcome, and an unverified
+ * refusal does not prove a loss. Thus that claim could never finish.
+ */
+function mintRecordedResult(
+  outcomeCollection: string,
+  recordedOutcome: string,
+  reason: 'missing' | 'invalid',
+): { readonly evidence: ConditionOracleEvidence; readonly resolvedOutcome: string } {
+  if (!outcomeCollection.split('|').includes(recordedOutcome))
+    throw new PositionClaimResultUnavailableError(
+      'the mint reports another outcome without verified oracle evidence',
+    )
+  return { evidence: unverifiedConditionOracleEvidence(reason), resolvedOutcome: recordedOutcome }
+}
+
+function noVerifiedResult(): PositionClaimResultUnavailableError {
+  return new PositionClaimResultUnavailableError(
+    'the condition has no verified result yet; try again later',
+  )
 }
 
 function assertNever(value: never): never {

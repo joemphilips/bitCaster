@@ -271,7 +271,7 @@ export async function retireDaemonConditionInventory(input: {
   const binding = inventoryBinding(input.fence, input.profile, conditionId)
   const current = await loadManagedConditionInventory(binding)
   let verified: ReturnType<typeof verifyResolution> | null = null
-  let registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
+  let currentResolution: () => Promise<ConditionResolution>
   if (current === null) {
     const read = await readResolutionWithin(
       input.resolution,
@@ -282,9 +282,17 @@ export async function retireDaemonConditionInventory(input: {
     if (read.state.status !== 'resolved')
       throw new Error('condition resolution attestation is not available')
     verified = verifyResolution(binding, read.registeredAuthority, read.state)
-    registeredAuthority = async () => read.registeredAuthority
+    currentResolution = async () => read
   } else {
-    registeredAuthority = once(() => readRegisteredAuthority(input.resolution, conditionId))
+    // A started retirement reads only the mint. An unreadable record throws before a new page.
+    currentResolution = once(() =>
+      readResolutionWithin(
+        input.resolution,
+        conditionId,
+        CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+        () => false,
+      ),
+    )
   }
   const resolvedOutcome =
     current === null
@@ -319,11 +327,11 @@ export async function retireDaemonConditionInventory(input: {
   if (persisted.state.state !== 'retiring') {
     throw new Error('managed condition retirement state is invalid')
   }
-  await resumePreparedRetirementOperations({ ...input, persisted, registeredAuthority })
+  await resumePreparedRetirementOperations({ ...input, persisted, currentResolution })
   while (true) {
     const page = await nextRetirementPage(conditionId, input.profile.mintUrl)
     if (page === null) break
-    await redeemRetirementPage({ ...input, persisted, page, registeredAuthority })
+    await redeemRetirementPage({ ...input, persisted, page, currentResolution })
   }
   await completeManagedConditionRetirement({
     fence: input.fence,
@@ -331,29 +339,6 @@ export async function retireDaemonConditionInventory(input: {
     observedAtMs: Date.now(),
   })
   return result(conditionId, 'retired', preview)
-}
-
-/**
- * The registered announcements of a started retirement, read from the mint.
- * An unreadable registration only removes the optional witness: the mint
- * then uses its recorded result.
- */
-async function readRegisteredAuthority(
-  resolution: DaemonConditionResolution,
-  conditionId: string,
-): Promise<RegisteredConditionAuthority | undefined> {
-  try {
-    return (
-      await readResolutionWithin(
-        resolution,
-        conditionId,
-        CONDITION_RESOLUTION_READ_TIMEOUT_MS,
-        () => false,
-      )
-    ).registeredAuthority
-  } catch {
-    return undefined
-  }
 }
 
 function once<T>(read: () => Promise<T>): () => Promise<T> {
@@ -368,7 +353,8 @@ async function resumePreparedRetirementOperations(input: {
   readonly fence: CustodyScopeFence
   readonly walletDependencies?: WalletOpsDependencies
   readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
-  readonly registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
+  /** The current mint record. A page is prepared only when the mint can redeem it. */
+  readonly currentResolution: () => Promise<ConditionResolution>
 }): Promise<void> {
   const operations = Object.values((await ensureState()).proofOperations)
     .filter((operation) => operation.kind === 'ctf-redeem' && operation.state === 'prepared')
@@ -400,7 +386,8 @@ async function redeemRetirementPage(input: {
   readonly walletDependencies?: WalletOpsDependencies
   readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
   readonly page: RetirementPage
-  readonly registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
+  /** The current mint record. A page is prepared only when the mint can redeem it. */
+  readonly currentResolution: () => Promise<ConditionResolution>
 }): Promise<void> {
   const resolution = retirementResolution(input.persisted)
   const operationId = retirementOperationId({
@@ -451,11 +438,12 @@ async function redeemRetirementPage(input: {
     | readonly DurableCustodyMintKeysetAuthority[]
     | undefined
   if (existing === null) {
-    const registered = await input.registeredAuthority()
-    const candidate =
-      registered === undefined ? undefined : frozenRetirementContext(input, registered)
-    if (candidate !== undefined) {
-      context = candidate
+    // Prepare a new page only when the mint can redeem it. An unreadable mint record throws here.
+    const current = await input.currentResolution()
+    context = frozenRetirementContext(input, current.registeredAuthority)
+    if (context === undefined) {
+      assertMintRecordsOutcome(current.state, resolution.resolvedOutcome)
+    } else {
       inputKeysets = [
         await readNativePositionClaimInputKeyset(
           input.profile.mintUrl,
@@ -504,8 +492,8 @@ async function redeemRetirementPage(input: {
 /**
  * The redemption context of a started retirement: its frozen witness, verified
  * again against the current mint registration. A witness that does not verify
- * is omitted, so the mint uses its recorded result. A changed authority stops
- * the retirement.
+ * is omitted, so the mint must use its recorded result. A changed authority
+ * stops the retirement.
  */
 function frozenRetirementContext(
   input: {
@@ -540,6 +528,29 @@ function frozenRetirementContext(
   )
     throw new Error('retirement current evidence differs from frozen inventory resolution')
   return verified.context
+}
+
+/**
+ * Without a witness the mint redeems only by its recorded result (NUT-CTF
+ * redemption rule 4). Prepare such a page only when the mint records the frozen
+ * outcome. Otherwise the operation could never finish, and the unfinished
+ * retirement would hold the funds commands.
+ */
+function assertMintRecordsOutcome(state: ConditionResolution['state'], outcome: string): void {
+  switch (state.status) {
+    case 'resolved':
+      if (state.source === 'mint' && state.attestedOutcome === outcome) return
+      break
+    case 'unverified':
+      if (state.reportedOutcome === outcome) return
+      break
+    case 'pending':
+    case 'refused':
+      break
+    default:
+      assertNever(state)
+  }
+  throw new Error('condition retirement has no verified witness and no mint result to redeem')
 }
 
 function retirementOperationStore(input: {

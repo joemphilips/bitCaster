@@ -6,6 +6,8 @@ import { test } from 'node:test'
 import {
   attestableCtfConditionFixture,
   fixtureOracleKey,
+  nip01RelayAnswerFixture,
+  otherCtfAttestationEventsFixture,
   signFixtureOutcome,
   signedCtfAttestationEventFixture,
 } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
@@ -16,6 +18,7 @@ import { addAvailableProofs, readState } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { retireResolvedDaemonConditions } from '../src/managedConditionRetirement.ts'
 import { createDaemonConditionResolution } from '../src/nativeConditionResolution.ts'
+import type { OracleAttestationRelayFilter } from '@bitcaster-market/client-sdk/conditionResolution'
 import { dispatch } from '../src/server.ts'
 import { CTF_KEYSET_ID, FakeRetirementWallet, proof } from './support/retirementWallet.ts'
 
@@ -26,7 +29,13 @@ const BEFORE_MATURITY_MS = MATURITY_EPOCH * 1000 - 1
 const AFTER_MATURITY_MS = MATURITY_EPOCH * 1000 + 1
 const EVENT_ID = 'mint-first-retirement'
 
-async function createFixture(mint: 'attested' | 'pending') {
+type RelayAnswer = (filter: OracleAttestationRelayFilter) => readonly unknown[]
+
+async function createFixture(
+  mint: 'attested' | 'pending',
+  /** The relays in order of preference. By default one NIP-01 relay serves `relayEvents`. */
+  relays?: Record<string, RelayAnswer>,
+) {
   const previous = process.env.BITCASTER_DAEMON_HOME
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-mint-first-'))
   const directory = join(root, 'profile')
@@ -82,6 +91,10 @@ async function createFixture(mint: 'attested' | 'pending') {
   }
   const relayEvents: unknown[] = []
   const relayReads: string[] = []
+  const answers = relays ?? {
+    'wss://relay.example': (filter: OracleAttestationRelayFilter) =>
+      nip01RelayAnswerFixture(relayEvents, filter),
+  }
   const walletDependencies = {
     createCashuWallet: () => wallet,
     resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
@@ -91,10 +104,10 @@ async function createFixture(mint: 'attested' | 'pending') {
     profile,
     secrets: { walletSeedHex: SEED },
     walletDependencies,
-    relayUrls: async () => ['wss://relay.example'],
-    queryRelay: async (url) => {
+    relayUrls: async () => Object.keys(answers),
+    queryRelay: async (url, filter) => {
       relayReads.push(url)
-      return [...relayEvents]
+      return answers[url]!(filter)
     },
   })
   return {
@@ -264,6 +277,47 @@ test('after the announced maturity the scan keeps reading until the attestation 
       discoveryFailures: [],
       nextMaturityMs: null,
     })
+    assert.equal(fixture.wallet.redeemCalls, 1)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('the scan pages back past newer attestations of the same oracle key', async () => {
+  const fixture = await createFixture('pending')
+  try {
+    // The creator key attests each of its markets. 40 newer attestations hide this one
+    // from the first page.
+    const attestation = validRelayAttestation(fixture.oracle.signature)
+    fixture.relayEvents.push(
+      attestation,
+      ...otherCtfAttestationEventsFixture(40, attestation.created_at),
+    )
+    assert.deepEqual((await fixture.discover(AFTER_MATURITY_MS)).results, [
+      { conditionId: fixture.conditionId, error: null },
+    ])
+    assert.deepEqual(fixture.wallet.witnesses, [
+      JSON.stringify({ oracle_sigs: [fixture.oracleSig] }),
+    ])
+    // Pages of 16 from the newest event: 40 to 25, 25 to 10, then 10 to the attestation.
+    assert.equal(fixture.relayReads.length, 3)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('a relay that ignores the limit does not crowd out the attestation on another relay', async () => {
+  // The fixture oracle signs YES with the announced nonce.
+  const attestation = validRelayAttestation(signFixtureOutcome('YES'))
+  const flood = otherCtfAttestationEventsFixture(200, attestation.created_at)
+  const fixture = await createFixture('pending', {
+    'wss://flood.example': () => flood,
+    'wss://relay.example': (filter) => nip01RelayAnswerFixture([attestation], filter),
+  })
+  try {
+    assert.deepEqual((await fixture.discover(AFTER_MATURITY_MS)).results, [
+      { conditionId: fixture.conditionId, error: null },
+    ])
     assert.equal(fixture.wallet.redeemCalls, 1)
   } finally {
     await fixture.dispose()

@@ -10,10 +10,24 @@ import {
 } from './managedConditionInventory.ts'
 import { readSignedOracleEvent } from './oracleResolutionExplanation.ts'
 
-/** The most kind-89 events that one relay query asks for. */
+/** The most kind-89 events that one relay page asks for. */
 export const ORACLE_ATTESTATION_RELAY_EVENTS_MAX = 16
-/** The most relay events that one resolution examines. */
-const RELAY_EVENTS_EXAMINED_MAX = 128
+/**
+ * The most pages that one relay read asks for. The oracle key of a creator
+ * attests each of its markets, so newer attestations can fill the first page.
+ * Each later page repeats the oldest event of the page before it, so the read
+ * reaches the 121 newest events of the relay.
+ */
+export const ORACLE_ATTESTATION_RELAY_PAGES_MAX = 8
+/** The most relays that one resolution reads. */
+export const ORACLE_ATTESTATION_RELAYS_MAX = 8
+/** One relay read, with all of its pages, stops after this time. */
+export const ORACLE_ATTESTATION_RELAY_READ_TIMEOUT_MS = 5_000
+/** The most relay events that one resolution examines: each page of each relay. */
+const RELAY_EVENTS_EXAMINED_MAX =
+  ORACLE_ATTESTATION_RELAYS_MAX *
+  ORACLE_ATTESTATION_RELAY_PAGES_MAX *
+  ORACLE_ATTESTATION_RELAY_EVENTS_MAX
 /** A kind-89 content holds at most an 8 KiB attestation body as base64. */
 const ATTESTATION_CONTENT_CHARS_MAX = 11_000
 
@@ -69,6 +83,24 @@ export interface OracleAttestationRelayFilter {
   readonly kinds: readonly [89]
   readonly authors: readonly string[]
   readonly limit: number
+  /** NIP-01: only events with `created_at <= until`. A later page uses it to read older events. */
+  readonly until?: number
+}
+
+/** The oracle relays of one resolution. Each relay is read independently. */
+export interface OracleAttestationRelays {
+  /** Decide from the announced maturity whether a pending condition is worth a relay read. */
+  readonly when: (maturityEpoch: number) => boolean
+  /** The relays in order of preference. The read uses the first `ORACLE_ATTESTATION_RELAYS_MAX`. */
+  readonly urls: () => Promise<readonly string[]>
+  /** One page query to one relay. */
+  readonly query: (
+    url: string,
+    filter: OracleAttestationRelayFilter,
+    signal: AbortSignal,
+  ) => Promise<readonly unknown[]>
+  /** Stops each relay read. */
+  readonly signal?: AbortSignal
 }
 
 type MintAttestationStatus = 'pending' | 'attested' | 'expired' | 'violation'
@@ -153,14 +185,19 @@ function mintAttestationStatus(raw: unknown): MintAttestationStatus {
   }
 }
 
-/** Ask the oracle relays for the kind-89 events of the registered oracle keys. */
+/**
+ * Ask a relay for the kind-89 events of the registered oracle keys. A later
+ * page sets `until` to the oldest event of the page before it.
+ */
 export function oracleAttestationRelayFilter(
   registered: RegisteredConditionAuthority,
+  until?: number,
 ): OracleAttestationRelayFilter {
   return {
     kinds: [89],
     authors: registered.oracles.map((oracle) => oracle.oraclePublicKey),
     limit: ORACLE_ATTESTATION_RELAY_EVENTS_MAX,
+    ...(until === undefined ? {} : { until }),
   }
 }
 
@@ -204,6 +241,41 @@ export function selectRelayConditionAttestation(input: {
   )
 }
 
+/**
+ * Decode a relay event that names the registered event, before any signature
+ * check. Most kind-89 events of a creator key attest its other markets, so this
+ * check keeps a long read cheap. The result is not evidence.
+ */
+function registeredEventAttestation(
+  registered: RegisteredConditionAuthority,
+  raw: unknown,
+): {
+  readonly oracle: RegisteredConditionAuthority['oracles'][number]
+  readonly decoded: ReturnType<typeof decodeCtfEnumAttestation>
+} | null {
+  const event = eventFields(raw)
+  const oracle = registered.oracles.find((candidate) => candidate.oraclePublicKey === event.pubkey)
+  if (
+    event.kind !== 89 ||
+    oracle === undefined ||
+    typeof event.content !== 'string' ||
+    event.content.length > ATTESTATION_CONTENT_CHARS_MAX
+  )
+    return null
+  try {
+    const decoded = decodeCtfEnumAttestation(base64ToHex(event.content))
+    if (
+      decoded.eventId !== registered.eventId ||
+      decoded.oraclePublicKey !== oracle.oraclePublicKey ||
+      !registered.outcomes.includes(decoded.outcome)
+    )
+      return null
+    return { oracle, decoded }
+  } catch {
+    return null
+  }
+}
+
 function verifiedRelayAttestation(
   registered: RegisteredConditionAuthority,
   raw: unknown,
@@ -213,21 +285,13 @@ function verifiedRelayAttestation(
   readonly signature: string
   readonly outcome: string
 } | null {
+  const candidate = registeredEventAttestation(registered, raw)
+  if (candidate === null) return null
+  const { oracle, decoded } = candidate
   try {
     const event = readSignedOracleEvent(JSON.stringify(raw), 89)
     if (seen.has(event.id)) return null
     seen.add(event.id)
-    const oracle = registered.oracles.find(
-      (candidate) => candidate.oraclePublicKey === event.pubkey,
-    )
-    if (oracle === undefined || event.content.length > ATTESTATION_CONTENT_CHARS_MAX) return null
-    const decoded = decodeCtfEnumAttestation(base64ToHex(event.content))
-    if (
-      decoded.eventId !== registered.eventId ||
-      decoded.oraclePublicKey !== oracle.oraclePublicKey ||
-      !registered.outcomes.includes(decoded.outcome)
-    )
-      return null
     // One signature on the announced nonce of this oracle.
     verifyDlcOracleResolution(
       { outcomes: registered.outcomes, threshold: 1, oracles: [oracle] },
@@ -274,11 +338,7 @@ export async function resolveConditionResult(input: {
   readonly allowInsecureLoopbackHttp: boolean
   /** `GET /v1/conditions/{condition_id}?include_oracle_sigs=true` */
   readonly readMintCondition: () => Promise<unknown>
-  readonly relays?: {
-    /** Decide from the announced maturity whether a pending condition is worth a relay read. */
-    readonly when: (maturityEpoch: number) => boolean
-    readonly read: (filter: OracleAttestationRelayFilter) => Promise<readonly unknown[]>
-  }
+  readonly relays?: OracleAttestationRelays
 }): Promise<ConditionResolution> {
   const mint = readMintConditionResolution({
     condition: await input.readMintCondition(),
@@ -293,11 +353,11 @@ export async function resolveConditionResult(input: {
       return mint
     case 'pending':
       if (input.relays === undefined || !input.relays.when(mint.maturityEpoch)) return mint
-      return withRelayResult(mint, input.relays.read)
+      return withRelayResult(mint, input.relays)
     case 'unverified':
       // The mint reports a result, so the oracle is due. Look for its evidence.
       if (input.relays === undefined) return mint
-      return withRelayResult(mint, input.relays.read, state.reportedOutcome)
+      return withRelayResult(mint, input.relays, state.reportedOutcome)
     default:
       return assertNever(state)
   }
@@ -305,23 +365,115 @@ export async function resolveConditionResult(input: {
 
 async function withRelayResult(
   mint: ConditionResolution,
-  read: (filter: OracleAttestationRelayFilter) => Promise<readonly unknown[]>,
+  relays: OracleAttestationRelays,
   reportedOutcome?: string,
 ): Promise<ConditionResolution> {
-  let events: readonly unknown[]
+  let urls: readonly string[]
   try {
-    events = await read(oracleAttestationRelayFilter(mint.registeredAuthority))
+    urls = (await relays.urls()).slice(0, ORACLE_ATTESTATION_RELAYS_MAX)
   } catch {
-    // An unavailable relay is no evidence. The mint state stays.
+    // Without a relay list there is no relay evidence. The mint state stays.
     return mint
   }
+  // A relay that fails or stalls does not stop the reads of the others.
+  const events = await Promise.all(
+    urls.map((url) => readRelayAttestationEvents(relays, url, mint.registeredAuthority)),
+  )
   const result = selectRelayConditionAttestation({
     registeredAuthority: mint.registeredAuthority,
-    events,
+    events: events.flat(),
     reportedOutcome,
   })
   if (result === null) return mint
   return { ...mint, state: { status: 'resolved', source: 'relay', ...result } }
+}
+
+/**
+ * Read one relay from its newest event backward. Each page asks for the events
+ * at or before the oldest event of the page before it. The read stops at a
+ * short page, at a page without a new event, at a valid attestation of the
+ * registered event, after `ORACLE_ATTESTATION_RELAY_PAGES_MAX` pages, or at its
+ * deadline. A failed or late page ends the read. The earlier pages stay.
+ */
+async function readRelayAttestationEvents(
+  relays: OracleAttestationRelays,
+  url: string,
+  registered: RegisteredConditionAuthority,
+): Promise<unknown[]> {
+  const deadline = relayReadDeadline(relays.signal)
+  const events: unknown[] = []
+  const ids = new Set<string>()
+  let until: number | undefined
+  try {
+    for (let page = 0; page < ORACLE_ATTESTATION_RELAY_PAGES_MAX; page += 1) {
+      const filter = oracleAttestationRelayFilter(registered, until)
+      let received: readonly unknown[]
+      try {
+        received = await untilAborted(relays.query(url, filter, deadline.signal), deadline.signal)
+      } catch {
+        break
+      }
+      // A relay that ignores the limit cannot crowd out the other relays.
+      const answer = Array.isArray(received) ? received.slice(0, filter.limit) : []
+      let fresh = 0
+      let oldest: number | undefined
+      let attested = false
+      for (const raw of answer) {
+        const event = eventFields(raw)
+        if (typeof event.id !== 'string' || ids.has(event.id)) continue
+        ids.add(event.id)
+        fresh += 1
+        events.push(raw)
+        const createdAt = event.created_at
+        if (Number.isSafeInteger(createdAt) && (createdAt as number) >= 0)
+          oldest = Math.min(oldest ?? Infinity, createdAt as number)
+        attested ||= verifiedRelayAttestation(registered, raw, new Set()) !== null
+      }
+      if (answer.length < filter.limit || fresh === 0 || attested || oldest === undefined) break
+      until = oldest
+    }
+  } finally {
+    deadline.dispose()
+  }
+  return events
+}
+
+/** The deadline of one relay read. The caller signal also stops it. */
+function relayReadDeadline(caller: AbortSignal | undefined): {
+  readonly signal: AbortSignal
+  dispose(): void
+} {
+  const controller = new AbortController()
+  const timer = setTimeout(
+    () => controller.abort(new Error('oracle relay read timed out')),
+    ORACLE_ATTESTATION_RELAY_READ_TIMEOUT_MS,
+  )
+  const stop = () => controller.abort(caller?.reason)
+  if (caller?.aborted) stop()
+  else caller?.addEventListener('abort', stop, { once: true })
+  return {
+    signal: controller.signal,
+    dispose: () => {
+      clearTimeout(timer)
+      caller?.removeEventListener('abort', stop)
+    },
+  }
+}
+
+/** A query that ignores its signal still cannot hold the read. */
+function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  return Promise.race([
+    work,
+    new Promise<never>((_resolve, reject) => {
+      if (signal.aborted) reject(signal.reason)
+      else signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+    }),
+  ])
+}
+
+/** The fields of an untrusted relay event. A value that is not an object has none. */
+function eventFields(raw: unknown): Readonly<Record<string, unknown>> {
+  return typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
 }
 
 function base64ToHex(content: string): string {

@@ -213,6 +213,7 @@ import { claimDaemonPosition, recoverDaemonPositionClaims } from './nativePositi
 import {
   createDaemonConditionResolution,
   daemonOracleRelayUrls,
+  PositionClaimResultUnavailableError,
   type DaemonConditionResolution,
 } from './nativeConditionResolution.ts'
 import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePositionRemove.ts'
@@ -1168,7 +1169,10 @@ async function dispatchCommand(
         })
         if (result.legs.some((leg) => leg.state === 'pending')) deps.triggerCustodyRecovery?.()
         return { ok: true, result }
-      } catch {
+      } catch (error) {
+        // The mint cannot redeem the claim now. The claim saved nothing, so the user can retry.
+        if (error instanceof PositionClaimResultUnavailableError)
+          return { ok: false, code: error.code, error: error.message }
         return {
           ok: false,
           code: 'position-claim-refused',

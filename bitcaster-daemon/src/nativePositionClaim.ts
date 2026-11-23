@@ -78,7 +78,7 @@ import {
   type ConditionOracleResolutionContext,
 } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import {
-  resolveDaemonConditionOracleEvidence,
+  readDaemonPositionClaimResult,
   type DaemonConditionResolution,
 } from './nativeConditionResolution.ts'
 
@@ -105,7 +105,7 @@ export async function claimDaemonPosition(
   }
   if (result.legs.some((leg) => leg.state === 'pending')) return result
   const asset = positionAsset(position)
-  let authority: Awaited<ReturnType<typeof resolveDaemonConditionOracleEvidence>> | undefined
+  let authority: Awaited<ReturnType<typeof readDaemonPositionClaimResult>> | undefined
   while (true) {
     const records = await readPositionClaimProofPageFenced({
       mintUrl: input.profile.mintUrl,
@@ -113,12 +113,8 @@ export async function claimDaemonPosition(
       mutation: mutation(input),
     })
     if (records.length === 0) return result
-    if (authority === undefined) {
-      authority = await resolveDaemonConditionOracleEvidence({
-        ...input,
-        conditionId: position.conditionId,
-      })
-    }
+    // Read before the first new operation. A result that the mint cannot redeem refuses the claim.
+    authority ??= await readDaemonPositionClaimResult({ ...input, ...position })
     const proofs = records.map(({ proof }) => normalizeProof(proof))
     const retainedOperationKey = buildKeysetRedeemOperationId({
       mintUrl: input.profile.mintUrl,
@@ -139,7 +135,7 @@ export async function claimDaemonPosition(
         ...position,
         outcomeSetId: position.outcomeCollection,
         outcomeKeysetId: proofs[0]!.id,
-        outcome: authority.resolvedOutcome ?? position.outcomeCollection,
+        outcome: authority.resolvedOutcome,
         oracleWitness:
           authority.evidence.status === 'verified' ? authority.evidence.canonicalOracleWitness : '',
         ...(authority.evidence.status === 'verified'

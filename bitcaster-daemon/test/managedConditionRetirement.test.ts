@@ -50,6 +50,8 @@ import {
   unavailableResolution,
   type ConditionResultFixture,
 } from './support/conditionResolutionStub.ts'
+import type { ConditionResolution } from '@bitcaster-market/client-sdk/conditionResolution'
+import type { DaemonConditionResolution } from '../src/nativeConditionResolution.ts'
 
 const roots: string[] = []
 const REGULAR_KEY = bytesToHex(
@@ -333,6 +335,113 @@ test('a retirement failure reports a mint answer only as fixed text', async () =
         nextMaturityMs: null,
       })
     }
+  } finally {
+    await dispose()
+  }
+})
+
+/** Start a retirement, then fail before its first page is prepared. */
+async function startRetirementWithoutPage(
+  fixture: Awaited<ReturnType<typeof createRetirementFixture>>,
+): Promise<void> {
+  const getKeys = fixture.wallet.mint.getKeys
+  fixture.wallet.mint.getKeys = async () => {
+    throw new Error('mint keys are unavailable')
+  }
+  await assert.rejects(
+    retireDaemonConditionInventory({ ...fixture.common, acknowledge: true }),
+    /mint keys are unavailable/,
+  )
+  fixture.wallet.mint.getKeys = getKeys
+  assert.equal(await retirementRedeemOperations(), 0)
+}
+
+async function retirementRedeemOperations(): Promise<number> {
+  return Object.values((await readState())!.proofOperations).filter(
+    (operation) => operation.metadata.purpose === 'managed-condition-retirement',
+  ).length
+}
+
+/** The same registration with another announced nonce. The frozen witness does not verify. */
+function changedNonce(
+  result: ConditionResultFixture,
+  oraclePublicKey: string,
+): ConditionResultFixture {
+  return {
+    ...result,
+    registeredAuthority: {
+      ...result.registeredAuthority,
+      oracles: [{ ...result.registeredAuthority.oracles[0]!, noncePoint: oraclePublicKey }],
+    },
+  }
+}
+
+function mintRecord(
+  result: ConditionResultFixture,
+  state: ConditionResolution['state'],
+): DaemonConditionResolution {
+  return {
+    read: async (id, options) => ({
+      ...(await pendingResolution(result).read(id, options)),
+      state,
+    }),
+  }
+}
+
+test('a started retirement prepares no page that the mint cannot redeem', async () => {
+  const fixture = await createRetirementFixture(1)
+  const { common, result, wallet, oraclePublicKey, dispose } = fixture
+  try {
+    await startRetirementWithoutPage(fixture)
+    const changed = changedNonce(result, oraclePublicKey)
+    for (const [resolution, refusal] of [
+      // The mint does not answer, so the daemon cannot verify the frozen witness.
+      [unavailableResolution, /mint condition information is unavailable/],
+      // The witness does not verify, and the mint has no result to use instead.
+      [pendingResolution(changed), /no mint result/],
+      // The mint records another outcome, so it cannot redeem this page without a witness.
+      [
+        mintRecord(changed, { status: 'unverified', reportedOutcome: 'NO', reason: 'missing' }),
+        /no mint result/,
+      ],
+    ] as const) {
+      await assert.rejects(
+        retireDaemonConditionInventory({ ...common, acknowledge: true, resolution }),
+        refusal,
+      )
+      assert.equal(wallet.redeemCalls, 0)
+      assert.equal(await retirementRedeemOperations(), 0)
+    }
+    // A readable registration verifies the frozen witness again. Each input carries it.
+    const retired = await retireDaemonConditionInventory({
+      ...common,
+      acknowledge: true,
+      resolution: pendingResolution(result),
+    })
+    assert.equal(retired.state, 'retired')
+    assert.deepEqual(wallet.witnesses, [JSON.stringify(result.oracleWitness)])
+  } finally {
+    await dispose()
+  }
+})
+
+test('a started retirement omits an unverifiable witness only when the mint records its outcome', async () => {
+  const fixture = await createRetirementFixture(1)
+  const { common, result, wallet, oraclePublicKey, dispose } = fixture
+  try {
+    await startRetirementWithoutPage(fixture)
+    const retired = await retireDaemonConditionInventory({
+      ...common,
+      acknowledge: true,
+      resolution: mintRecord(changedNonce(result, oraclePublicKey), {
+        status: 'unverified',
+        reportedOutcome: 'YES',
+        reason: 'missing',
+      }),
+    })
+    assert.equal(retired.state, 'retired')
+    // The mint uses its recorded result for an input without a witness.
+    assert.deepEqual(wallet.witnesses, [undefined])
   } finally {
     await dispose()
   }
@@ -623,8 +732,8 @@ test('daemon previews then atomically retires one verified condition inventory',
     ...common,
     conditionId: retryConditionId,
     acknowledge: true,
-    // A started retirement does not need the result again. Without the registration
-    // it omits the witness, and the mint uses its recorded result.
+    // The prepared page replays its saved witness and request. It does not read the mint
+    // record again, so an unavailable record does not stop it.
     resolution: unavailableResolution,
     walletDependencies: {
       createCashuWallet: () => restartWallet,

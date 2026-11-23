@@ -684,6 +684,12 @@ The position's face value is not a guaranteed payout.
 A `losing` result retains the holding and its proof history.
 This claim command does not remove a losing holding.
 
+The command reads the result from the mint, or else from the oracle attestation
+on the configured Nostr relays. It does not need the engine.
+When no result is readable yet, the command refuses with the code
+`position-claim-result-unavailable` and saves nothing.
+Run it again after the oracle publishes the result.
+
 For a pending result or a lost response, repeat the same claim command.
 You can also use `bitcaster-cli wallet recover` to resume prepared claims.
 Recovery uses the stored operation instead of preparing a second redemption.

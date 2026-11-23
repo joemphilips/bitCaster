@@ -129,3 +129,36 @@ export function signedCtfAttestationEventFixture(input: {
     input.nostrKey ?? attestationKey,
   )
 }
+
+/** Kind-89 attestations of other events by the fixture oracle key, each newer than `after`. */
+export function otherCtfAttestationEventsFixture(count: number, after: number) {
+  return Array.from({ length: count }, (_, index) =>
+    signedCtfAttestationEventFixture({
+      eventId: `other-market-${index}`,
+      outcome: 'YES',
+      signature: signFixtureOutcome('YES'),
+      createdAt: after + 1 + index,
+    }),
+  )
+}
+
+/** A NIP-01 relay answer: the newest matching events first, at most `limit`, none after `until`. */
+export function nip01RelayAnswerFixture(
+  events: readonly unknown[],
+  filter: {
+    readonly kinds: readonly number[]
+    readonly authors: readonly string[]
+    readonly limit: number
+    readonly until?: number
+  },
+): unknown[] {
+  return (events as Array<{ kind: number; pubkey: string; created_at: number }>)
+    .filter(
+      (event) =>
+        filter.kinds.includes(event.kind) &&
+        filter.authors.includes(event.pubkey) &&
+        (filter.until === undefined || event.created_at <= filter.until),
+    )
+    .sort((left, right) => right.created_at - left.created_at)
+    .slice(0, filter.limit)
+}

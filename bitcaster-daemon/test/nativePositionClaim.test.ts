@@ -50,9 +50,14 @@ import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readProfile } from '../src/profile.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { dispatch } from '../src/server.ts'
-import { createDaemonConditionResolution } from '../src/nativeConditionResolution.ts'
+import {
+  createDaemonConditionResolution,
+  type DaemonConditionResolution,
+} from '../src/nativeConditionResolution.ts'
+import type { ConditionResolution } from '@bitcaster-market/client-sdk/conditionResolution'
 import {
   pendingResolution,
+  resolvedRead,
   resolvedResolution,
   unavailableResolution,
   type ConditionResultFixture,
@@ -979,6 +984,67 @@ test('an unavailable target or uneconomic target refuses before preparation with
   }
 })
 
+test('a claim without a result that the mint can redeem refuses before it saves an operation', async () => {
+  const fixture = await createFixture()
+  try {
+    await fixture.add('unresolved-input', CURRENT_ID)
+    const before = await claimFundFacts(fixture.directory)
+    const mintState = (state: ConditionResolution['state']): DaemonConditionResolution => ({
+      read: async (id, options) => ({
+        ...(await pendingResolution(fixture.result).read(id, options)),
+        state,
+      }),
+    })
+    const foreign = resolvedRead({
+      ...fixture.result,
+      registeredAuthority: { ...fixture.result.registeredAuthority, eventId: 'foreign-event' },
+    })
+    for (const [resolution, reason] of [
+      // The mint does not answer.
+      [unavailableResolution, /could not be read/],
+      // The mint has no result, and no relay has a verified attestation.
+      [pendingResolution(fixture.result), /no verified result/],
+      [mintState({ status: 'refused', mintStatus: 'expired' }), /does not redeem/],
+      [mintState({ status: 'refused', mintStatus: 'violation' }), /does not redeem/],
+      // The mint reports NO without verified evidence. It refuses a YES redemption.
+      [
+        mintState({ status: 'unverified', reportedOutcome: 'NO', reason: 'missing' }),
+        /another outcome/,
+      ],
+      // A relay attestation that does not bind this claim. The mint has no result to use.
+      [
+        { read: async () => ({ ...foreign, state: { ...foreign.state, source: 'relay' } }) },
+        /no verified result/,
+      ],
+    ] as const) {
+      await assert.rejects(claimDaemonPosition({ ...fixture.common, resolution }), {
+        code: 'position-claim-result-unavailable',
+        message: reason,
+      })
+      assert.deepEqual(await claimFundFacts(fixture.directory), before)
+      assert.equal(fixture.wallet.requests.length, 0)
+    }
+    const response = await dispatch(
+      {
+        method: 'wallet.claimPosition',
+        params: { conditionId: fixture.conditionId, outcomeCollection: 'YES' },
+      },
+      {
+        ...fixture.common.walletDependencies,
+        getCustodyFence: () => fixture.common.fence,
+        conditionResolution: pendingResolution(fixture.result),
+        createEngineClient: () => ({}) as never,
+      },
+    )
+    assert.equal(response.ok, false)
+    assert.equal(response.code, 'position-claim-result-unavailable')
+    assert.match(response.error!, /no verified result/)
+    assert.deepEqual(await claimFundFacts(fixture.directory), before)
+  } finally {
+    await fixture.dispose()
+  }
+})
+
 test('claim requires ready custody and redacts invalid requests before network I/O', async () => {
   const response = await dispatch(
     {
@@ -1459,23 +1525,14 @@ function digest(value: unknown): string {
   return createHash('sha256').update(canonical).digest('hex')
 }
 
-for (const evidence of [
-  'unavailable',
-  'missing-registration',
-  'invalid-registration',
-  'foreign-registration',
-  'winning',
-] as const) {
+// A claim without a result that the mint can redeem saves no operation. See the refusal test.
+for (const evidence of ['invalid-registration', 'foreign-registration', 'winning'] as const) {
   test(`native ${evidence} refusal survives SQLite reopen without losing or Remove authority`, async () => {
     const fixture = await createFixture()
     try {
       await fixture.add('refusal-input', CURRENT_ID)
       fixture.wallet.error = new MintOperationError(13015, 'mint refusal')
       const common = { ...fixture.common }
-      // The mint condition read fails.
-      if (evidence === 'unavailable') common.resolution = unavailableResolution
-      // The mint has no verified result and the relays have no attestation.
-      if (evidence === 'missing-registration') common.resolution = pendingResolution(fixture.result)
       // The mint reports a result whose signatures do not verify.
       if (evidence === 'invalid-registration')
         common.resolution = {
@@ -1555,7 +1612,7 @@ test('native timeout then unverified refusal restores exact SPENT outputs after 
   }
 })
 
-test('native real producer sat evidence stays unverified for msat Claim while valid payout succeeds', async () => {
+test('native real producer sat registration refuses an msat Claim before it saves an operation', async () => {
   const info = JSON.parse(
     readFileSync(new URL('./fixtures/d4/condition-info.json', import.meta.url), 'utf8'),
   )
@@ -1571,11 +1628,12 @@ test('native real producer sat evidence stays unverified for msat Claim while va
     // Native held keys are generated for msat. Captured producer oracle bytes remain sat.
     await fixture.add('real-producer-native', CURRENT_ID, 'YES', info.condition_id)
     fixture.wallet.conditionInfo = info
+    const before = await claimFundFacts(fixture.directory)
     const common = {
       ...fixture.common,
       conditionId: info.condition_id,
-      // The real resolution reads this mint record. Its sat registration does
-      // not bind an msat claim, so the evidence stays unverified.
+      // The real resolution reads this mint record. Its sat registration does not
+      // bind an msat claim, so the daemon cannot read a result that the mint redeems.
       resolution: createDaemonConditionResolution({
         profile: fixture.common.profile,
         secrets: fixture.common.secrets,
@@ -1583,19 +1641,11 @@ test('native real producer sat evidence stays unverified for msat Claim while va
         relayUrls: async () => [],
       }),
     }
-    const result = await claimDaemonPosition(common as never)
-    assert.equal(result.legs[0]!.state, 'completed')
-    assert.equal(result.legs[0]!.oracleEvidence!.status, 'unverified')
-    assert.ok(result.legs[0]!.payoutAmountSubunits > 0)
-    assert.equal((await getProofOperation(result.legs[0]!.operationId))!.metadata.oracleWitness, '')
-    assert.equal(
-      fixture.wallet.requests[0]!.inputs.some((proof) => proof.witness !== undefined),
-      false,
-    )
-    assert.equal(
-      (await inspectClaim(fixture, result.legs[0]!.operationId)).record.operation.state,
-      'reconciled',
-    )
+    await assert.rejects(claimDaemonPosition(common as never), {
+      code: 'position-claim-result-unavailable',
+    })
+    assert.deepEqual(await claimFundFacts(fixture.directory), before)
+    assert.equal(fixture.wallet.requests.length, 0)
   } finally {
     await fixture.dispose()
   }

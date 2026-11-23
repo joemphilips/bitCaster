@@ -7,20 +7,26 @@ import {
   verifyCtfEnumAnnouncement,
 } from '../src/ctfConditionRegistration.ts'
 import {
+  ORACLE_ATTESTATION_RELAY_READ_TIMEOUT_MS,
   oracleAttestationRelayFilter,
   readMintConditionResolution,
   resolveConditionResult,
   selectRelayConditionAttestation,
   type ConditionResolution,
+  type OracleAttestationRelayFilter,
+  type OracleAttestationRelays,
 } from '../src/conditionResolution.ts'
 import {
   attestableCtfConditionFixture,
   fixtureOracleKey,
+  nip01RelayAnswerFixture,
+  otherCtfAttestationEventsFixture,
   signFixtureOutcome,
   signedCtfAttestationEventFixture,
 } from './support/ctfAnnouncementFixture.ts'
 
 const MINT = 'https://mint.example'
+const RELAY = 'wss://relay.example'
 const MATURITY = 1_900_000_000
 // Real bytes from the kormir native helper: create-enum, then sign-enum for YES.
 const kormir = JSON.parse(
@@ -204,6 +210,13 @@ test('the relay filter names the registered oracle keys and a bounded event coun
     authors: [fixture.oraclePublicKey],
     limit: 16,
   })
+  // A later page asks for older events.
+  assert.deepEqual(oracleAttestationRelayFilter(pending.registeredAuthority, 1_900_000_050), {
+    kinds: [89],
+    authors: [fixture.oraclePublicKey],
+    limit: 16,
+    until: 1_900_000_050,
+  })
 })
 
 test('a relay attestation needs a valid oracle signature on the announced nonce', () => {
@@ -280,7 +293,9 @@ test('the resolution reads the mint first and reads the relays only when allowed
           assert.equal(maturityEpoch, MATURITY)
           return allowed
         },
-        read: async (filter) => {
+        urls: async () => [RELAY],
+        query: async (url, filter) => {
+          assert.equal(url, RELAY)
           relayReads.push(filter)
           return events
         },
@@ -310,20 +325,30 @@ test('the resolution reads the mint first and reads the relays only when allowed
     oracleWitness: { oracle_sigs: [oracleSig] },
   })
   assert.equal(relayReads.length, 1)
-  // A relay failure leaves the mint state.
-  const failing = await resolveConditionResult({
-    conditionId: id,
-    mintUrl: MINT,
-    allowInsecureLoopbackHttp: false,
-    readMintCondition: async () => fixture.info,
-    relays: {
-      when: () => true,
-      read: async () => {
+  // A relay failure or an unreadable relay list leaves the mint state.
+  for (const relays of [
+    {
+      urls: async () => [RELAY],
+      query: async () => {
         throw new Error('relay unavailable')
       },
     },
-  })
-  assert.equal(failing.state.status, 'pending')
+    {
+      urls: async () => {
+        throw new Error('relay list unavailable')
+      },
+      query: async () => [event],
+    },
+  ]) {
+    const failing = await resolveConditionResult({
+      conditionId: id,
+      mintUrl: MINT,
+      allowInsecureLoopbackHttp: false,
+      readMintCondition: async () => fixture.info,
+      relays: { when: () => true, ...relays },
+    })
+    assert.equal(failing.state.status, 'pending')
+  }
   // A mint result without evidence takes the matching relay evidence.
   const reported = await resolve(
     { ...fixture.info, attestation: { status: 'attested', winning_outcome: 'YES' } },
@@ -342,4 +367,99 @@ test('the resolution reads the mint first and reads the relays only when allowed
     }),
     /mint unavailable/,
   )
+})
+
+function relayResolution(
+  info: unknown,
+  conditionId: string,
+  relays: Omit<OracleAttestationRelays, 'when'>,
+): Promise<ConditionResolution> {
+  return resolveConditionResult({
+    conditionId,
+    mintUrl: MINT,
+    allowInsecureLoopbackHttp: false,
+    readMintCondition: async () => info,
+    relays: { when: () => true, ...relays },
+  })
+}
+
+test('the relay read pages back from the newest event, at most 8 pages of 16 events', async () => {
+  const fixture = condition()
+  const id = fixture.registration.condition_id
+  const attestation = signedCtfAttestationEventFixture({
+    eventId: 'mint-first-resolution',
+    outcome: 'YES',
+    signature: fixture.signature,
+  })
+  const read = async (newer: number) => {
+    const events = [attestation, ...otherCtfAttestationEventsFixture(newer, attestation.created_at)]
+    const filters: OracleAttestationRelayFilter[] = []
+    const resolution = await relayResolution(fixture.info, id, {
+      urls: async () => [RELAY],
+      query: async (_url, filter) => {
+        filters.push(filter)
+        return nip01RelayAnswerFixture(events, filter)
+      },
+    })
+    return { state: resolution.state.status, filters }
+  }
+  // The newest page holds the attestation. The read stops there.
+  assert.equal((await read(15)).filters.length, 1)
+  // 120 newer events: each page ends at the oldest event of the page before it.
+  const paged = await read(120)
+  assert.equal(paged.state, 'resolved')
+  assert.equal(paged.filters.length, 8)
+  assert.equal(paged.filters[0]!.until, undefined)
+  assert.deepEqual(
+    paged.filters.slice(1).map((filter) => attestation.created_at + 1 + 120 - filter.until!),
+    [16, 31, 46, 61, 76, 91, 106],
+  )
+  // Each later page repeats the oldest event of the page before it. Thus 8 pages reach the
+  // 121 newest events. Beyond them the attestation stays hidden, and the condition fails closed.
+  const hidden = await read(121)
+  assert.equal(hidden.state, 'pending')
+  assert.equal(hidden.filters.length, 8)
+  // A relay that ignores `until` and `limit` repeats its page. A page without a new event
+  // ends its read.
+  let repeats = 0
+  const flood = otherCtfAttestationEventsFixture(20, attestation.created_at)
+  const repeated = await relayResolution(fixture.info, id, {
+    urls: async () => [RELAY],
+    query: async () => {
+      repeats += 1
+      return flood
+    },
+  })
+  assert.equal(repeated.state.status, 'pending')
+  assert.equal(repeats, 2)
+})
+
+test('a relay that stalls ends its read at its deadline, and another relay still resolves', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  const fixture = condition()
+  const id = fixture.registration.condition_id
+  const attestation = signedCtfAttestationEventFixture({
+    eventId: 'mint-first-resolution',
+    outcome: 'YES',
+    signature: fixture.signature,
+  })
+  const flood = otherCtfAttestationEventsFixture(20, attestation.created_at)
+  let stallPages = 0
+  let stalled!: () => void
+  const stall = new Promise<void>((resolve) => (stalled = resolve))
+  const resolution = relayResolution(fixture.info, id, {
+    urls: async () => ['wss://stall.example', RELAY],
+    query: async (url, filter) => {
+      if (url === RELAY) return nip01RelayAnswerFixture([attestation], filter)
+      stallPages += 1
+      if (stallPages === 1) return nip01RelayAnswerFixture(flood, filter)
+      // The second page never answers and ignores its signal.
+      stalled()
+      return new Promise<never>(() => {})
+    },
+  })
+  await stall
+  t.mock.timers.tick(ORACLE_ATTESTATION_RELAY_READ_TIMEOUT_MS)
+  assert.equal((await resolution).state.status, 'resolved')
+  assert.equal(stallPages, 2)
 })
