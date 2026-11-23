@@ -26,6 +26,7 @@ import {
   retireResolvedDaemonConditions,
 } from '../src/managedConditionRetirement.ts'
 import { readProfile } from '../src/profile.ts'
+import { dispatch } from '../src/server.ts'
 import {
   CTF_KEYSET_ID,
   FakeRegularMint,
@@ -1199,6 +1200,73 @@ test('an uneconomic retirement page keeps its proof and calls no mint', async ()
     })
     assert.deepEqual(await walletOutcomeRows(directory), ['YES/locked/retained'])
     assert.deepEqual(await payoutAmounts(directory), [])
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+async function inventoryRows(directory: string): Promise<number> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return Number(
+      database.prepare('SELECT COUNT(*) AS count FROM daemon_managed_condition_inventory').get()!
+        .count,
+    )
+  } finally {
+    database.close()
+  }
+}
+
+test('a retirement does not start while custody lacks a position of the condition', async () => {
+  const fixture = await createRetirementFixture(1, 4)
+  const { directory, profile, fence, common, wallet, conditionId } = fixture
+  try {
+    // A wallet-only row: custody holds no proof of it, so the redeem cannot spend it.
+    await addAvailableProofs(profile.mintUrl, [proof(CTF_KEYSET_ID, 'wallet-only-position', 2)], {
+      kind: 'Outcome',
+      conditionId,
+      outcomeSetId: 'YES',
+      baseAsset: 'sat',
+      unit: 'msat',
+    })
+    const refusal = {
+      code: 'condition-retirement-custody-incomplete',
+      message:
+        'custody does not hold every position of this condition, so the retirement does not start',
+    }
+    for (const acknowledge of [false, true])
+      await assert.rejects(retireDaemonConditionInventory({ ...common, acknowledge }), refusal)
+    assert.deepEqual(
+      await dispatch(
+        { method: 'wallet.retireCondition', params: { conditionId, acknowledge: true } },
+        {
+          ...common.walletDependencies,
+          getCustodyFence: () => fence,
+          conditionResolution: common.resolution,
+        },
+      ),
+      { ok: false, code: refusal.code, error: refusal.message },
+    )
+    // The scan records a discovery failure. Nothing started, so no funds command waits for it.
+    assert.deepEqual(
+      await retireResolvedDaemonConditions({
+        profile,
+        secrets: common.secrets,
+        fence,
+        resolution: common.resolution,
+        walletDependencies: common.walletDependencies,
+      }),
+      {
+        results: [],
+        awaitingAttestation: [],
+        discoveryFailures: [{ conditionId, error: refusal.message }],
+        nextMaturityMs: null,
+      },
+    )
+    assert.deepEqual(await resumeDaemonConditionRetirements(common), [])
+    assert.equal(wallet.redeemCalls, 0)
+    assert.equal(await inventoryRows(directory), 0)
+    assert.deepEqual(await walletOutcomeRows(directory), ['YES/available', 'YES/available'])
   } finally {
     await fixture.dispose()
   }

@@ -199,6 +199,7 @@ import { validateWalletActivityParams, validateWalletActivitySyncParams } from '
 import { deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk/durableCustody'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
+  ConditionRetirementCustodyIncompleteError,
   ConditionRetirementResultUnavailableError,
   resumeDaemonConditionRetirements,
   retireDaemonConditionInventory,
@@ -1222,8 +1223,11 @@ async function dispatchCommand(
           }),
         }
       } catch (error) {
-        // No verified result. The retirement saved nothing, so the user can retry.
-        if (error instanceof ConditionRetirementResultUnavailableError)
+        // No verified result, or custody lacks a position. The retirement saved nothing.
+        if (
+          error instanceof ConditionRetirementResultUnavailableError ||
+          error instanceof ConditionRetirementCustodyIncompleteError
+        )
           return { ok: false, code: error.code, error: error.message }
         throw error
       }

@@ -71,6 +71,8 @@ export async function startManagedConditionRetirement(input: {
   readonly intent: ManagedConditionRetirementIntent
   readonly oracleWitness: string
   readonly observedAtMs: number
+  /** Refuse a new start in the start transaction, before the inventory leaves `active`. */
+  readonly assertStartable: (database: DatabaseSync) => void
 }): Promise<PersistedManagedConditionInventory> {
   return withDurableCustodyUnitOfWork(profileDir(), input.fence, input.observedAtMs, (database) => {
     const existing = loadManagedConditionInventoryFromDatabase(database, input.binding)
@@ -88,6 +90,7 @@ export async function startManagedConditionRetirement(input: {
     if (readConditionProofCounts(database, input.binding).reserved !== 0) {
       throw new Error('managed condition inventory has pending proof reservations')
     }
+    input.assertStartable(database)
     const state = startManagedConditionInventoryRetirement({
       current: createManagedConditionInventoryState(input.binding),
       resolution: input.resolution,

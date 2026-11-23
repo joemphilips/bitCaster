@@ -2,6 +2,9 @@ import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparati
 import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import { boundedErrorText } from './mintErrorText.ts'
 import { isDeepStrictEqual } from 'node:util'
+import type { DatabaseSync } from 'node:sqlite'
+import { profileDir } from './profile.ts'
+import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import {
   bindRegisteredDlcConditionAuthority,
   type ConditionOracleResolutionContext,
@@ -46,6 +49,7 @@ import type { WalletRetireConditionResult } from './protocol.ts'
 import {
   MANAGED_CONDITION_RETIREMENT_PURPOSE,
   completeManagedConditionRedeemFromDatabase,
+  custodyHoldsAvailableConditionProofsFromDatabase,
   ensureState,
   failManagedConditionRedeemFromDatabase,
   retainUneconomicConditionProofsFenced,
@@ -80,6 +84,24 @@ export const CONDITION_RETIREMENT_RESULT_UNAVAILABLE_CODE =
  */
 export class ConditionRetirementResultUnavailableError extends Error {
   readonly code = CONDITION_RETIREMENT_RESULT_UNAVAILABLE_CODE
+}
+
+/** The RPC code of a condition retirement that custody cannot redeem. Nothing is saved. */
+export const CONDITION_RETIREMENT_CUSTODY_INCOMPLETE_CODE =
+  'condition-retirement-custody-incomplete'
+
+/**
+ * Custody does not hold some available position of this condition. A
+ * retirement redeems only through custody, so it does not start. The
+ * refusal saves nothing.
+ */
+export class ConditionRetirementCustodyIncompleteError extends Error {
+  readonly code = CONDITION_RETIREMENT_CUSTODY_INCOMPLETE_CODE
+  constructor() {
+    super(
+      'custody does not hold every position of this condition, so the retirement does not start',
+    )
+  }
 }
 
 export interface ConditionRetirementResult {
@@ -319,13 +341,21 @@ export async function retireDaemonConditionInventory(input: {
     resolvedOutcome,
     input.walletDependencies,
   )
-  if (!input.acknowledge) return result(conditionId, 'preview', preview)
+  const assertStartable = (database: DatabaseSync) => {
+    if (!custodyHoldsAvailableConditionProofsFromDatabase(database, binding))
+      throw new ConditionRetirementCustodyIncompleteError()
+  }
+  if (!input.acknowledge) {
+    if (current === null) await createDaemonStateSqliteSession(profileDir()).read(assertStartable)
+    return result(conditionId, 'preview', preview)
+  }
 
   let persisted = current
   if (persisted === null) {
     persisted = await startManagedConditionRetirement({
       fence: input.fence,
       binding,
+      assertStartable,
       resolution: verified!.resolution,
       intent: createManagedConditionRetirementIntent({
         binding,

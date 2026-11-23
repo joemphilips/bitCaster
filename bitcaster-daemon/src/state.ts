@@ -3278,6 +3278,40 @@ export async function readAvailableWalletProofPage(input: {
   })
 }
 
+/**
+ * Whether custody holds each available outcome proof of a condition as a
+ * redeem can spend it: unspent, unreserved and with a verified DLEQ proof.
+ */
+export function custodyHoldsAvailableConditionProofsFromDatabase(
+  database: DatabaseSync,
+  input: { readonly normalizedMint: string; readonly conditionId: string },
+): boolean {
+  const scopeId = readScopeId(database)
+  const canonicalProofQuery = prepareCanonicalProofQuery(database)
+  const rows = database
+    .prepare(
+      `SELECT * FROM target_wallet_proofs
+       WHERE scope_id = ? AND normalized_mint = ? AND asset_kind = 'outcome'
+         AND condition_id = ? AND state = 'available'`,
+    )
+    .iterate(scopeId, input.normalizedMint, input.conditionId) as Iterable<Record<string, unknown>>
+  for (const raw of rows) {
+    const record = decodeWalletProofRow(raw)
+    if (
+      !isCanonicalAvailableWalletProof(
+        canonicalProofQuery,
+        scopeId,
+        record,
+        input.normalizedMint,
+        record.asset,
+        { requireVerifiedDleq: true },
+      )
+    )
+      return false
+  }
+  return true
+}
+
 export function readAvailableCanonicalWalletProofPageFromDatabase(
   database: DatabaseSync,
   input: {
