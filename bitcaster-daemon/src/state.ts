@@ -337,16 +337,21 @@ export async function ensureState(): Promise<DaemonState> {
   return withStateUpdateLock(async () => {
     const latest = await readState()
     if (latest) return latest
-    const fresh = emptyDaemonState()
-    await withDaemonStateSqliteTransaction(
-      profileDir(),
-      (database) => {
-        writeDaemonStateToDatabase(database, fresh)
-      },
-      { notifyWalletHoldingsCommit: true },
-    )
-    return fresh
+    // Only the metadata row is new. A row that a writer saved before it stays.
+    return withDaemonStateSqliteTransaction(profileDir(), (database) => {
+      insertTargetStateMetadata(database, readScopeId(database))
+      return readDaemonStateFromDatabase(database)!
+    })
   })
+}
+
+function insertTargetStateMetadata(database: DatabaseSync, scopeId: string): void {
+  database
+    .prepare(
+      `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
+       ON CONFLICT(scope_id) DO NOTHING`,
+    )
+    .run(scopeId)
 }
 
 export async function readState(): Promise<DaemonState | null> {
@@ -1707,12 +1712,7 @@ export function admitRecoveredWalletProofFromDatabase(
   },
 ): void {
   const scopeId = readScopeId(database)
-  database
-    .prepare(
-      `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
-       ON CONFLICT(scope_id) DO NOTHING`,
-    )
-    .run(scopeId)
+  insertTargetStateMetadata(database, scopeId)
   const expectedProof = normalizeCashuProofRecord(input.proof)
   const expectedAsset = normalizeProofAsset(input.asset)
   const raw = database
@@ -3060,12 +3060,7 @@ function upsertOrderFromEngine(
       }
       const normalized = normalizeOrders({ [orderId]: record })[orderId]
       if (normalized === undefined) throw new Error('normalized engine order is missing')
-      database
-        .prepare(
-          `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
-           ON CONFLICT(scope_id) DO NOTHING`,
-        )
-        .run(scopeId)
+      insertTargetStateMetadata(database, scopeId)
       insertOrder(database, scopeId, normalized)
       writeConfirmedOrderActivity(database, scopeId, normalized, engineStatus)
       const persisted = readOrderFromDatabase(database, scopeId, orderId)
@@ -3791,12 +3786,7 @@ export function writeDaemonStateToDatabase(database: DatabaseSync, state: Daemon
   database.prepare('DELETE FROM daemon_complete_set_recovery_roots WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_proof_operations WHERE scope_id = ?').run(scopeId)
   database.prepare('DELETE FROM target_wallet_proofs WHERE scope_id = ?').run(scopeId)
-  database
-    .prepare(
-      `INSERT INTO target_state_metadata (scope_id, schema_version) VALUES (?, 1)
-       ON CONFLICT(scope_id) DO NOTHING`,
-    )
-    .run(scopeId)
+  insertTargetStateMetadata(database, scopeId)
 
   for (const proof of state.wallet.proofs) insertWalletProof(database, scopeId, proof)
   // Keyset counters have a fenced, row-scoped write path. This compatibility

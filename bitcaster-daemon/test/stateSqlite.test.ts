@@ -237,6 +237,47 @@ test('ensureState initializes once without queue deadlock and survives restart',
   })
 })
 
+test('ensureState keeps the rows of a scope that has no state metadata row', async () => {
+  await withProfile(async (home) => {
+    const state = emptyDaemonState()
+    state.wallet.proofs.push({
+      proof: { id: KEYSET_ID, amount: 7, secret: 'kept-secret', C: 'kept-signature' },
+      mintUrl: 'http://localhost:8086',
+      state: 'available',
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:01.000Z',
+    })
+    state.proofOperations['kept-operation'] = {
+      operationId: 'kept-operation',
+      kind: 'ctf-consolidation',
+      state: 'completed',
+      mintUrl: 'http://localhost:8086',
+      inputs: [{ amount: 7, secret: 'spent-secret', C: 'spent-signature' }],
+      outputs: {},
+      metadata: {},
+      resultProofs: {},
+      lastError: null,
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_001_000,
+    }
+    await writeState(state)
+    // A row writer that does not write the metadata row leaves this shape.
+    await withDaemonStateSqliteTransaction(home, (database) => {
+      database.prepare('DELETE FROM target_state_metadata').run()
+    })
+    assert.equal(await readState(), null)
+
+    const initialized = await ensureState()
+    assert.deepEqual(
+      initialized.wallet.proofs.map(({ proof }) => proof.secret),
+      ['kept-secret'],
+    )
+    assert.deepEqual(Object.keys(initialized.proofOperations), ['kept-operation'])
+    assert.deepEqual(await readState(), initialized)
+  })
+})
+
 test('monitoring observers ignore lease commits and receive holdings commits', async () => {
   await withProfile(async (home) => {
     const mutation = await claimMutation(home, 'monitoring-observer')
