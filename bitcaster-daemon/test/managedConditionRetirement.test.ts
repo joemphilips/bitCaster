@@ -8,11 +8,11 @@ import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
 import { HttpResponseError, MintOperationError, type Proof } from '@cashu/cashu-ts'
-import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { openDaemonStateSqlite, withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { ORACLE_NOT_ATTESTED_OUTCOME_CODE } from '@bitcaster-market/client-sdk/ctfRedeem'
 import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
-import { claimCustodyScopeLease } from '../src/profileFencing.ts'
+import { claimCustodyScopeLease, type CustodyScopeFence } from '../src/profileFencing.ts'
 import {
   addAvailableProofs,
   prepareProofOperationWithExactReservation,
@@ -26,6 +26,10 @@ import {
   retireResolvedDaemonConditions,
 } from '../src/managedConditionRetirement.ts'
 import { readProfile } from '../src/profile.ts'
+import {
+  recoverAllDaemonWalletFromSeed,
+  type AllKeysetSeedRecoveryTransport,
+} from '../src/emergencySeedRecovery.ts'
 import { dispatch } from '../src/server.ts'
 import {
   CTF_KEYSET_ID,
@@ -1072,6 +1076,50 @@ async function walletOutcomeRows(directory: string): Promise<string[]> {
   }
 }
 
+/**
+ * A seed recovery of the regular msat keyset under a new lease, as `wallet recover-seed`
+ * runs. The mint restores no output.
+ */
+async function recoverSeed({
+  directory,
+  fence: owner,
+}: {
+  directory: string
+  fence: CustodyScopeFence
+}) {
+  const fence = await claimCustodyScopeLease(directory, {
+    scopeId: owner.scopeId,
+    incarnationId: 'seed-recovery-after-retirement',
+    observedAtMs: Date.now(),
+  })
+  const keyset = { id: REGULAR_KEYSET_ID, unit: 'msat', keys: {} }
+  const transport: AllKeysetSeedRecoveryTransport = {
+    wallet: {
+      async loadMint() {},
+      keyChain: { getKeyset: () => keyset, ensureKeysetKeys: async () => keyset },
+      async checkProofsStates() {
+        throw new Error('a recovery without restored outputs reads no proof state')
+      },
+    },
+    listRegularKeysets: async () => ({ keysets: [{ id: REGULAR_KEYSET_ID, unit: 'msat' }] }),
+    listConditionalKeysets: async () => ({ keysets: [] }),
+    getConditionalKeyset: async () => {
+      throw new Error('a regular recovery reads no conditional keyset')
+    },
+    restoreCandidates: async () => ({ outputs: [], signatures: [] }),
+  }
+  return recoverAllDaemonWalletFromSeed(
+    {
+      recoveryId: 'after-retirement',
+      mintUrl: 'https://mint.example',
+      unit: 'msat',
+      walletSeedHex: '11'.repeat(64),
+      disclosureAcknowledged: true,
+    },
+    { directory, getFence: () => fence, transport },
+  )
+}
+
 async function payoutAmounts(directory: string): Promise<number[]> {
   return (await readActivityRows(directory))
     .filter((row) => row.item.type === 'payout_claimed')
@@ -1178,6 +1226,17 @@ test('a losing retirement page is a terminal rejection that keeps its custody in
     assert.deepEqual(await walletOutcomeRows(directory), ['NO/locked'])
     assert.equal(await orderSpendableMsat(directory, profile.mintUrl), 4)
     assert.deepEqual(await payoutAmounts(directory), [4])
+    // The losing page is finished, so its locked row does not refuse a seed recovery.
+    assert.equal((await recoverSeed(fixture)).state, 'completed')
+    // A locked row of the retired condition that no failed page owns still refuses.
+    await withDaemonStateSqliteTransaction(directory, (database) => {
+      database
+        .prepare(
+          "UPDATE target_wallet_proofs SET reserved_by = 'foreign-owner' WHERE state = 'locked'",
+        )
+        .run()
+    })
+    await assert.rejects(recoverSeed(fixture), /durable owner blocker target-wallet-proof-reserved/)
   } finally {
     await fixture.dispose()
   }
@@ -1200,6 +1259,13 @@ test('an uneconomic retirement page keeps its proof and calls no mint', async ()
     })
     assert.deepEqual(await walletOutcomeRows(directory), ['YES/locked/retained'])
     assert.deepEqual(await payoutAmounts(directory), [])
+    // No operation owns the retained row, so it does not refuse a seed recovery.
+    assert.equal((await recoverSeed(fixture)).state, 'completed')
+    // Without a retired condition, the same row has no known owner and refuses.
+    await withDaemonStateSqliteTransaction(directory, (database) => {
+      database.prepare('DELETE FROM daemon_managed_condition_inventory').run()
+    })
+    await assert.rejects(recoverSeed(fixture), /durable owner blocker target-wallet-proof-reserved/)
   } finally {
     await fixture.dispose()
   }

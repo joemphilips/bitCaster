@@ -59,6 +59,7 @@ import {
 } from './state.ts'
 import {
   completeManagedConditionRetirement,
+  isManagedConditionRetiredFromDatabase,
   listRetiringManagedConditionBindings,
   loadManagedConditionInventory,
   assertManagedConditionMutationFromDatabase,
@@ -72,6 +73,9 @@ import {
 } from './walletOps.ts'
 
 const RETIREMENT_PAGE_PROOF_MAX = 64
+
+/** The owner of the locked wallet rows of an uneconomic page. No operation has this id. */
+const UNECONOMIC_RETENTION_PREFIX = 'retained:'
 
 /** The RPC code of a condition retirement without a verified result. Nothing is saved. */
 export const CONDITION_RETIREMENT_RESULT_UNAVAILABLE_CODE =
@@ -524,10 +528,51 @@ async function redeemRetirementPage(input: {
       proofs: input.page.proofs,
       mintUrl: input.profile.mintUrl,
       asset,
-      retentionId: `retained:${operationId}`,
+      retentionId: `${UNECONOMIC_RETENTION_PREFIX}${operationId}`,
       mutation: { fence: input.fence, observedAtMs: Date.now() },
     })
   }
+}
+
+/**
+ * True when a locked wallet row is history of a retired condition: an input of
+ * a losing page or of an uneconomic page. A retired condition has no unfinished
+ * work, so no operation can use the row. Valid only in the caller's
+ * synchronous database snapshot.
+ */
+export function isRetiredConditionProofFromDatabase(
+  database: DatabaseSync,
+  scopeId: string,
+  proof: StoredProofRecord,
+): boolean {
+  const owner = proof.reservedBy
+  if (
+    proof.state !== 'locked' ||
+    owner === undefined ||
+    proof.retirement !== undefined ||
+    proof.asset.kind !== 'Outcome' ||
+    proof.asset.unit !== 'msat'
+  )
+    return false
+  // A losing page locks its exact reserved inputs, so its owner is a failed page.
+  if (
+    !owner.startsWith(UNECONOMIC_RETENTION_PREFIX) &&
+    database
+      .prepare(
+        `SELECT 1 FROM target_proof_operations
+         WHERE scope_id = ? AND operation_id = ? AND normalized_mint = ? AND kind = 'ctf-redeem'
+           AND purpose = ? AND state = 'failed' AND failure_code = 13015`,
+      )
+      .get(scopeId, owner, proof.mintUrl, MANAGED_CONDITION_RETIREMENT_PURPOSE) === undefined
+  )
+    return false
+  return isManagedConditionRetiredFromDatabase(database, {
+    scopeId,
+    normalizedMint: proof.mintUrl,
+    unit: 'msat',
+    conditionId: proof.asset.conditionId,
+    canonicalParentCollectionId: null,
+  })
 }
 
 /**

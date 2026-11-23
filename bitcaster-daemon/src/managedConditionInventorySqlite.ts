@@ -41,6 +41,14 @@ export function assertManagedConditionMutationFromDatabase(
   assertManagedConditionInventoryMutation(existing.state, mutation)
 }
 
+/** True when the retirement of this condition is complete. Then it has no unfinished work. */
+export function isManagedConditionRetiredFromDatabase(
+  database: DatabaseSync,
+  binding: ManagedConditionInventoryBinding,
+): boolean {
+  return loadManagedConditionInventoryFromDatabase(database, binding)?.state.state === 'retired'
+}
+
 export async function listRetiringManagedConditionBindings(): Promise<
   ManagedConditionInventoryBinding[]
 > {

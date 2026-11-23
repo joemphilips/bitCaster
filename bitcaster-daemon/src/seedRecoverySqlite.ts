@@ -57,6 +57,7 @@ import {
   assertRetainedPositionClaimProof,
   readRetainedPositionClaimHistory,
 } from './nativePositionClaim.ts'
+import { isRetiredConditionProofFromDatabase } from './managedConditionRetirement.ts'
 
 export interface SeedRecoveryObservedProof {
   readonly proofY: string
@@ -875,6 +876,8 @@ function assertNoRecoveryOwnerBlocker(
       const proof = readDaemonWalletProofFromDatabase(database, String(row.proof_id))
       if (proof === null || proof.reservedBy === undefined)
         throw new Error('retained Claim owner is absent')
+      // The history of a retired condition has no owner. A retained Claim keeps its history.
+      if (isRetiredConditionProofFromDatabase(database, scopeId, proof)) continue
       assertRetainedPositionClaimProof(histories(proof.reservedBy), proof)
     } catch {
       throw new Error('seed recovery refused: durable owner blocker target-wallet-proof-reserved')
