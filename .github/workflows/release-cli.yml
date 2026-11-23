@@ -3,6 +3,9 @@ name: Release CLI
 # Each push to main (a merged PR) publishes one bitcaster-cli release. Push
 # runs do not cancel or replace each other. Only a run for the current head of
 # main marks its release as latest, so a re-run of an older run cannot.
+# Every release version is a beta prerelease, for example 0.2.0-beta.1124. The
+# GitHub release is not marked as a prerelease, because /releases/latest skips
+# a prerelease, and the install commands download from /releases/latest.
 # A pull request that changes the CLI build runs the build jobs only, so the
 # archives are checked before the merge. Only the attest job can sign, and
 # only the publish job can write repository contents.
@@ -57,9 +60,11 @@ jobs:
     permissions:
       contents: read
     steps:
+      # The release version contains the commit count, so the build needs the full history.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+          fetch-depth: 0
       # The build needs only these two public submodules. The dlcdevkit URL uses
       # SSH, so read it over HTTPS without credentials.
       - name: Check out the cashu-ts and dlcdevkit submodules
@@ -170,8 +175,8 @@ jobs:
               exit 1
             fi
             found="$(tar -xzOf "$archive" "$cli/package.json" | jq -r .version)"
-            if [[ ! "$found" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
-              echo "$archive has an invalid CLI version" >&2
+            if [[ ! "$found" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta\.[1-9][0-9]*$ ]]; then
+              echo "$archive has a CLI version that is not a beta release version" >&2
               exit 1
             fi
             if [[ -n "$version" && "$found" != "$version" ]]; then
@@ -192,6 +197,8 @@ jobs:
           base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}"
           cat > notes.md <<'NOTES'
           bitcaster-cli @VERSION@, built from commit @COMMIT@.
+
+          This is a beta prerelease. A later release can change commands, output, or stored data without a compatibility promise.
 
           You need Node.js 22.15 or later. The archives are for Linux on x64 and for macOS on Apple silicon. Windows is not supported.
 

@@ -57,8 +57,10 @@ gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaste
   --deny-self-hosted-runners
 ```
 
-`bitcaster-cli --version` prints the version and the source commit of the release, for example
-`0.1.0+0123456789ab`.
+Every CLI release is a beta prerelease. The release version has the form
+`<major>.<minor>.<patch>-beta.<n>`, and a later release has a larger `<n>`. A later release can
+change commands, output, or stored data without a compatibility promise. `bitcaster-cli --version`
+prints the release version and the source commit, for example `0.2.0-beta.1124+0123456789ab`.
 
 You can also build the CLI from a clone of the public repository. You need Git and Node.js 22.15 or
 later. The build needs only the `cashu-ts` submodule.

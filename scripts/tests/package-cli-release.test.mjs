@@ -1,5 +1,10 @@
 import assert from 'node:assert/strict'
+import { execFileSync } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import test from 'node:test'
+import { pathToFileURL } from 'node:url'
 import {
   buildInfoJson,
   checksumLine,
@@ -8,8 +13,10 @@ import {
   missingEntryPoints,
   moduleSearchDirs,
   releaseTarget,
+  releaseVersion,
   runtimeDependencies,
   selectWorkspaceFiles,
+  sourceCommitCount,
   stagedPackagePath,
   tarOwnerArguments,
 } from '../package-cli-release.mjs'
@@ -26,6 +33,51 @@ test('a release target is named after the host platform and architecture', bound
   assert.equal(releaseTarget('linux', 'x64'), 'linux-x64')
   assert.equal(releaseTarget('darwin', 'arm64'), 'darwin-arm64')
   assert.throws(() => releaseTarget('win32', 'x64'), /Windows/)
+})
+
+test('a release version is the beta package version and the commit count', bounded, () => {
+  assert.equal(releaseVersion('0.2.0-beta', '1124'), '0.2.0-beta.1124')
+  assert.equal(releaseVersion('1.10.3-beta', '7'), '1.10.3-beta.7')
+  // Every release must be a beta prerelease, so another package version stops the packaging.
+  for (const version of [
+    '0.2.0',
+    '0.2.0-rc',
+    '0.2.0-beta.3',
+    '0.2.0-beta+1',
+    'v0.2.0-beta',
+    '0.2-beta',
+  ]) {
+    assert.throws(() => releaseVersion(version, '1124'), /beta/, version)
+  }
+  // SemVer orders a numeric identifier by its value and does not allow a leading zero.
+  for (const count of ['', '0', '01', '-1', '1.5', '12a', ' 12', '12\n']) {
+    assert.throws(() => releaseVersion('0.2.0-beta', count), /commit count/, JSON.stringify(count))
+  }
+})
+
+test('the commit count needs the full history of the source', bounded, async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'bcli-count-'))
+  // An empty configuration keeps the user's signing and hook settings out.
+  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' }
+  const git = (cwd, ...args) =>
+    execFileSync('git', ['-c', 'user.name=t', '-c', 'user.email=t@example.invalid', ...args], {
+      cwd,
+      env,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  try {
+    const source = join(temp, 'source')
+    git(temp, 'init', '--quiet', source)
+    for (const message of ['one', 'two', 'three']) {
+      git(source, 'commit', '--quiet', '--allow-empty', '-m', message)
+    }
+    assert.equal(sourceCommitCount(source), '3')
+    const shallow = join(temp, 'shallow')
+    git(temp, 'clone', '--quiet', '--depth', '1', pathToFileURL(source).href, shallow)
+    assert.throws(() => sourceCommitCount(shallow), /shallow/)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
 })
 
 test('a dependency keeps its install location in the archive', bounded, () => {

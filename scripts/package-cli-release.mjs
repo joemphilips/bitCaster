@@ -9,8 +9,15 @@
 // only Node.js to run the archive. The script then extracts the archive in a
 // temporary directory and checks it before it prints a JSON summary.
 //
-// The archive records the source commit in the CLI package, so
-// `bitcaster-cli --version` prints, for example, `0.1.0+0123456789ab`.
+// Every release is a beta prerelease. The CLI package version is, for example,
+// `0.2.0-beta`. The release version adds the number of commits in the source
+// history, for example `0.2.0-beta.1124`. A later commit on main has a larger
+// count, so SemVer orders the releases, and one commit always gets the same
+// version. The script needs the full history, not a shallow clone.
+//
+// The archive records the release version and the source commit in the CLI
+// package, so `bitcaster-cli --version` prints, for example,
+// `0.2.0-beta.1124+0123456789ab`.
 //
 // On Linux, the oracle helper is a static musl binary, so it runs with any
 // glibc version that Node.js supports. The build needs the Rust musl target
@@ -40,7 +47,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const CLI_PACKAGE = '@bitcaster-market/cli'
 const DAEMON_PACKAGE = '@bitcaster-market/daemon'
 const HELPER_NAME = 'bitcaster-oracle-helper'
-const VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$/
+const PACKAGE_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+-beta$/
+const COMMIT_COUNT_PATTERN = /^[1-9][0-9]*$/
 const BIN_NAME_PATTERN = /^[a-z0-9-]+$/
 const PACKAGE_NAME_PATTERN = /^(@[a-z0-9._~-]+\/)?[a-z0-9._~-]+$/i
 const COMMIT_PATTERN = /^[0-9a-f]{40}$/
@@ -200,6 +208,36 @@ export function elfInterpreterPresent(bytes) {
   return false
 }
 
+/**
+ * Return the release version, for example `0.2.0-beta.1124`. The package
+ * version must be a beta prerelease, so a release cannot lose the beta mark.
+ */
+export function releaseVersion(packageVersion, commitCount) {
+  if (typeof packageVersion !== 'string' || !PACKAGE_VERSION_PATTERN.test(packageVersion)) {
+    throw new Error(
+      `the CLI package version is not <major>.<minor>.<patch>-beta: ${String(packageVersion)}`,
+    )
+  }
+  // SemVer orders a numeric identifier by its value and does not allow a leading zero.
+  if (!COMMIT_COUNT_PATTERN.test(commitCount)) {
+    throw new Error(`the commit count is not a positive integer: ${JSON.stringify(commitCount)}`)
+  }
+  return `${packageVersion}.${commitCount}`
+}
+
+/** Return the number of commits in the history of HEAD, as decimal text. */
+export function sourceCommitCount(root) {
+  // A shallow clone counts only the fetched commits, so its count is too small.
+  const shallow = run('git', ['rev-parse', '--is-shallow-repository'], {
+    cwd: root,
+    capture: true,
+  }).trim()
+  if (shallow !== 'false') {
+    throw new Error('the clone is shallow, so the commit count is wrong; fetch the full history')
+  }
+  return run('git', ['rev-list', '--count', 'HEAD'], { cwd: root, capture: true }).trim()
+}
+
 /** Return the build information that the CLI reads for `--version`. */
 export function buildInfoJson(commit) {
   if (!COMMIT_PATTERN.test(commit)) {
@@ -228,10 +266,7 @@ async function main(argv) {
   const cliManifest = JSON.parse(
     await readFile(join(root, 'bitcaster-cli', 'package.json'), 'utf8'),
   )
-  const version = cliManifest.version
-  if (typeof version !== 'string' || !VERSION_PATTERN.test(version)) {
-    throw new Error(`the CLI package version is not a release version: ${String(version)}`)
-  }
+  const version = releaseVersion(cliManifest.version, sourceCommitCount(root))
   const commit = sourceCommit(root)
   const versionText = `${version}+${commit.slice(0, 12)}`
 
@@ -259,11 +294,15 @@ async function main(argv) {
     log(`Stage ${closure.length} packages.`)
     await stagePackages({ root, workspaces, closure, stageDir, target })
     await linkBins(stageDir, cliManifest)
+    const stagedCli = join(stageDir, 'node_modules', ...CLI_PACKAGE.split('/'))
+    // The archived package.json holds the release version. `--version` and the
+    // release workflow read it from there.
     await writeFile(
-      join(stageDir, 'node_modules', ...CLI_PACKAGE.split('/'), BUILD_INFO_FILE),
-      buildInfoJson(commit),
+      join(stagedCli, 'package.json'),
+      `${JSON.stringify({ ...cliManifest, version }, null, 2)}\n`,
       { mode: 0o644 },
     )
+    await writeFile(join(stagedCli, BUILD_INFO_FILE), buildInfoJson(commit), { mode: 0o644 })
 
     await mkdir(out, { recursive: true })
     const archiveName = `${name}.tar.gz`

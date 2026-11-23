@@ -56,7 +56,10 @@ gh attestation verify bitcaster-cli-linux-x64.tar.gz --repo joemphilips/bitCaste
   --deny-self-hosted-runners
 ```
 
-`bitcaster-cli --version` は、リリースのバージョンとソースのコミットを表示します。例: `0.1.0+0123456789ab`
+CLI のリリースは、すべてベータ版のプレリリースです。
+リリースのバージョンは `<major>.<minor>.<patch>-beta.<n>` の形式で、後のリリースほど `<n>` が大きくなります。
+後のリリースでは、互換性の保証なしに、コマンド、出力、保存データが変わることがあります。
+`bitcaster-cli --version` は、リリースのバージョンとソースのコミットを表示します。例: `0.2.0-beta.1124+0123456789ab`
 
 公開リポジトリのクローンから CLI をビルドすることもできます。
 Git と Node.js 22.15 以降が必要です。ビルドに必要なサブモジュールは `cashu-ts` だけです。

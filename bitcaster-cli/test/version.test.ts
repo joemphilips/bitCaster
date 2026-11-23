@@ -12,11 +12,14 @@ const execFileAsync = promisify(execFile)
 const COMMIT = '0123456789abcdef0123456789abcdef01234567'
 
 test('a source build prints the package version only', () => {
-  assert.equal(cliVersion('0.1.0', null), '0.1.0')
+  assert.equal(cliVersion('0.2.0-beta', null), '0.2.0-beta')
 })
 
 test('a release build adds the first 12 hex digits of the source commit', () => {
-  assert.equal(cliVersion('0.1.0', JSON.stringify({ commit: COMMIT })), '0.1.0+0123456789ab')
+  assert.equal(
+    cliVersion('0.2.0-beta.1124', JSON.stringify({ commit: COMMIT })),
+    '0.2.0-beta.1124+0123456789ab',
+  )
 })
 
 test('invalid build information stops the CLI instead of printing a false commit', () => {
