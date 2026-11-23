@@ -223,7 +223,7 @@ function completeSetSplitRefusal(
     case 'input-limit':
       return new CompleteSetSplitRefusedError(
         'split-input-limit',
-        'the split needs more input proofs than one operation holds; consolidate proofs first',
+        'the split needs more input proofs than one operation holds; split a smaller amount',
       )
     case 'output-group-limit':
       return new CompleteSetSplitRefusedError(

@@ -688,6 +688,45 @@ test('recovery skips a completed split without a read of its custody artifacts',
   }
 })
 
+test('a corrupt custody result state of one finished split leaves only that split pending', async () => {
+  const f = await fixture({
+    tokens: [
+      [128, 1],
+      [128, 1],
+    ],
+  })
+  try {
+    await f.split(100, 'finished')
+    f.convert.loseAnswer = true
+    await assert.rejects(f.split(100, 'lost-answer'), /CTF consolidation mint result is uncertain/)
+    f.convert.loseAnswer = false
+    // The mint spent the input of the lost answer, so recovery restores its saved outputs.
+    f.control.state = CheckStateEnum.SPENT
+    const finished = completeSetConvertOperationId('finished')
+    await withDaemonStateSqliteTransaction(f.directory, (database) => {
+      database.exec('PRAGMA ignore_check_constraints = ON')
+      try {
+        const changed = database
+          .prepare(
+            `UPDATE custody_operations SET result_state = 'corrupt'
+             WHERE retained_operation_key = ?`,
+          )
+          .run(finished).changes
+        assert.equal(changed, 1)
+      } finally {
+        database.exec('PRAGMA ignore_check_constraints = OFF')
+      }
+    })
+    assert.deepEqual(await recoverPreparedWalletSends(f.deps), {
+      recovered: [completeSetConvertOperationId('lost-answer')],
+      pending: [{ operationId: finished, error: 'custody operation result state is invalid' }],
+    })
+    assert.equal(f.convert.requests.length, 2)
+  } finally {
+    await f.close()
+  }
+})
+
 test('recovery from a stale prepared read does not bring back a split output that a later send spent', async () => {
   const f = await fixture()
   try {
@@ -819,6 +858,30 @@ test('a split that one convert cannot hold refuses with its own code before any 
     })
     assert.equal(feeFree.ok, false)
     assert.equal(feeFree.code, 'split-input-fee-zero')
+    assert.equal(f.convert.requests.length, 0)
+    assert.deepEqual(await custodyFacts(f.directory), before)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a split that needs more than 256 inputs refuses with its own code before any effect', async () => {
+  // Two receives give 260 custody proofs of 16384 msat, after the 1 msat receive fee of each.
+  const f = await fixture({
+    tokens: [
+      [...Array.from({ length: 200 }, () => 16_384), 1],
+      [...Array.from({ length: 60 }, () => 16_384), 1],
+    ],
+  })
+  try {
+    const before = await custodyFacts(f.directory)
+    // 256 inputs pay 4194304 msat less the 1 msat fee, so this amount needs a 257th input.
+    const refused = await f.dispatchSplit(256 * 16_384, 'too-many-inputs')
+    assert.equal(refused.ok, false)
+    if (refused.ok) throw new Error('the split must refuse')
+    assert.equal(refused.code, 'split-input-limit')
+    // The command to consolidate proofs is removed, so the refusal does not name it.
+    assert.doesNotMatch(refused.error, /consolidat/)
     assert.equal(f.convert.requests.length, 0)
     assert.deepEqual(await custodyFacts(f.directory), before)
   } finally {

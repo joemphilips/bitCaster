@@ -2196,12 +2196,11 @@ export async function recoverPreparedWalletSends(
       (entry.state === 'prepared' || entry.state === 'completed'),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
-  const applied = await readAppliedCtfConversions(recoverable, deps)
   for (const entry of recoverable) {
     try {
       // Custody applies the result and completes the target in one transaction.
       // A later spend can remove an output from the wallet, so the wallet cannot show this.
-      if (applied.has(entry.operationId)) continue
+      if (entry.state === 'completed' && (await isCtfConversionApplied(entry, deps))) continue
       await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
@@ -2848,32 +2847,22 @@ async function releaseFinalCtfConversionRefusal(
  * One read takes only the result state of each, so the cost of a recovery
  * pass does not include the saved artifacts of finished conversions.
  */
-async function readAppliedCtfConversions(
-  entries: readonly ProofOperationRecord[],
+/** Whether custody shows the result of one finished conversion as applied. */
+async function isCtfConversionApplied(
+  entry: ProofOperationRecord,
   deps: WalletOpsDependencies,
-): Promise<ReadonlySet<string>> {
-  const completed = entries.filter(({ state }) => state === 'completed')
-  if (completed.length === 0) return new Set()
+): Promise<boolean> {
   const fence = deps.getCustodyFence?.()
   if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
   return withDurableCustodyFencedRead(
     createDaemonStateSqliteSession(profileDir()),
     fence,
     Date.now(),
-    (database) => {
-      const custody = new DurableCustodySqliteStore(database)
-      return new Set(
-        completed
-          .filter(
-            ({ operationId }) =>
-              custody.getOperationResultState(
-                fence.scopeId,
-                ctfConversionCustodyOperationId(fence.scopeId, operationId),
-              ) === 'applied',
-          )
-          .map(({ operationId }) => operationId),
-      )
-    },
+    (database) =>
+      new DurableCustodySqliteStore(database).getOperationResultState(
+        fence.scopeId,
+        ctfConversionCustodyOperationId(fence.scopeId, entry.operationId),
+      ) === 'applied',
   )
 }
 
