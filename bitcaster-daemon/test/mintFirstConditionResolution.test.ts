@@ -14,13 +14,13 @@ import {
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readProfile } from '../src/profile.ts'
-import { addAvailableProofs, readState } from '../src/state.ts'
+import { readState } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { retireResolvedDaemonConditions } from '../src/managedConditionRetirement.ts'
 import { createDaemonConditionResolution } from '../src/nativeConditionResolution.ts'
 import type { OracleAttestationRelayFilter } from '@bitcaster-market/client-sdk/conditionResolution'
 import { dispatch } from '../src/server.ts'
-import { CTF_KEYSET_ID, FakeRetirementWallet, proof } from './support/retirementWallet.ts'
+import { FakeRetirementWallet, holdOutcomeProofs } from './support/retirementWallet.ts'
 
 const MINT = 'https://mint.example'
 const SEED = '11'.repeat(64)
@@ -61,19 +61,21 @@ async function createFixture(
     maturityEpoch: MATURITY_EPOCH,
   })
   const conditionId = oracle.registration.condition_id
-  await addAvailableProofs(MINT, [proof(CTF_KEYSET_ID, 'held-winning-proof', 4)], {
-    kind: 'Outcome',
+  const wallet = new FakeRetirementWallet()
+  await holdOutcomeProofs({
+    directory,
+    fence,
+    mintUrl: MINT,
     conditionId,
-    outcomeSetId: 'YES',
-    baseAsset: 'sat',
-    unit: 'msat',
+    outcomeCollection: 'YES',
+    proofs: [{ secret: 'held-winning-proof', amount: 4 }],
+    wallets: [wallet],
   })
   const oracleSig = {
     oracle_pubkey: oracle.oraclePublicKey,
     oracle_sig: oracle.signature,
     outcome: 'YES',
   }
-  const wallet = new FakeRetirementWallet()
   wallet.conditionInfo = {
     ...oracle.registration,
     registered_at: 1_800_000_000,
@@ -97,7 +99,8 @@ async function createFixture(
   }
   const walletDependencies = {
     createCashuWallet: () => wallet,
-    resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+    resolveInputFeePpkByKeyset: async (_mintUrl: string, keysetIds: string[]) =>
+      Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 0])),
   }
   const profile = (await readProfile())!
   const resolution = createDaemonConditionResolution({

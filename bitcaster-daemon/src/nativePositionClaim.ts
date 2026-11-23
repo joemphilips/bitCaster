@@ -8,12 +8,8 @@ import {
   canonicalProofOperationMintIdentity,
   type RedeemWallet,
 } from '@bitcaster-market/client-sdk/ctfRedeem'
+import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/durableCustody'
 import {
-  deriveDurableCustodyOperationId,
-  deriveDurableCustodyArtifactFingerprint,
-} from '@bitcaster-market/client-sdk/durableCustody'
-import {
-  assertDurableCustodyMintOperationAuthority,
   readDurableCustodyAuthenticatedTerminalMintRejection,
   type DurableCustodyMintKeysetAuthority,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
@@ -21,12 +17,11 @@ import {
   assertCustodyRedeemPredecessors,
   conditionalRedeemKeysetAuthority,
   createCustodyRedeemOperationStore,
-  custodyRedeemMintOperation,
   fencedRedeemWallet,
   mutation,
+  readCustodyRedeemOperation,
   type CustodyRedeemPurpose,
 } from './custodyRedeemOperation.ts'
-import { DurableCustodySqliteStore } from './durableCustodySqliteStore.ts'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
@@ -363,53 +358,25 @@ export function readNativePositionClaimCustody(
   fence: Pick<CustodyScopeFence, 'scopeId'>,
   target: ProofOperationRecord,
 ) {
+  if (target.metadata.purpose !== POSITION_CLAIM_PURPOSE)
+    throw new Error('position claim custody mapping is absent or foreign')
   const link = database
     .prepare(
       'SELECT custody_operation_id AS operationId FROM custody_position_claim_links WHERE scope_id = ? AND target_operation_id = ?',
     )
     .get(fence.scopeId, target.operationId) as { operationId: string } | undefined
-  const store = new DurableCustodySqliteStore(database)
-  const record = link === undefined ? null : store.getOperation(link.operationId)
-  if (
-    record === null ||
-    record.scope.scopeId !== fence.scopeId ||
-    record.operation.retainedOperationKey !== target.operationId ||
-    record.operation.semanticKind !== 'ctf-redeem' ||
-    target.metadata.purpose !== POSITION_CLAIM_PURPOSE ||
-    record.operation.reservation.reservationId !== target.operationId
-  )
-    throw new Error('position claim custody mapping is absent or foreign')
-  const row = store.getArtifact({
-    scopeId: record.scope.scopeId,
-    operationId: record.operation.operationId,
-    expectedOperationRevision: record.revision,
-    reference: record.operation.privateMaterial.exactPrivateMaterial,
-  })
-  if (row === null) throw new Error('position claim private authority is absent')
-  const authority = assertDurableCustodyMintOperationAuthority(record, row.artifact)
-  const expected = custodyRedeemMintOperation(
+  return readCustodyRedeemOperation(database, {
+    scopeId: fence.scopeId,
+    custodyOperationId: link?.operationId ?? null,
     target,
-    positionAsset(
+    asset: positionAsset(
       canonicalPosition({
         conditionId: target.metadata.conditionId as string,
         outcomeCollection: target.metadata.outcomeSetId as string,
       }),
     ),
-    'position claim',
-  )
-  if (
-    deriveDurableCustodyArtifactFingerprint(expected) !==
-      deriveDurableCustodyArtifactFingerprint(authority.operation) ||
-    (target.state === 'completed' && record.operation.state !== 'reconciled') ||
-    (target.state === 'prepared' &&
-      record.operation.state !== 'dispatch-intent' &&
-      record.operation.state !== 'transport-attempted') ||
-    (target.failureCode === 13015 && record.operation.terminalMintRejection === null)
-  )
-    throw new Error('position claim canonical authority differs from target')
-  if (target.state === 'prepared')
-    assertCustodyRedeemPredecessors(store, record, target, 'position claim')
-  return { store, record, exactAuthority: row.artifact }
+    label: 'position claim',
+  })
 }
 
 /** Valid only within the caller's current synchronous database snapshot/transaction. */

@@ -1,9 +1,7 @@
 import { createSpeculativeRedeemPreparation } from './speculativeRedeemPreparation.ts'
+import { creditedProofAmountMsat, writeNativeCompletedActivity } from './nativeCompletedActivity.ts'
 import { boundedErrorText } from './mintErrorText.ts'
 import { isDeepStrictEqual } from 'node:util'
-import { withDurableCustodyFencedRead } from './durableCustodyUnitOfWork.ts'
-import { profileDir } from './profile.ts'
-import { createDaemonStateSqliteSession } from './stateSqlite.ts'
 import {
   bindRegisteredDlcConditionAuthority,
   type ConditionOracleResolutionContext,
@@ -19,6 +17,12 @@ import {
   type DaemonConditionResolution,
 } from './nativeConditionResolution.ts'
 import { readNativePositionClaimInputKeyset } from './nativePositionClaim.ts'
+import {
+  createCustodyRedeemOperationStore,
+  fencedRedeemWallet,
+  readCustodyRedeemOperation,
+  type CustodyRedeemPurpose,
+} from './custodyRedeemOperation.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Proof } from '@cashu/cashu-ts'
 import {
@@ -30,14 +34,7 @@ import {
 import {
   canonicalProofOperationMintIdentity,
   UneconomicCtfRedeemError,
-  getActiveRegularKeyset,
-  type AuthenticatedCtfRedeemTerminalEvidence,
-  type RedeemWallet,
 } from '@bitcaster-market/client-sdk/ctfRedeem'
-import type {
-  CtfProofOperationRecord,
-  CtfProofOperationStore,
-} from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/durableCustody'
 import {
   amountToNumber,
@@ -47,14 +44,13 @@ import type { CustodyScopeFence } from './profileFencing.ts'
 import type { DaemonProfile } from './profile.ts'
 import type { WalletRetireConditionResult } from './protocol.ts'
 import {
-  completeManagedConditionRedeemFenced,
+  MANAGED_CONDITION_RETIREMENT_PURPOSE,
+  completeManagedConditionRedeemFromDatabase,
   ensureState,
-  failManagedConditionRedeemFenced,
-  readDaemonProofOperationFromDatabase,
-  assertExactProofReservationFromDatabase,
-  prepareProofOperationWithExactReservation,
+  failManagedConditionRedeemFromDatabase,
   retainUneconomicConditionProofsFenced,
   type ProofOperationRecord,
+  type StoredProofAsset,
   type StoredProofRecord,
 } from './state.ts'
 import {
@@ -65,7 +61,6 @@ import {
   startManagedConditionRetirement,
 } from './managedConditionInventorySqlite.ts'
 import {
-  createWallet,
   resolveCtfConsolidationInputFees,
   restoreOutputGroups,
   type WalletOpsDependencies,
@@ -381,7 +376,7 @@ async function resumePreparedRetirementOperations(input: {
     .sort((left, right) => left.operationId.localeCompare(right.operationId))
   for (const operation of operations) {
     if (
-      operation.metadata.purpose !== 'managed-condition-retirement' ||
+      operation.metadata.purpose !== MANAGED_CONDITION_RETIREMENT_PURPOSE ||
       operation.metadata.conditionId !== input.conditionId
     ) {
       continue
@@ -417,7 +412,6 @@ async function redeemRetirementPage(input: {
     keysetId: input.page.keysetId,
     proofs: input.page.proofs,
   })
-  const reservationId = operationId
   const asset = {
     kind: 'Outcome' as const,
     conditionId: input.conditionId,
@@ -425,31 +419,28 @@ async function redeemRetirementPage(input: {
     baseAsset: 'sat' as const,
     unit: 'msat' as const,
   }
-  const originalWallet = createWallet(
-    input.profile.mintUrl,
-    input.secrets,
-    input.walletDependencies ?? {},
-    'sat',
-    'msat',
-  ) as unknown as RedeemWallet
+  const purpose = retirementPurpose({
+    operationId,
+    asset,
+    fence: input.fence,
+    persisted: input.persisted,
+  })
   const preparation = createSpeculativeRedeemPreparation({
     operationId,
     mintUrl: input.profile.mintUrl,
     seed: Buffer.from(input.secrets.walletSeedHex, 'hex'),
     fence: input.fence,
-    wallet: originalWallet,
+    wallet: fencedRedeemWallet(input, input.profile.mintUrl, operationId, purpose.authority),
   })
   const wallet = preparation.wallet
-  const store = retirementOperationStore({
-    fence: input.fence,
-    reservationId,
+  const store = createCustodyRedeemOperationStore(
+    input,
+    operationId,
     asset,
-    persisted: input.persisted,
     wallet,
     preparation,
-    injectFault: input.walletDependencies?.injectCustodyFault,
-    observe: input.walletDependencies?.observeRedeemPrepared,
-  })
+    purpose,
+  )
   const existing = await store.getProofOperation(operationId)
   let context = existing?.metadata.oracleResolutionContext as
     | ConditionOracleResolutionContext
@@ -573,119 +564,104 @@ function assertMintRecordsOutcome(state: ConditionResolution['state'], outcome: 
   throw new Error('condition retirement has no verified witness and no mint result to redeem')
 }
 
-function retirementOperationStore(input: {
-  readonly wallet: RedeemWallet
-  readonly preparation: ReturnType<typeof createSpeculativeRedeemPreparation>
-  readonly injectFault?: WalletOpsDependencies['injectCustodyFault']
-  readonly observe?: WalletOpsDependencies['observeRedeemPrepared']
+/**
+ * A retirement page redeems through the custody redeem path of a claim. It
+ * keeps its own target writers and the authority of its retiring inventory.
+ * The custody operation id comes from the target id, so no link row is saved.
+ */
+function retirementPurpose(input: {
+  readonly operationId: string
+  readonly asset: Extract<StoredProofAsset, { kind: 'Outcome' }>
   readonly fence: CustodyScopeFence
-  readonly reservationId: string
-  readonly asset: Extract<StoredProofRecord['asset'], { kind: 'Outcome' }>
   readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
-}): CtfProofOperationStore {
+}): CustodyRedeemPurpose {
   const state = input.persisted.state
   if (state.state !== 'retiring') throw new Error('retirement operation requires retiring state')
   const managedConditionOperationAuthority = {
-    operationId: input.reservationId,
+    operationId: input.operationId,
     scopeId: input.fence.scopeId,
     inventoryRevisionAtBind: state.revision,
     purpose: 'retirement-redemption' as const,
     resolutionEvidenceFingerprint: state.resolution.evidenceFingerprint,
     retirementIntentId: state.retirementIntent.intentId,
   }
+  const label = 'condition retirement'
   return {
-    getProofOperation: async (operationId) =>
-      withDurableCustodyFencedRead(
-        createDaemonStateSqliteSession(profileDir()),
-        input.fence,
-        Date.now(),
-        (database) => {
-          if (operationId !== input.reservationId)
-            throw new Error('retirement operation identity is foreign')
-          const operation = readDaemonProofOperationFromDatabase(database, operationId)
-          if (operation === null) return null
-          if (
-            operation.mintUrl !== state.normalizedMint ||
-            operation.metadata.conditionId !== input.asset.conditionId ||
-            operation.metadata.outcomeSetId !== input.asset.outcomeSetId ||
-            operation.kind !== 'ctf-redeem' ||
-            operation.metadata.purpose !== 'managed-condition-retirement' ||
-            operation.metadata.reservationId !== input.reservationId ||
-            !isDeepStrictEqual(
-              operation.metadata.managedConditionOperationAuthority,
-              managedConditionOperationAuthority,
-            )
-          )
-            throw new Error('retirement saved owner authority is foreign')
-          assertManagedConditionMutationFromDatabase(
-            database,
-            {
-              scopeId: input.fence.scopeId,
-              normalizedMint: operation.mintUrl,
-              unit: 'msat',
-              conditionId: input.asset.conditionId,
-              canonicalParentCollectionId: null,
-            },
-            { kind: 'retirement-redemption', authority: managedConditionOperationAuthority },
-          )
-          if (operation.state === 'prepared')
-            assertExactProofReservationFromDatabase(database, {
-              ...operation,
-              reservationId: input.reservationId,
-              asset: input.asset,
-            })
-          return operation as CtfProofOperationRecord
-        },
-        { snapshot: true },
-      ),
-    prepareProofOperation: async (operation) => {
-      const keyset = await getActiveRegularKeyset(input.wallet, 'msat')
-      if (keyset.id !== operation.metadata?.regularKeysetId)
-        throw new Error('retirement exact regular keyset is foreign')
-      const regularOutputKeysetAuthority: DurableCustodyMintKeysetAuthority = {
-        canonicalMintUrl: operation.mintUrl,
-        id: keyset.id,
-        unit: 'msat',
-        keys: keyset.keys,
-        inputFeePpk: keyset.input_fee_ppk ?? 0,
-        finalExpiry: keyset.final_expiry ?? null,
-        identity: { kind: 'regular' },
-      }
-      await input.observe?.('retirement', structuredClone(operation))
-      const prepared = (await prepareProofOperationWithExactReservation(
-        {
-          ...operation,
-          reservationId: input.reservationId,
-          asset: input.asset,
-          metadata: {
-            ...operation.metadata,
-            regularOutputKeysetAuthority,
-            purpose: 'managed-condition-retirement',
-            reservationId: input.reservationId,
-            managedConditionOperationAuthority,
-          },
-        },
-        { fence: input.fence, observedAtMs: Date.now() },
-        undefined,
-        input.preparation.beforePrepare,
-        input.injectFault,
-      )) as CtfProofOperationRecord
-      input.preparation.prepared()
-      return prepared
+    label,
+    observeStage: 'retirement',
+    admissionPrefix: 'condition-retirement',
+    authority: {
+      purpose: MANAGED_CONDITION_RETIREMENT_PURPOSE,
+      reservationId: input.operationId,
+      inputAsset: input.asset,
+      successorAssets: { regular: { kind: 'sats', baseAsset: 'sat', unit: 'msat' } },
     },
-    markProofOperationCompleted: async (operationId, completion) =>
-      (await completeManagedConditionRedeemFenced(operationId, completion, {
-        fence: input.fence,
-        observedAtMs: Date.now(),
-      })) as CtfProofOperationRecord,
-    markProofOperationFailed: async (operationId, message, evidence) =>
-      (await failManagedConditionRedeemFenced(
-        operationId,
-        message,
-        evidence as AuthenticatedCtfRedeemTerminalEvidence,
-        { fence: input.fence, observedAtMs: Date.now() },
-      )) as CtfProofOperationRecord,
+    targetMetadata: { managedConditionOperationAuthority },
+    assertTarget: (operation) => {
+      if (
+        operation.operationId !== input.operationId ||
+        operation.kind !== 'ctf-redeem' ||
+        operation.mintUrl !== state.normalizedMint ||
+        operation.metadata.purpose !== MANAGED_CONDITION_RETIREMENT_PURPOSE ||
+        operation.metadata.conditionId !== input.asset.conditionId ||
+        operation.metadata.outcomeSetId !== input.asset.outcomeSetId ||
+        operation.metadata.reservationId !== input.operationId ||
+        !isDeepStrictEqual(
+          operation.metadata.managedConditionOperationAuthority,
+          managedConditionOperationAuthority,
+        )
+      )
+        throw new Error('retirement saved owner authority is foreign')
+    },
+    readCustody: (database, fence, target) => {
+      assertManagedConditionMutationFromDatabase(
+        database,
+        {
+          scopeId: fence.scopeId,
+          normalizedMint: state.normalizedMint,
+          unit: 'msat',
+          conditionId: input.asset.conditionId,
+          canonicalParentCollectionId: null,
+        },
+        { kind: 'retirement-redemption', authority: managedConditionOperationAuthority },
+      )
+      return readCustodyRedeemOperation(database, {
+        scopeId: fence.scopeId,
+        custodyOperationId: retirementCustodyOperationId(fence.scopeId, target.operationId),
+        target,
+        asset: input.asset,
+        label,
+      })
+    },
+    linkCustody: (_database, scopeId, targetOperationId, custodyOperationId) => {
+      if (custodyOperationId !== retirementCustodyOperationId(scopeId, targetOperationId))
+        throw new Error('condition retirement custody operation id is foreign')
+    },
+    completeTarget: completeManagedConditionRedeemFromDatabase,
+    afterComplete: (database, { operationId, regular, context }) => {
+      writeNativeCompletedActivity(database, {
+        scopeId: context.fence.scopeId,
+        sourceKind: 'condition-retirement',
+        sourceId: operationId,
+        type: 'payout_claimed',
+        amountMsat: creditedProofAmountMsat(regular, 'msat'),
+        completedAtMs: context.observedAtMs,
+        txId: operationId,
+      })
+    },
+    failTarget: failManagedConditionRedeemFromDatabase,
   }
+}
+
+/**
+ * The custody operation of a retirement page. The custody record binds the
+ * target id as its retained key and as its activity, as a convert does.
+ */
+function retirementCustodyOperationId(scopeId: string, targetOperationId: string): string {
+  return deriveDurableCustodyOperationId(scopeId, {
+    retainedOperationKey: targetOperationId,
+    binding: { kind: 'wallet', activityId: targetOperationId, stage: 'ctf-redeem' },
+  })
 }
 
 async function nextRetirementPage(

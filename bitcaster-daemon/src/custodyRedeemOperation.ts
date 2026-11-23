@@ -13,6 +13,7 @@ import {
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import {
   applyDurableCustodyTransaction,
+  deriveDurableCustodyArtifactFingerprint,
   type DurableCustodyExactArtifact,
   type DurableCustodyRecord,
 } from '@bitcaster-market/client-sdk/durableCustody'
@@ -21,6 +22,7 @@ import {
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
+  assertDurableCustodyMintOperationAuthority,
   prepareDurableCustodyMintOperationAuthority,
   prepareDurableCustodyVerifiedMintResult,
   stageDurableCustodyPreparedMintResult,
@@ -78,6 +80,8 @@ export interface CustodyRedeemPurpose {
   /** The prefix of the custody successor admission id. */
   readonly admissionPrefix: string
   readonly authority: CustodyRedeemAuthority
+  /** The owner facts that the prepared target saves with the exact authority. */
+  readonly targetMetadata?: Readonly<Record<string, unknown>>
   /** Refuse a saved target that this purpose does not own. */
   assertTarget(operation: ProofOperationRecord): void
   /** Read the custody operation of a target in the caller's transaction. */
@@ -90,7 +94,11 @@ export interface CustodyRedeemPurpose {
     readonly record: DurableCustodyRecord
     readonly exactAuthority: DurableCustodyExactArtifact
   }
-  /** Record how a new target finds its custody operation, in the binding transaction. */
+  /**
+   * Record how a new target finds its custody operation, in the binding
+   * transaction. A purpose that derives the custody id from the target id
+   * only checks the bound id.
+   */
   linkCustody(
     database: DatabaseSync,
     scopeId: string,
@@ -189,7 +197,7 @@ export function createCustodyRedeemOperationStore(
           ...operation,
           reservationId: operationId,
           asset,
-          metadata: { ...operation.metadata, ...authority },
+          metadata: { ...operation.metadata, ...purpose.targetMetadata, ...authority },
         },
         context,
         (database, target) => {
@@ -501,6 +509,60 @@ export function conditionalRedeemKeysetAuthority(
       }),
     },
   }
+}
+
+/**
+ * Read the custody operation of a redeem target and check that it binds the
+ * exact saved request of the target. The caller finds the operation id.
+ * Valid only in the caller's current transaction.
+ */
+export function readCustodyRedeemOperation(
+  database: DatabaseSync,
+  input: {
+    readonly scopeId: string
+    readonly custodyOperationId: string | null
+    readonly target: ProofOperationRecord
+    readonly asset: Extract<StoredProofAsset, { kind: 'Outcome' }>
+    readonly label: string
+  },
+): {
+  readonly store: DurableCustodySqliteStore
+  readonly record: DurableCustodyRecord
+  readonly exactAuthority: DurableCustodyExactArtifact
+} {
+  const { target, label } = input
+  const store = new DurableCustodySqliteStore(database)
+  const record =
+    input.custodyOperationId === null ? null : store.getOperation(input.custodyOperationId)
+  if (
+    record === null ||
+    record.scope.scopeId !== input.scopeId ||
+    record.operation.retainedOperationKey !== target.operationId ||
+    record.operation.semanticKind !== 'ctf-redeem' ||
+    record.operation.reservation.reservationId !== target.operationId
+  )
+    throw new Error(`${label} custody mapping is absent or foreign`)
+  const row = store.getArtifact({
+    scopeId: record.scope.scopeId,
+    operationId: record.operation.operationId,
+    expectedOperationRevision: record.revision,
+    reference: record.operation.privateMaterial.exactPrivateMaterial,
+  })
+  if (row === null) throw new Error(`${label} private authority is absent`)
+  const authority = assertDurableCustodyMintOperationAuthority(record, row.artifact)
+  const expected = custodyRedeemMintOperation(target, input.asset, label)
+  if (
+    deriveDurableCustodyArtifactFingerprint(expected) !==
+      deriveDurableCustodyArtifactFingerprint(authority.operation) ||
+    (target.state === 'completed' && record.operation.state !== 'reconciled') ||
+    (target.state === 'prepared' &&
+      record.operation.state !== 'dispatch-intent' &&
+      record.operation.state !== 'transport-attempted') ||
+    (target.failureCode === 13015 && record.operation.terminalMintRejection === null)
+  )
+    throw new Error(`${label} canonical authority differs from target`)
+  if (target.state === 'prepared') assertCustodyRedeemPredecessors(store, record, target, label)
+  return { store, record, exactAuthority: row.artifact }
 }
 
 /** Each input of the redeem has its exact unspent and verified custody row. */

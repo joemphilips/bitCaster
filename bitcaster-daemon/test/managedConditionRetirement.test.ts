@@ -7,42 +7,34 @@ import { after, test } from 'node:test'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
-import {
-  HttpResponseError,
-  MintOperationError,
-  deriveConditionalKeysetId,
-  type Proof,
-} from '@cashu/cashu-ts'
-import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
+import { HttpResponseError, MintOperationError, type Proof } from '@cashu/cashu-ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { ORACLE_NOT_ATTESTED_OUTCOME_CODE } from '@bitcaster-market/client-sdk/ctfRedeem'
-import { createCtfProofOperationCompletion } from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveDlcConditionId } from '@bitcaster-market/client-sdk/managedConditionInventory'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import {
   addAvailableProofs,
-  completeDurableOutgoingWalletSendFromDatabase,
-  completeManagedConditionRedeemFenced,
   prepareProofOperationWithExactReservation,
+  readAvailableCanonicalWalletProofPageFromDatabase,
   readState,
-  writeState,
 } from '../src/state.ts'
-import { createDaemonCounterSource } from '../src/walletOps.ts'
+import { createDaemonCounterSource, sendWalletToken } from '../src/walletOps.ts'
 import {
+  resumeDaemonConditionRetirements,
   retireDaemonConditionInventory,
   retireResolvedDaemonConditions,
 } from '../src/managedConditionRetirement.ts'
-import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { readProfile } from '../src/profile.ts'
 import {
   CTF_KEYSET_ID,
+  FakeRegularMint,
   FakeRetirementWallet,
-  REGULAR_KEYS,
   REGULAR_KEYSET_ID,
-  outcomeKeyset,
+  holdOutcomeProofs,
   proof,
 } from './support/retirementWallet.ts'
+import { readActivityRows } from './nativeActivityTestHelpers.ts'
 import {
   FAR_MATURITY_EPOCH,
   pendingResolution,
@@ -59,7 +51,17 @@ const REGULAR_KEY = bytesToHex(
 )
 after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))))
 
-async function createRetirementFixture(count = 65) {
+/** The test mint charges no input fee for any keyset. */
+const noInputFees = async (_mintUrl: string, keysetIds: string[]) =>
+  Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 0]))
+
+async function createRetirementFixture(
+  count = 65,
+  /** The amount of each held YES proof. */
+  amount = 1,
+  /** The input fee of the YES keyset. */
+  inputFeePpk = 0,
+) {
   const previous = process.env.BITCASTER_DAEMON_HOME
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-retirement-'))
   roots.push(root)
@@ -89,19 +91,37 @@ async function createRetirementFixture(count = 65) {
     oraclePublicKeys: [oraclePublicKey],
   })
   const signature = signOutcome('YES', oraclePrivateKey)
-  const inputs = Array.from({ length: count }, (_, index) =>
-    proof(CTF_KEYSET_ID, `conditional-input-${index.toString().padStart(3, '0')}`, 1),
-  )
-  await addAvailableProofs('https://mint.example', inputs, {
-    kind: 'Outcome',
+  const wallet = new FakeRetirementWallet()
+  /** Custody receives these proofs as available positions. Each wallet learns the keyset. */
+  const hold = (
+    forCondition: string,
+    outcomeCollection: string,
+    proofs: ReadonlyArray<{ readonly secret: string; readonly amount: number }>,
+    wallets: readonly FakeRetirementWallet[] = [wallet],
+    keysetInputFeePpk = 0,
+  ) =>
+    holdOutcomeProofs({
+      directory,
+      fence,
+      mintUrl: 'https://mint.example',
+      conditionId: forCondition,
+      outcomeCollection,
+      proofs,
+      wallets,
+      inputFeePpk: keysetInputFeePpk,
+    })
+  await hold(
     conditionId,
-    outcomeSetId: 'YES',
-    baseAsset: 'sat',
-    unit: 'msat',
-  })
+    'YES',
+    Array.from({ length: count }, (_, index) => ({
+      secret: `conditional-input-${index.toString().padStart(3, '0')}`,
+      amount,
+    })),
+    [wallet],
+    inputFeePpk,
+  )
   const profile = await readProfile()
   assert.ok(profile)
-  const wallet = new FakeRetirementWallet()
   const result: ConditionResultFixture = {
     conditionId,
     attestedOutcome: 'YES',
@@ -132,7 +152,7 @@ async function createRetirementFixture(count = 65) {
     resolution: resolvedResolution(result),
     walletDependencies: {
       createCashuWallet: () => wallet,
-      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+      resolveInputFeePpkByKeyset: noInputFees,
     },
   }
 
@@ -147,6 +167,7 @@ async function createRetirementFixture(count = 65) {
     result,
     common,
     conditionId,
+    hold,
     dispose: async () => {
       if (previous === undefined) delete process.env.BITCASTER_DAEMON_HOME
       else process.env.BITCASTER_DAEMON_HOME = previous
@@ -451,14 +472,13 @@ test('daemon previews then atomically retires one verified condition inventory',
   const {
     directory,
     fence,
-    oraclePrivateKey,
     oraclePublicKey,
     signature,
-    profile,
     wallet,
     result,
     common,
     conditionId,
+    hold,
   } = await createRetirementFixture()
   // The same oracle result, registered for another event of the same oracle.
   const resultFor = (forCondition: string, forEvent: string): ConditionResultFixture => ({
@@ -492,7 +512,6 @@ test('daemon previews then atomically retires one verified condition inventory',
       .reduce((sum, { proof }) => sum + Number(proof.amount), 0),
     65,
   )
-  await assertManagedRedeemCompletionIsTerminal({ directory, fence, state })
   await assert.rejects(
     addAvailableProofs('https://mint.example', [proof(CTF_KEYSET_ID, 'late-proof', 1)], {
       kind: 'Outcome',
@@ -510,27 +529,17 @@ test('daemon previews then atomically retires one verified condition inventory',
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  const winningId = deriveConditionalKeysetId({
-    keys: REGULAR_KEYS,
-    unit: 'msat',
-    conditionId: losingConditionId,
-    outcomeCollectionId: deriveRootCtfOutcomeCollectionId({
-      conditionId: losingConditionId,
-      outcomeCollection: 'YES',
-    }),
-  })
-  const losingInput = proof(winningId, 'conditional-winner-refused', 5)
-  await addAvailableProofs('https://mint.example', [losingInput], {
-    kind: 'Outcome',
-    conditionId: losingConditionId,
-    outcomeSetId: 'YES',
-    baseAsset: 'sat',
-    unit: 'msat',
-  })
   const losingWallet = new FakeRetirementWallet(
     new MintOperationError(ORACLE_NOT_ATTESTED_OUTCOME_CODE, 'oracle not attested'),
   )
-  losingWallet.conditional = { ...outcomeKeyset(), id: winningId }
+  const {
+    proofs: [losingInput],
+  } = await hold(
+    losingConditionId,
+    'YES',
+    [{ secret: 'conditional-winner-refused', amount: 4 }],
+    [losingWallet],
+  )
   losingWallet.conditionInfo = {
     condition_id: losingConditionId,
     threshold: 1,
@@ -550,18 +559,18 @@ test('daemon previews then atomically retires one verified condition inventory',
       resolution: resolvedResolution(resultFor(losingConditionId, losingEventId)),
       walletDependencies: {
         createCashuWallet: () => losingWallet,
-        resolveInputFeePpkByKeyset: async () => ({ [winningId]: 0 }),
+        resolveInputFeePpkByKeyset: noInputFees,
       },
     }),
     /refusal remains pending/,
   )
   const afterLosing = (await readState())!
   const retained = afterLosing.wallet.proofs.find(
-    ({ proof: held }) => held.secret === losingInput.secret,
+    ({ proof: held }) => held.secret === losingInput!.secret,
   )!
   assert.equal(retained.state, 'reserved')
   const pending = Object.values(afterLosing.proofOperations).find((operation) =>
-    operation.inputs.some(({ secret }) => secret === losingInput.secret),
+    operation.inputs.some(({ secret }) => secret === losingInput!.secret),
   )!
   assert.equal(pending.state, 'prepared')
   assert.equal(pending.failureCode, undefined)
@@ -571,7 +580,7 @@ test('daemon previews then atomically retires one verified condition inventory',
   const reopened = (await readState())!
   assert.deepEqual(reopened.proofOperations[pending.operationId], pending)
   assert.equal(
-    reopened.wallet.proofs.find(({ proof: held }) => held.secret === losingInput.secret)!
+    reopened.wallet.proofs.find(({ proof: held }) => held.secret === losingInput!.secret)!
       .reservedBy,
     pending.operationId,
   )
@@ -583,15 +592,15 @@ test('daemon previews then atomically retires one verified condition inventory',
       outcomeCount: 2,
       oraclePublicKeys: [oraclePublicKey],
     })
-    const badInput = proof(CTF_KEYSET_ID, `bad-output-input-${fault}`, 4)
-    await addAvailableProofs(profile.mintUrl, [badInput], {
-      kind: 'Outcome',
-      conditionId: badCondition,
-      outcomeSetId: 'YES',
-      baseAsset: 'sat',
-      unit: 'msat',
-    })
     const badWallet = new FakeRetirementWallet()
+    const {
+      proofs: [badInput],
+    } = await hold(
+      badCondition,
+      'YES',
+      [{ secret: `bad-output-input-${fault}`, amount: 4 }],
+      [badWallet],
+    )
     badWallet.alterResult = (proofs) =>
       proofs.map((proof) => ({
         ...proof,
@@ -611,7 +620,7 @@ test('daemon previews then atomically retires one verified condition inventory',
         resolution: resolvedResolution(resultFor(badCondition, event)),
         walletDependencies: {
           createCashuWallet: () => badWallet,
-          resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+          resolveInputFeePpkByKeyset: noInputFees,
         },
       }),
     )
@@ -619,11 +628,11 @@ test('daemon previews then atomically retires one verified condition inventory',
     reopenedDatabase.close()
     const state = (await readState())!
     const pending = Object.values(state.proofOperations).find((operation) =>
-      operation.inputs.some(({ secret }) => secret === badInput.secret),
+      operation.inputs.some(({ secret }) => secret === badInput!.secret),
     )!
     assert.equal(pending.state, 'prepared')
     assert.equal(
-      state.wallet.proofs.find(({ proof: held }) => held.secret === badInput.secret)!.reservedBy,
+      state.wallet.proofs.find(({ proof: held }) => held.secret === badInput!.secret)!.reservedBy,
       pending.operationId,
     )
     assert.equal(
@@ -634,84 +643,19 @@ test('daemon previews then atomically retires one verified condition inventory',
     )
   }
 
-  const legacyEvent = 'retirement-legacy-output-keys'
-  const legacyCondition = deriveDlcConditionId({
-    eventId: legacyEvent,
-    outcomeCount: 2,
-    oraclePublicKeys: [oraclePublicKey],
-  })
-  await addAvailableProofs(profile.mintUrl, [proof(CTF_KEYSET_ID, 'legacy-original-input', 4)], {
-    kind: 'Outcome',
-    conditionId: legacyCondition,
-    outcomeSetId: 'YES',
-    baseAsset: 'sat',
-    unit: 'msat',
-  })
-  const legacyResponse = resultFor(legacyCondition, legacyEvent)
-  const legacyCommon = {
-    ...common,
-    conditionId: legacyCondition,
-    resolution: resolvedResolution(legacyResponse),
-  }
-  await assert.rejects(
-    retireDaemonConditionInventory({
-      ...legacyCommon,
-      acknowledge: true,
-      walletDependencies: {
-        createCashuWallet: () => new FakeRetirementWallet(new Error('legacy timeout')),
-        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
-      },
-    }),
-    /legacy timeout/,
-  )
-  const legacyState = (await readState())!
-  const legacyOperation = Object.values(legacyState.proofOperations).find((operation) =>
-    operation.inputs.some(({ secret }) => secret === 'legacy-original-input'),
-  )!
-  delete legacyOperation.metadata.regularOutputKeysetAuthority
-  legacyOperation.metadata.oracleWitness = JSON.stringify(legacyResponse.oracleWitness)
-  await writeState(legacyState)
-  const originalLegacy = JSON.parse(JSON.stringify(legacyOperation))
-  await assert.rejects(
-    retireDaemonConditionInventory({
-      ...legacyCommon,
-      acknowledge: true,
-      walletDependencies: {
-        createCashuWallet: () => new FakeRetirementWallet(),
-        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
-      },
-    }),
-    /output keyset authority is absent/,
-  )
-  const legacyReopenedDatabase = await openDaemonStateSqlite(directory)
-  legacyReopenedDatabase.close()
-  const legacyReopened = (await readState())!
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(legacyReopened.proofOperations[legacyOperation.operationId])),
-    originalLegacy,
-  )
-  assert.equal(
-    legacyReopened.wallet.proofs.find(({ proof }) => proof.secret === 'legacy-original-input')!
-      .reservedBy,
-    legacyOperation.operationId,
-  )
-
   const retryEventId = 'daemon-retirement-restart-test'
   const retryConditionId = deriveDlcConditionId({
     eventId: retryEventId,
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  await addAvailableProofs(
-    'https://mint.example',
-    [proof(CTF_KEYSET_ID, 'conditional-restart', 4)],
-    {
-      kind: 'Outcome',
-      conditionId: retryConditionId,
-      outcomeSetId: 'YES',
-      baseAsset: 'sat',
-      unit: 'msat',
-    },
+  const timeoutWallet = new FakeRetirementWallet(new Error('mint timeout'))
+  const restartWallet = new FakeRetirementWallet()
+  await hold(
+    retryConditionId,
+    'YES',
+    [{ secret: 'conditional-restart', amount: 4 }],
+    [timeoutWallet, restartWallet],
   )
   const retryResponse = resultFor(retryConditionId, retryEventId)
   await assert.rejects(
@@ -721,13 +665,12 @@ test('daemon previews then atomically retires one verified condition inventory',
       acknowledge: true,
       resolution: resolvedResolution(retryResponse),
       walletDependencies: {
-        createCashuWallet: () => new FakeRetirementWallet(new Error('mint timeout')),
-        resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+        createCashuWallet: () => timeoutWallet,
+        resolveInputFeePpkByKeyset: noInputFees,
       },
     }),
     /mint timeout/,
   )
-  const restartWallet = new FakeRetirementWallet()
   const restartResult = await retireDaemonConditionInventory({
     ...common,
     conditionId: retryConditionId,
@@ -737,7 +680,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     resolution: unavailableResolution,
     walletDependencies: {
       createCashuWallet: () => restartWallet,
-      resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
+      resolveInputFeePpkByKeyset: noInputFees,
     },
   })
   assert.equal(restartResult.state, 'retired')
@@ -749,7 +692,7 @@ test('daemon previews then atomically retires one verified condition inventory',
     outcomeCount: 2,
     oraclePublicKeys: [oraclePublicKey],
   })
-  const reservedProof = proof(CTF_KEYSET_ID, 'conditional-reserved', 3)
+  await hold(reservedConditionId, 'YES', [{ secret: 'conditional-reserved', amount: 2 }])
   const reservedAsset = {
     kind: 'Outcome' as const,
     conditionId: reservedConditionId,
@@ -757,7 +700,9 @@ test('daemon previews then atomically retires one verified condition inventory',
     baseAsset: 'sat' as const,
     unit: 'msat' as const,
   }
-  await addAvailableProofs('https://mint.example', [reservedProof], reservedAsset)
+  const reservedProof = (await readState())!.wallet.proofs.find(
+    (record) => record.proof.secret === 'conditional-reserved',
+  )!.proof
   await prepareProofOperationWithExactReservation(
     {
       operationId: 'foreign-reservation',
@@ -793,69 +738,6 @@ test('daemon previews then atomically retires one verified condition inventory',
     'reserved',
   )
 })
-
-async function assertManagedRedeemCompletionIsTerminal(input: {
-  directory: string
-  fence: Awaited<ReturnType<typeof claimCustodyScopeLease>>
-  state: NonNullable<Awaited<ReturnType<typeof readState>>>
-}): Promise<void> {
-  const operation = Object.values(input.state.proofOperations).find(
-    (candidate) =>
-      candidate.kind === 'ctf-redeem' &&
-      candidate.state === 'completed' &&
-      candidate.metadata.purpose === 'managed-condition-retirement',
-  )
-  assert.ok(operation)
-  const payout = operation.resultProofs?.regular?.[0]
-  assert.ok(payout)
-  const spendOperationId = 'spend-managed-redeem-payout'
-  await prepareProofOperationWithExactReservation(
-    {
-      operationId: spendOperationId,
-      kind: 'wallet-send',
-      mintUrl: operation.mintUrl,
-      inputs: [payout],
-      outputs: { keep: [], send: [] },
-      metadata: { reservationId: spendOperationId, unit: 'msat' },
-      reservationId: spendOperationId,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-    },
-    { fence: input.fence, observedAtMs: Date.now() },
-  )
-  await withDurableCustodyUnitOfWork(input.directory, input.fence, Date.now(), (database) =>
-    completeDurableOutgoingWalletSendFromDatabase(database, {
-      operationId: spendOperationId,
-      reservationId: spendOperationId,
-      unit: 'msat',
-      keepProofs: [],
-      sendProofs: [proof(REGULAR_KEYSET_ID, 'external-recipient', Number(payout.amount))],
-      nowMs: Date.now(),
-    }),
-  )
-  const exactCompletion = createCtfProofOperationCompletion('ctf-redeem', {
-    regular: operation.resultProofs!.regular as Proof[],
-  })
-  await completeManagedConditionRedeemFenced(operation.operationId, exactCompletion, {
-    fence: input.fence,
-    observedAtMs: Date.now(),
-  })
-  assert.equal(
-    (await readState())?.wallet.proofs.some(
-      ({ proof: candidate }) => candidate.secret === payout.secret,
-    ),
-    false,
-  )
-  await assert.rejects(
-    completeManagedConditionRedeemFenced(
-      operation.operationId,
-      createCtfProofOperationCompletion('ctf-redeem', {
-        regular: [proof(REGULAR_KEYSET_ID, 'different-result', Number(payout.amount))],
-      }),
-      { fence: input.fence, observedAtMs: Date.now() },
-    ),
-    /completed with a different result/,
-  )
-}
 
 function signOutcome(outcome: string, privateKey: Uint8Array): string {
   const message = taggedHash('DLC/oracle/attestation/v0', utf8ToBytes(outcome))
@@ -1123,3 +1005,201 @@ for (const corrupt of ['historical', 'reservation', 'owner'] as const)
       await fixture.dispose()
     }
   })
+
+/** The custody rows and redeem operations, grouped. Amounts are msat. */
+async function custodyFacts(directory: string) {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    const proofs = (outcome: boolean) =>
+      database
+        .prepare(
+          `SELECT selectability, nut07_state AS state, COUNT(*) AS count, SUM(amount) AS total
+           FROM custody_proofs WHERE condition_id IS ${outcome ? 'NOT ' : ''}NULL
+           GROUP BY selectability, nut07_state ORDER BY selectability, nut07_state`,
+        )
+        .all()
+        .map((row) => `${row.selectability}/${row.state}:${row.count}/${row.total}`)
+    return {
+      regular: proofs(false),
+      outcome: proofs(true),
+      redeems: database
+        .prepare(
+          `SELECT operation_state AS state, COUNT(*) AS count FROM custody_operations
+           WHERE semantic_kind = 'ctf-redeem' GROUP BY operation_state ORDER BY operation_state`,
+        )
+        .all()
+        .map((row) => `${row.state}:${row.count}`),
+      reservations: Number(
+        database.prepare('SELECT COUNT(*) AS count FROM custody_proof_reservations').get()!.count,
+      ),
+    }
+  } finally {
+    database.close()
+  }
+}
+
+/** The regular msat that an order can spend: custody holds it with a verified DLEQ proof. */
+async function orderSpendableMsat(directory: string, mintUrl: string): Promise<number> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return readAvailableCanonicalWalletProofPageFromDatabase(database, {
+      mintUrl,
+      keysetId: REGULAR_KEYSET_ID,
+      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+      limit: 64,
+    }).proofs.reduce((sum, { proof }) => sum + Number(proof.amount), 0)
+  } finally {
+    database.close()
+  }
+}
+
+async function walletOutcomeRows(directory: string): Promise<string[]> {
+  const database = await openDaemonStateSqlite(directory)
+  try {
+    return database
+      .prepare(
+        `SELECT outcome_set_id AS outcome, state, reserved_by AS reservedBy
+         FROM target_wallet_proofs WHERE asset_kind = 'outcome' ORDER BY outcome_set_id`,
+      )
+      .all()
+      .map(
+        (row) =>
+          `${row.outcome}/${row.state}${String(row.reservedBy).startsWith('retained:') ? '/retained' : ''}`,
+      )
+  } finally {
+    database.close()
+  }
+}
+
+async function payoutAmounts(directory: string): Promise<number[]> {
+  return (await readActivityRows(directory))
+    .filter((row) => row.item.type === 'payout_claimed')
+    .map((row) => row.item.amountSubunits)
+}
+
+test('a retirement payout is custody funds that a send and an order can spend', async () => {
+  const fixture = await createRetirementFixture(2, 4)
+  const { directory, profile, fence, common, wallet } = fixture
+  try {
+    const retired = await retireDaemonConditionInventory({ ...common, acknowledge: true })
+    assert.equal(retired.state, 'retired')
+    assert.equal(wallet.redeemCalls, 1)
+    // One transaction admits the payout as selectable custody and spends the inputs.
+    assert.deepEqual(await custodyFacts(directory), {
+      regular: ['selectable/UNSPENT:2/8'],
+      outcome: ['spent/SPENT:2/8'],
+      redeems: ['reconciled:1'],
+      reservations: 0,
+    })
+    assert.equal(await orderSpendableMsat(directory, profile.mintUrl), 8)
+    assert.deepEqual(await payoutAmounts(directory), [8])
+
+    const regularMint = new FakeRegularMint()
+    const sent = await sendWalletToken(4, profile, common.secrets, {
+      getCustodyFence: () => fence,
+      createCashuWallet: (_mint, _unit, source) =>
+        regularMint.wallet(
+          { mintUrl: profile.mintUrl, seedHex: common.secrets.walletSeedHex, fence },
+          source,
+        ),
+    })
+    assert.equal(sent.amountMsat, 4)
+    assert.equal(await orderSpendableMsat(directory, profile.mintUrl), 4)
+
+    // A later retirement and its resume find no work. The spent payout stays spent.
+    const afterSend = await custodyFacts(directory)
+    assert.equal(
+      (await retireDaemonConditionInventory({ ...common, acknowledge: true })).state,
+      'retired',
+    )
+    assert.deepEqual(await resumeDaemonConditionRetirements(common), [])
+    assert.equal(wallet.redeemCalls, 1)
+    assert.deepEqual(await custodyFacts(directory), afterSend)
+    assert.deepEqual(await payoutAmounts(directory), [8])
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('a resumed retirement page sends the same request and admits the payout to custody', async () => {
+  const fixture = await createRetirementFixture(1, 4)
+  const { directory, profile, common, wallet, conditionId } = fixture
+  try {
+    wallet.loseResponse = true
+    await assert.rejects(
+      retireDaemonConditionInventory({ ...common, acknowledge: true }),
+      /lost mint response/,
+    )
+    // The mint signed, but its answer did not arrive. Custody keeps the input reserved.
+    assert.deepEqual(await custodyFacts(directory), {
+      regular: [],
+      outcome: ['locked/UNSPENT:1/4'],
+      redeems: ['dispatch-intent:1'],
+      reservations: 1,
+    })
+    assert.deepEqual(await payoutAmounts(directory), [])
+
+    wallet.loseResponse = false
+    assert.deepEqual(await resumeDaemonConditionRetirements(common), [{ conditionId, error: null }])
+    assert.equal(wallet.redeemCalls, 2)
+    assert.deepEqual(wallet.requests[1], wallet.requests[0])
+    assert.deepEqual(await custodyFacts(directory), {
+      regular: ['selectable/UNSPENT:1/4'],
+      outcome: ['spent/SPENT:1/4'],
+      redeems: ['reconciled:1'],
+      reservations: 0,
+    })
+    assert.equal(await orderSpendableMsat(directory, profile.mintUrl), 4)
+    assert.deepEqual(await payoutAmounts(directory), [4])
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('a losing retirement page is a terminal rejection that keeps its custody inputs', async () => {
+  const fixture = await createRetirementFixture(1, 4)
+  const { directory, profile, common, wallet, conditionId, hold } = fixture
+  try {
+    const { keyset: losing } = await hold(conditionId, 'NO', [
+      { secret: 'losing-input', amount: 2 },
+    ])
+    wallet.losingKeysets.add(losing.id)
+    const retired = await retireDaemonConditionInventory({ ...common, acknowledge: true })
+    assert.equal(retired.state, 'retired')
+    assert.equal(wallet.redeemCalls, 2)
+    // The losing input stays unspent and retained, so no command spends it.
+    assert.deepEqual(await custodyFacts(directory), {
+      regular: ['selectable/UNSPENT:1/4'],
+      outcome: ['retained/UNSPENT:1/2', 'spent/SPENT:1/4'],
+      redeems: ['aborted:1', 'reconciled:1'],
+      reservations: 0,
+    })
+    assert.deepEqual(await walletOutcomeRows(directory), ['NO/locked'])
+    assert.equal(await orderSpendableMsat(directory, profile.mintUrl), 4)
+    assert.deepEqual(await payoutAmounts(directory), [4])
+  } finally {
+    await fixture.dispose()
+  }
+})
+
+test('an uneconomic retirement page keeps its proof and calls no mint', async () => {
+  // The input fee of the only page equals its amount, so the redeem pays nothing.
+  const fixture = await createRetirementFixture(1, 1, 1_000)
+  const { directory, common, wallet } = fixture
+  try {
+    const retired = await retireDaemonConditionInventory({ ...common, acknowledge: true })
+    assert.equal(retired.state, 'retired')
+    assert.equal(wallet.redeemCalls, 0)
+    // Accepted risk: custody keeps the uneconomic input selectable. The wallet keeps it as history.
+    assert.deepEqual(await custodyFacts(directory), {
+      regular: [],
+      outcome: ['selectable/UNSPENT:1/1'],
+      redeems: [],
+      reservations: 0,
+    })
+    assert.deepEqual(await walletOutcomeRows(directory), ['YES/locked/retained'])
+    assert.deepEqual(await payoutAmounts(directory), [])
+  } finally {
+    await fixture.dispose()
+  }
+})

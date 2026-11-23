@@ -17,9 +17,6 @@ import {
   readRangePreparationHistoryByClientOrderId,
   type RangePreparationRecord,
 } from './ctfRangeOrderJournalSqlite.ts'
-import { verifyDurableCustodyExactMintProofResult } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
-import { deserializeOutputGroups } from '@bitcaster-market/client-sdk/ctfSplit'
-import { serializeDurableCustodyOutput } from '@bitcaster-market/client-sdk/durableCustodyProofOperation'
 import { requireCtfVerifiedLosingAuthority } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import { createHash } from 'node:crypto'
@@ -2125,16 +2122,24 @@ export function completeDurableOutgoingWalletSendFromDatabase(
   return completed
 }
 
-export async function completeManagedConditionRedeemFenced(
+export const MANAGED_CONDITION_RETIREMENT_PURPOSE = 'managed-condition-retirement'
+
+/**
+ * The target writer of a completed retirement page. The custody completion
+ * calls it in its transaction, after custody admits the payout.
+ */
+export function completeManagedConditionRedeemFromDatabase(
+  database: DatabaseSync,
   operationId: string,
   completion: CtfProofOperationCompletion,
-  mutation: FencedStateMutation,
-): Promise<ProofOperationRecord> {
-  return completeConditionRedeemFenced(
+  nowMs: number,
+): ProofOperationRecord {
+  return completeConditionRedeemFromDatabase(
+    database,
     operationId,
     completion,
-    mutation,
-    'managed-condition-retirement',
+    nowMs,
+    MANAGED_CONDITION_RETIREMENT_PURPOSE,
   )
 }
 
@@ -2249,28 +2254,6 @@ function completeConditionRedeemFromDatabase(
   if (before.state !== 'prepared') {
     throw new Error('managed condition redeem is not prepared for completion')
   }
-  if (purpose === 'managed-condition-retirement') {
-    const outputKeyset = before.metadata.regularOutputKeysetAuthority as
-      | DurableCustodyMintKeysetAuthority
-      | undefined
-    if (
-      outputKeyset === undefined ||
-      outputKeyset.canonicalMintUrl !== before.mintUrl ||
-      outputKeyset.unit !== 'msat' ||
-      outputKeyset.id !== before.metadata.regularKeysetId
-    )
-      throw new Error('retirement exact output keyset authority is absent or foreign')
-    verifyDurableCustodyExactMintProofResult({
-      outputs: Object.fromEntries(
-        Object.entries(deserializeOutputGroups(before.outputs)).map(([group, outputs]) => [
-          group,
-          outputs.map(serializeDurableCustodyOutput),
-        ]),
-      ),
-      result: completion.resultProofs,
-      keysets: [outputKeyset],
-    })
-  }
   const completed = completeProofOperation(database, operationId, completion, nowMs)
   const regular = completed.resultProofs?.regular ?? []
   const reserved = readDaemonReservedWalletProofsFromDatabase(
@@ -2309,18 +2292,24 @@ function completeConditionRedeemFromDatabase(
   return completed
 }
 
-export async function failManagedConditionRedeemFenced(
+/**
+ * The target writer of a losing retirement page. The custody rejection calls it
+ * in its transaction, after custody retains the inputs.
+ */
+export function failManagedConditionRedeemFromDatabase(
+  database: DatabaseSync,
   operationId: string,
   message: string,
   terminalEvidence: AuthenticatedCtfRedeemTerminalEvidence,
-  mutation: FencedStateMutation,
-): Promise<ProofOperationRecord> {
-  return failConditionRedeemFenced(
+  nowMs: number,
+): ProofOperationRecord {
+  return failConditionRedeemFromDatabase(
+    database,
     operationId,
     message,
     terminalEvidence,
-    mutation,
-    'managed-condition-retirement',
+    nowMs,
+    MANAGED_CONDITION_RETIREMENT_PURPOSE,
   )
 }
 
@@ -3848,7 +3837,7 @@ function assertManagedConditionProofOperation(
   if (input.asset.kind !== 'Outcome') return
   const authority = input.metadata?.managedConditionOperationAuthority
   const mutation: ManagedConditionInventoryMutation =
-    input.metadata?.purpose === 'managed-condition-retirement'
+    input.metadata?.purpose === MANAGED_CONDITION_RETIREMENT_PURPOSE
       ? {
           kind: 'retirement-redemption',
           authority: authority as PersistedManagedConditionOperationAuthority,
