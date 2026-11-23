@@ -26,6 +26,7 @@ import {
   type CtfSplitOutputData,
   type CtfSplitTransport,
 } from '../src/ctfSplit.ts'
+import { createRegularSplitCompletion } from '../src/ctfProofOperationAuthority.ts'
 import type {
   MintKeys,
   CounterSource,
@@ -78,6 +79,22 @@ test('proof operation completion carries SDK-owned digest only for CTF split and
   assert.equal(merge.resultProofsDigest, completedProofAuthorityDigest(resultProofs))
   assert.equal('resultProofsDigest' in redeem, false)
   assert.equal('resultProofsDigest' in regular, false)
+})
+
+test('a regular split completion has an empty keep group only when its saved swap has none', () => {
+  const send = [completedProof('keyset', 1, 'send')]
+  assert.deepEqual(createRegularSplitCompletion({ send, keep: [] }, 0), {
+    kind: 'regular-split',
+    resultProofs: { send, keep: [] },
+  })
+  assert.throws(
+    () => createRegularSplitCompletion({ send, keep: [] }, 1),
+    /completion\.keep must be a non-empty proof array/,
+  )
+  assert.throws(
+    () => createRegularSplitCompletion({ send: [], keep: [] }, 0),
+    /completion\.send must be a non-empty proof array/,
+  )
 })
 
 test('completed proof authority sorting does not consult the process locale', () => {

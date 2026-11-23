@@ -148,6 +148,66 @@ test('recovers a regular-prepared complete-set split from persisted collateral a
   })
 })
 
+// One selection can cover the gross CTF input exactly. Then the saved regular
+// swap has no keep output, and the mint returns no change.
+test('recovers a regular-prepared split whose saved swap has no keep output', async () => {
+  await withProfile(async ({ mutation, fence }) => {
+    const root = rootFor('regular-prepared-exact')
+    const source = proof(SOURCE_KEYSET, 102, 'regular-prepared-exact-source')
+    const handoff = proof(HANDOFF_KEYSET, 101, 'regular-prepared-exact-handoff')
+    await initializeRegularPrepared(root, source, mutation, [])
+    const transport = new FakeCtfTransport()
+    const result = await recoverCompleteSetSplits({
+      secrets: (await readSecrets())!,
+      deps: {
+        getCustodyFence: () => fence,
+        createCashuWallet: () => new RecoveryWallet({ send: [handoff], keep: [] }),
+        createCtfSplitTransport: () => transport,
+        resolveInputFeePpkByKeyset: async (_mintUrl, keysetIds) =>
+          Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 1_000])),
+      },
+    })
+
+    assert.deepEqual(result, { recovered: [root.rootOperationId], recoveredCount: 1, pending: [] })
+    const regular = await readProofOperationFenced(root.regularOperationId!, mutation)
+    assert.equal(regular?.state, 'completed')
+    assert.deepEqual(regular?.resultProofs?.keep, [])
+    assertExactHandoff(transport, handoff)
+    await assertCompletedAndFinalized(root, mutation)
+  })
+})
+
+test('a regular-prepared split with a saved keep output refuses a result without change', async () => {
+  await withProfile(async ({ mutation, fence }) => {
+    const root = rootFor('regular-prepared-missing-keep')
+    const source = proof(SOURCE_KEYSET, 102, 'regular-prepared-missing-keep-source')
+    const handoff = proof(HANDOFF_KEYSET, 101, 'regular-prepared-missing-keep-handoff')
+    await initializeRegularPrepared(root, source, mutation)
+    const transport = new FakeCtfTransport()
+    const result = await recoverCompleteSetSplits({
+      secrets: (await readSecrets())!,
+      deps: {
+        getCustodyFence: () => fence,
+        createCashuWallet: () => new RecoveryWallet({ send: [handoff], keep: [] }),
+        createCtfSplitTransport: () => transport,
+        resolveInputFeePpkByKeyset: async (_mintUrl, keysetIds) =>
+          Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 1_000])),
+      },
+    })
+
+    assert.equal(result.recoveredCount, 0)
+    assert.deepEqual(
+      result.pending.map(({ operationId }) => operationId),
+      [root.rootOperationId],
+    )
+    assert.equal(
+      (await readProofOperationFenced(root.regularOperationId!, mutation))?.state,
+      'prepared',
+    )
+    assert.equal(transport.posted.length, 0)
+  })
+})
+
 test('recovers a CTF handoff without exposing the reserved send proof', async () => {
   await withProfile(async ({ mutation, fence }) => {
     const root = rootFor('ctf-handoff')
@@ -434,6 +494,7 @@ async function initializeRegularPrepared(
   root: CompleteSetRecoveryRoot,
   source: Proof,
   mutation: FencedStateMutation,
+  keepOutputs: StoredOutputData[] = [storedOutput('regular-keep-output', 1, SOURCE_KEYSET)],
 ): Promise<void> {
   const state = emptyDaemonState()
   state.wallet.proofs.push({
@@ -445,7 +506,10 @@ async function initializeRegularPrepared(
     updatedAt: new Date(1).toISOString(),
   })
   await writeState(state)
-  await prepareCompleteSetRegularProofOperationFenced(regularPreparation(root, source), mutation)
+  await prepareCompleteSetRegularProofOperationFenced(
+    regularPreparation(root, source, keepOutputs),
+    mutation,
+  )
 }
 
 async function initializeRegularHandoff(
@@ -470,7 +534,11 @@ async function initializeRegularHandoff(
   )
 }
 
-function regularPreparation(root: CompleteSetRecoveryRoot, source: Proof) {
+function regularPreparation(
+  root: CompleteSetRecoveryRoot,
+  source: Proof,
+  keepOutputs: StoredOutputData[],
+) {
   const authority = regularAuthority(root)
   return {
     operationId: root.regularOperationId!,
@@ -479,7 +547,7 @@ function regularPreparation(root: CompleteSetRecoveryRoot, source: Proof) {
     inputs: [source],
     outputs: {
       send: [storedOutput('regular-send-output', 101, HANDOFF_KEYSET)],
-      keep: [storedOutput('regular-keep-output', 1, SOURCE_KEYSET)],
+      keep: keepOutputs,
     },
     metadata: {
       amount: 101,

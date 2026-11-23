@@ -36,6 +36,7 @@ import {
 import {
   canonicalProofOperationMintIdentity,
   createCtfProofOperationCompletion,
+  createRegularSplitCompletion,
   proofAuthority,
   proofGroupAuthority,
   requireBoundedCtfProofOperationPreparation,
@@ -402,7 +403,7 @@ export async function splitRegularProofsWithOperation(params: {
   }
   await params.proofOperationStore.markProofOperationCompleted(
     params.operationId,
-    createCtfProofOperationCompletion('regular-split', completed),
+    createRegularSplitCompletion(completed, preview.keepOutputs?.length ?? 0),
   )
   return { ...completed, spent: preview.inputs.map(normalizeProof) }
 }
@@ -1687,7 +1688,7 @@ async function resumeRegularSplit(
 
   await proofOperationStore.markProofOperationCompleted(
     entry.operationId,
-    createCtfProofOperationCompletion('regular-split', completed),
+    createRegularSplitCompletion(completed, entry.outputs.keep?.length ?? 0),
   )
   return { ...completed, spent: entry.inputs.map(normalizeProof) }
 }

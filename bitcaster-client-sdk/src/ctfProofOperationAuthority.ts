@@ -61,6 +61,28 @@ export function createCtfProofOperationCompletion(
   }
 }
 
+/**
+ * Complete a regular split. When one selection covers the requested amount
+ * exactly, the saved swap has no keep output, and the mint returns no change.
+ * Only then can the keep group be empty. Every other group needs a proof.
+ */
+export function createRegularSplitCompletion(
+  resultProofs: { readonly send: Proof[]; readonly keep: Proof[] },
+  savedKeepOutputCount: number,
+): Extract<CtfProofOperationCompletion, { kind: 'ctf-redeem' | 'regular-split' }> {
+  if (resultProofs.keep.length > 0 || savedKeepOutputCount > 0) {
+    return createCtfProofOperationCompletion('regular-split', { ...resultProofs })
+  }
+  requireProofGroups(
+    { send: resultProofs.send },
+    'proof operation completion',
+    DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
+  )
+  const completed: Record<string, Proof[]> = { send: resultProofs.send, keep: [] }
+  canonicalAuthorityBytes({ kind: 'regular-split', resultProofs: completed })
+  return { kind: 'regular-split', resultProofs: completed }
+}
+
 export function requireBoundedCtfProofOperationPreparation(
   input: CtfPrepareProofOperationInput,
 ): CtfPrepareProofOperationInput {
