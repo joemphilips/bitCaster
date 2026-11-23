@@ -422,7 +422,7 @@ export function assertRetainedPositionClaimProof(
     proof.state !== 'locked' ||
     proof.reservedBy !== target.operationId ||
     proof.mintUrl !== target.mintUrl ||
-    proof.retirement !== undefined ||
+    (proof.retirement !== undefined && proof.retirement.operationId !== target.operationId) ||
     proof.asset.kind !== 'Outcome' ||
     proof.asset.unit !== 'msat' ||
     proof.asset.conditionId !== target.metadata.conditionId ||
@@ -431,7 +431,12 @@ export function assertRetainedPositionClaimProof(
     throw new Error('retained Claim history binding is invalid')
   const index = target.inputs.findIndex((input) => isDeepStrictEqual(input, proof.proof))
   const input = record.operation.reservation.inputs[index]
-  if (input === undefined || store.getProof(scopeId, input.proofId)?.selectability !== 'retained')
+  // `wallet remove-position` marks a retained input as removed. The marker binds this input.
+  if (
+    input === undefined ||
+    (proof.retirement !== undefined && proof.retirement.custodyProofId !== input.proofId) ||
+    store.getProof(scopeId, input.proofId)?.selectability !== 'retained'
+  )
     throw new Error('retained Claim predecessor is absent or foreign')
 }
 

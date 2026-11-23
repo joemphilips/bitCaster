@@ -258,6 +258,62 @@ test('monitoring commit notification failure cannot block local retirement', asy
   }
 })
 
+test('a removed losing position does not refuse a seed recovery', async () => {
+  const fixture = await createFixture(1)
+  try {
+    const preview = await previewDaemonPositionRemove(fixture.context)
+    await removeDaemonPosition({ ...fixture.context, preview, acknowledge: true })
+    // The mint restores no output, so each scanned range ends empty.
+    const keyset = { id: `01${'a'.repeat(64)}`, unit: 'msat', keys: {} }
+    const transport: AllKeysetSeedRecoveryTransport = {
+      wallet: {
+        async loadMint() {},
+        keyChain: { getKeyset: () => keyset, ensureKeysetKeys: async () => keyset },
+        async checkProofsStates() {
+          throw new Error('a recovery without restored outputs reads no proof state')
+        },
+      },
+      listRegularKeysets: async () => ({ keysets: [{ id: keyset.id, unit: 'msat' }] }),
+      listConditionalKeysets: async () => ({ keysets: [] }),
+      getConditionalKeyset: async () => {
+        throw new Error('a regular recovery reads no conditional keyset')
+      },
+      restoreCandidates: async () => ({ outputs: [], signatures: [] }),
+    }
+    const recover = (recoveryId: string) =>
+      recoverAllDaemonWalletFromSeed(
+        {
+          recoveryId,
+          mintUrl: 'https://mint.example',
+          unit: 'msat',
+          walletSeedHex: '11'.repeat(64),
+          disclosureAcknowledged: true,
+        },
+        { directory: fixture.directory, getFence: () => fixture.context.fence, transport },
+      )
+    const recovered = await recover('after-remove')
+    assert.equal(recovered.state, 'completed')
+    assert.equal(recovered.retainedOutputProofsImported, 0)
+    // A removal marker that does not bind the retained custody proof still refuses.
+    const database = await openDaemonStateSqlite(fixture.directory)
+    try {
+      database
+        .prepare(
+          "UPDATE target_wallet_proofs SET retired_custody_proof_id = ? WHERE state = 'locked'",
+        )
+        .run('ff'.repeat(32))
+    } finally {
+      database.close()
+    }
+    await assert.rejects(
+      recover('after-foreign-marker'),
+      /durable owner blocker target-wallet-proof-reserved/,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})
+
 test('more than 256 proofs retire through fresh bounded previews and replay never selects later proofs', async () => {
   const fixture = await createFixture(260)
   try {
