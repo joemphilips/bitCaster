@@ -64,9 +64,8 @@ import {
 import {
   COLLATERAL_COLLECTION,
   planCtfCompleteSetSplit,
-  type CtfCompleteSetSplitRefusalReason,
+  type CtfCompleteSetSplitRefusal,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
-import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { createHash } from 'node:crypto'
 import { readMintCtfCondition } from './mintCtfCondition.ts'
 
@@ -184,15 +183,31 @@ export function completeSetConvertOperationId(rootOperationId: string): string {
   return `ctf-consolidation:split:${digest}`
 }
 
-/** A split refused before any effect, with the RPC code of the refusal. */
+/** The RPC code of a split that is refused before any effect. */
+export type CompleteSetSplitRefusalCode =
+  | 'market-not-found'
+  | 'market-not-pending'
+  | 'insufficient-funds'
+  | 'split-input-fee-zero'
+  | 'split-input-limit'
+  | 'split-group-limit'
+  | 'split-output-limit'
+
+/**
+ * A split refused before any effect, with the RPC code of the refusal. Short
+ * funds also give the amounts in msat, as an order does.
+ */
 export class CompleteSetSplitRefusedError extends Error {
-  readonly code: 'market-not-found' | 'market-not-pending' | 'insufficient-funds' | null
+  readonly code: CompleteSetSplitRefusalCode | null
+  readonly result: { readonly requiredMsat: number; readonly availableMsat: number } | null
   constructor(
-    code: 'market-not-found' | 'market-not-pending' | 'insufficient-funds' | null,
+    code: CompleteSetSplitRefusalCode | null,
     message: string,
+    result: { readonly requiredMsat: number; readonly availableMsat: number } | null = null,
   ) {
     super(message)
     this.code = code
+    this.result = result
   }
 }
 
@@ -249,6 +264,12 @@ async function splitCompleteSetByConvert(
   )[COLLATERAL_COLLECTION]
   if (collateralKeysetId === undefined)
     throw new Error('mint did not return an active msat collateral keyset')
+  // The keys give the number of outputs, which the plan bounds before any effect.
+  const outputKeysets = await resolveMintKeysByKeyset(
+    input.mintUrl,
+    [...new Set([...Object.values(partitionKeysets), collateralKeysetId])],
+    input.deps,
+  )
   const available = await readSpendableWalletProofsFenced({
     mintUrl: input.mintUrl,
     asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
@@ -259,6 +280,9 @@ async function splitCompleteSetByConvert(
     conditionId: input.conditionId,
     partitionKeysets,
     collateralKeysetId,
+    outputKeysetKeys: Object.fromEntries(
+      Object.entries(outputKeysets).map(([keysetId, keyset]) => [keysetId, keyset.keys]),
+    ),
     proofs,
     inputFeePpkByKeyset: await resolveCtfConsolidationInputFees(
       input.mintUrl,
@@ -267,13 +291,7 @@ async function splitCompleteSetByConvert(
     ),
     amountSubunits: input.amountMsat,
   })
-  if (plan.kind === 'refused')
-    throw completeSetSplitRefusal(plan.reason, proofs, available, input.amountMsat)
-  const outputKeysets = await resolveMintKeysByKeyset(
-    input.mintUrl,
-    [...new Set(plan.outputs.map(({ keysetId }) => keysetId))],
-    input.deps,
-  )
+  if (plan.kind === 'refused') throw completeSetSplitRefusal(plan, available, input.amountMsat)
   const result = await executeCtfConversionPlan(
     {
       marketId: input.conditionId,
@@ -306,44 +324,49 @@ function completeSetConvertRefusal(error: unknown, conditionId: string): unknown
 }
 
 function completeSetSplitRefusal(
-  reason: CtfCompleteSetSplitRefusalReason,
-  proofs: readonly Proof[],
+  refusal: CtfCompleteSetSplitRefusal,
   available: SpendableWalletProofs,
   amount: number,
 ): Error {
-  switch (reason) {
+  switch (refusal.reason) {
     case 'insufficient-inputs': {
-      const spendable = proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
+      const spendable = refusal.availableSubunits
       // Proofs outside custody count in the balance, but the split cannot spend them.
       if (available.custodyRepairAmount > 0 && spendable + available.custodyRepairAmount > amount)
         return new CustodyRepairRequiredError()
       return new CompleteSetSplitRefusedError(
         'insufficient-funds',
         `the wallet holds ${spendable} msat, which cannot pay the split and its input fee`,
+        { requiredMsat: refusal.requiredSubunits, availableMsat: refusal.availableSubunits },
       )
     }
     case 'input-fee-floor-zero':
       return new CompleteSetSplitRefusedError(
-        null,
+        'split-input-fee-zero',
         'the mint charges no input fee, so it refuses a convert',
       )
     case 'input-limit':
       return new CompleteSetSplitRefusedError(
-        null,
+        'split-input-limit',
         'the split needs more input proofs than one operation holds; consolidate proofs first',
       )
     case 'output-group-limit':
       return new CompleteSetSplitRefusedError(
-        null,
+        'split-group-limit',
         'the market has too many outcomes for one split',
       )
+    case 'output-limit':
+      return new CompleteSetSplitRefusedError(
+        'split-output-limit',
+        'the split needs more outputs than one operation holds; split a smaller amount',
+      )
     default:
-      return assertNeverSplitRefusal(reason)
+      return assertNeverSplitRefusal(refusal)
   }
 }
 
 function assertNeverSplitRefusal(value: never): never {
-  throw new Error(`unhandled complete-set split refusal: ${String(value)}`)
+  throw new Error(`unhandled complete-set split refusal: ${JSON.stringify(value)}`)
 }
 
 /** A new split needs a condition that the mint records without a result. */

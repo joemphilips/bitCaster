@@ -1,6 +1,13 @@
-import type { CtfConvertRequest, Proof, SerializedBlindedMessage } from '@cashu/cashu-ts'
+import {
+  splitAmount,
+  type CtfConvertRequest,
+  type Keys,
+  type Proof,
+  type SerializedBlindedMessage,
+} from '@cashu/cashu-ts'
 import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
 import {
+  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
   DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
   DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX,
 } from './durableCustody.ts'
@@ -125,11 +132,24 @@ export type CtfCompleteSetSplitRefusalReason =
   | 'input-fee-floor-zero'
   | 'input-limit'
   | 'output-group-limit'
+  | 'output-limit'
 
-export interface CtfCompleteSetSplitRefusal {
-  kind: 'refused'
-  reason: CtfCompleteSetSplitRefusalReason
-}
+/**
+ * A split that the plan refuses before any effect. When the inputs are short,
+ * `requiredSubunits` is the face amount and the input fee of all the proofs,
+ * and `availableSubunits` is the total of all the proofs.
+ */
+export type CtfCompleteSetSplitRefusal =
+  | {
+      kind: 'refused'
+      reason: 'insufficient-inputs'
+      requiredSubunits: number
+      availableSubunits: number
+    }
+  | {
+      kind: 'refused'
+      reason: Exclude<CtfCompleteSetSplitRefusalReason, 'insufficient-inputs'>
+    }
 
 /**
  * Plan a complete-set split as one convert. The regular inputs pay the face
@@ -145,6 +165,8 @@ export function planCtfCompleteSetSplit(params: {
   /** The output keyset of each root-partition collection. */
   partitionKeysets: Record<string, string>
   collateralKeysetId: string
+  /** The keys of each output keyset by keyset id. They give the number of outputs. */
+  outputKeysetKeys: Readonly<Record<string, Keys>>
   /** The regular proofs that custody holds as spendable. */
   proofs: readonly Proof[]
   inputFeePpkByKeyset: Record<string, number>
@@ -174,7 +196,13 @@ export function planCtfCompleteSetSplit(params: {
     gross += amountToNumber(proof.amount)
     feeSubunits = computeConvertFeeSubunits(selected, params.inputFeePpkByKeyset)
   }
-  if (gross - feeSubunits < amount) return { kind: 'refused', reason: 'insufficient-inputs' }
+  if (gross - feeSubunits < amount)
+    return {
+      kind: 'refused',
+      reason: 'insufficient-inputs',
+      requiredSubunits: amount + feeSubunits,
+      availableSubunits: gross,
+    }
   // The mint refuses a convert without a fee.
   if (feeSubunits === 0) return { kind: 'refused', reason: 'input-fee-floor-zero' }
   const changeSubunits = gross - feeSubunits - amount
@@ -189,6 +217,11 @@ export function planCtfCompleteSetSplit(params: {
       amountSubunits: changeSubunits,
       keysetId: params.collateralKeysetId,
     })
+  // One custody operation holds a limited number of blinded outputs.
+  if (
+    countSplitOutputs(outputs, params.outputKeysetKeys) > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX
+  )
+    return { kind: 'refused', reason: 'output-limit' }
   const outcomes = [...new Set(collections.flatMap((collection) => parseOutcomeSetId(collection)))]
   const inputs = { [COLLATERAL_COLLECTION]: selected }
   const inputPayoff = payoffVector(outcomes, inputs)
@@ -205,6 +238,18 @@ export function planCtfCompleteSetSplit(params: {
     inputs,
     outputs,
   }
+}
+
+/** The outputs use the denominations of their keyset, as the convert makes them. */
+function countSplitOutputs(
+  outputs: readonly CtfConsolidationOutputFactoryInput[],
+  keysBySetId: Readonly<Record<string, Keys>>,
+): number {
+  return outputs.reduce((count, output) => {
+    const keys = keysBySetId[output.keysetId]
+    if (keys === undefined) throw new Error('complete-set split output keyset keys are missing')
+    return count + splitAmount(output.amountSubunits, keys).length
+  }, 0)
 }
 
 function compareCollections(left: string, right: string): number {

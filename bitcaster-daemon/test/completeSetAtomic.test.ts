@@ -490,9 +490,11 @@ test('a split refuses before any effect', async () => {
   const f = await fixture()
   try {
     const before = await custodyFacts(f.directory)
+    // One 128 msat proof cannot pay 200 msat and its 1 msat input fee.
     const short = await f.dispatchSplit(200, 'short')
     assert.equal(short.ok, false)
     assert.equal(short.code, 'insufficient-funds')
+    assert.deepEqual(short.result, { requiredMsat: 201, availableMsat: 128 })
     f.convert.mintAttestation = { status: 'attested', winning_outcome: 'A' }
     assert.deepEqual(await f.dispatchSplit(50, 'resolved'), {
       ok: false,
@@ -573,6 +575,77 @@ test('a split that the mint refuses for an attested condition releases its input
     // The released input pays a new split.
     assert.equal((await f.dispatchSplit(100, 'new-root')).ok, true)
     assert.equal(f.convert.requests.length, 2)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a split that one convert cannot hold refuses with its own code before any effect', async () => {
+  const f = await fixture()
+  try {
+    const before = await custodyFacts(f.directory)
+    const feeFree = await f.dispatchSplit(50, 'fee-free', {
+      ...f.deps,
+      resolveInputFeePpkByKeyset: async (_mint, ids) =>
+        Object.fromEntries(ids.map((id) => [id, 0])),
+    })
+    assert.equal(feeFree.ok, false)
+    assert.equal(feeFree.code, 'split-input-fee-zero')
+    assert.equal(f.convert.requests.length, 0)
+    assert.deepEqual(await custodyFacts(f.directory), before)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a split whose partition has more groups than one convert holds refuses with its own code', async () => {
+  const f = await fixture()
+  try {
+    const before = await custodyFacts(f.directory)
+    // A valid market has at most eight outcomes, so only a foreign mint partition is this wide.
+    const wide = Object.fromEntries(
+      Array.from({ length: 16 }, (_, index) => [`O${index}`, `wide-keyset-${index}`]),
+    )
+    const refused = await f.dispatchSplit(50, 'too-many-groups', {
+      ...f.deps,
+      resolveMintKeysByKeyset: async (_mint, ids) =>
+        Object.fromEntries(
+          ids.map((id) => [id, { id, unit: 'msat', input_fee_ppk: 1, keys: KEYS } as MintKeys]),
+        ),
+      createCtfSplitTransport: () => ({
+        getKeys: async () => {
+          throw new Error('a refused split reads no keys')
+        },
+        getRootPartitionKeysets: async () => ({ ...wide }),
+        postSplit: async () => {
+          throw new Error('a refused split posts nothing')
+        },
+      }),
+    })
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'split-group-limit')
+    assert.equal(f.convert.requests.length, 0)
+    assert.deepEqual(await custodyFacts(f.directory), before)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a split that needs more than 256 outputs refuses with its own code before any effect', async () => {
+  // Twenty 16384 msat proofs arrive after the 1 msat receive fee.
+  const f = await fixture({
+    tokens: [[...Array.from({ length: 20 }, () => 16_384), 1]],
+    outcomes: Array.from({ length: 8 }, (_, index) => `O${index}`),
+  })
+  try {
+    const before = await custodyFacts(f.directory)
+    // The twenty inputs pay 327679 msat and the 1 msat fee with no change. 327679 msat is
+    // nineteen 16384 msat outputs and fourteen smaller outputs: 33 for each of 8 outcomes.
+    const refused = await f.dispatchSplit(327_679, 'too-many-outputs')
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'split-output-limit')
+    assert.equal(f.convert.requests.length, 0)
+    assert.deepEqual(await custodyFacts(f.directory), before)
   } finally {
     await f.close()
   }

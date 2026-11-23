@@ -366,17 +366,24 @@ for (const [strategy, inputs] of [
 }
 
 const SPLIT_PARTITION = { NO: 'ks-NO', YES: 'ks-YES' }
+const POWER_OF_TWO_KEYS = Object.fromEntries(
+  Array.from({ length: 21 }, (_, exponent) => [String(2 ** exponent), `key-${exponent}`]),
+)
 
 function splitPlan(
   proofs: Proof[],
   amountSubunits: number,
   inputFeePpkByKeyset: Record<string, number> = { 'ks-base': 1_000 },
   partitionKeysets: Record<string, string> = SPLIT_PARTITION,
+  keys: Record<string, string> = POWER_OF_TWO_KEYS,
 ) {
   return planCtfCompleteSetSplit({
     conditionId: CONDITION_ID,
     partitionKeysets,
     collateralKeysetId: 'ks-change',
+    outputKeysetKeys: Object.fromEntries(
+      [...Object.values(partitionKeysets), 'ks-change'].map((id) => [id, keys]),
+    ),
     proofs,
     inputFeePpkByKeyset,
     amountSubunits,
@@ -421,7 +428,12 @@ test('a complete-set split adds the input fee of each keyset', () => {
   const proofs = [proof('ks-a', 32, 'a-32'), proof('ks-b', 32, 'b-32')]
   const fees = { 'ks-a': 1_000, 'ks-b': 500 }
   // 1000 + 500 ppk round up to 2 msat, so 64 msat pay at most 62 msat.
-  assert.deepEqual(splitPlan(proofs, 63, fees), { kind: 'refused', reason: 'insufficient-inputs' })
+  assert.deepEqual(splitPlan(proofs, 63, fees), {
+    kind: 'refused',
+    reason: 'insufficient-inputs',
+    requiredSubunits: 65,
+    availableSubunits: 64,
+  })
   const plan = splitPlan(proofs, 62, fees)
   assert.equal(plan.kind, 'plan')
   if (plan.kind !== 'plan') return
@@ -450,9 +462,12 @@ test('a complete-set split pays each collection of a partition with three outcom
 })
 
 test('a complete-set split refuses before any effect when the mint cannot accept it', () => {
+  // The split needs 16 msat and the 1 msat fee of its one input.
   assert.deepEqual(splitPlan([proof('ks-base', 16, 'base-16')], 16), {
     kind: 'refused',
     reason: 'insufficient-inputs',
+    requiredSubunits: 17,
+    availableSubunits: 16,
   })
   assert.deepEqual(splitPlan([proof('ks-base', 64, 'base-64')], 16, { 'ks-base': 0 }), {
     kind: 'refused',
@@ -467,4 +482,23 @@ test('a complete-set split refuses before any effect when the mint cannot accept
     kind: 'refused',
     reason: 'output-group-limit',
   })
+})
+
+test('a complete-set split refuses more blinded outputs than one operation holds', () => {
+  // Each output keyset has only a 1 msat denomination, so each msat is one output.
+  const oneMsatKeys = { '1': 'key-0' }
+  // Two outcomes of 128 msat and no change make 256 outputs.
+  const exact = splitPlan(
+    [proof('ks-base', 129, 'base-129')],
+    128,
+    undefined,
+    undefined,
+    oneMsatKeys,
+  )
+  assert.equal(exact.kind, 'plan')
+  // 1 msat of change makes 257 outputs.
+  assert.deepEqual(
+    splitPlan([proof('ks-base', 130, 'base-130')], 128, undefined, undefined, oneMsatKeys),
+    { kind: 'refused', reason: 'output-limit' },
+  )
 })

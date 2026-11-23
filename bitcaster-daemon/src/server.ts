@@ -1115,6 +1115,7 @@ async function dispatchCommand(
             ok: false,
             ...(error.code === null ? {} : { code: error.code }),
             error: error.message,
+            ...(error.result === null ? {} : { result: error.result }),
           }
         throw error
       }
