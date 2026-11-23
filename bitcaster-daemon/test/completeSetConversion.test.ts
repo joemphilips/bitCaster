@@ -40,6 +40,7 @@ import {
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readSecrets } from '../src/secrets.ts'
+import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import {
   createDaemonCompleteSetOutputMode,
   recoverCompleteSetRecoveryPages,
@@ -207,6 +208,62 @@ test('a regular-prepared split with a saved keep output refuses a result without
     assert.equal(transport.posted.length, 0)
   })
 })
+
+// A saved split of a released daemon is read before any wallet, mint or transport use.
+for (const corruption of ['root', 'reservation', 'asset', 'operation'] as const)
+  test(`a saved regular-prepared split with a corrupt ${corruption} binding stays pending without mint access`, async () => {
+    await withProfile(async ({ mutation, fence }) => {
+      const root = rootFor(`corrupt-${corruption}`)
+      await initializeRegularPrepared(
+        root,
+        proof(SOURCE_KEYSET, 101, `corrupt-${corruption}-source`),
+        mutation,
+      )
+      const reservation = `${root.regularOperationId}:reservation`
+      await withDaemonStateSqliteTransaction(process.env.BITCASTER_DAEMON_HOME!, (database) => {
+        if (corruption === 'root')
+          database
+            .prepare('UPDATE daemon_complete_set_recovery_roots SET condition_id = ?')
+            .run('f'.repeat(64))
+        else if (corruption === 'reservation')
+          database
+            .prepare('UPDATE target_wallet_proofs SET reserved_by = ? WHERE reserved_by = ?')
+            .run('foreign-reservation', reservation)
+        else if (corruption === 'asset')
+          database
+            .prepare("UPDATE target_wallet_proofs SET unit = 'sat' WHERE reserved_by = ?")
+            .run(reservation)
+        else
+          database
+            .prepare("UPDATE target_proof_operations SET kind = 'ctf-split' WHERE operation_id = ?")
+            .run(root.regularOperationId)
+      })
+      let access = 0
+      const recovery = recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: {
+          getCustodyFence: () => fence,
+          createCashuWallet: () => {
+            access += 1
+            throw new Error('a corrupt saved split must not load a wallet')
+          },
+          createCtfSplitTransport: () => {
+            access += 1
+            throw new Error('a corrupt saved split must not reach the mint')
+          },
+        },
+      })
+      // The page reader refuses a root whose saved operation kind is foreign.
+      if (corruption === 'operation')
+        await assert.rejects(recovery, /recovery root operation authority is invalid/)
+      else {
+        const result = await recovery
+        assert.equal(result.recoveredCount, 0)
+        assert.equal(result.pending.length, 1)
+      }
+      assert.equal(access, 0)
+    })
+  })
 
 test('recovers a CTF handoff without exposing the reserved send proof', async () => {
   await withProfile(async ({ mutation, fence }) => {

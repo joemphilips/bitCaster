@@ -174,13 +174,6 @@ export function prepareBoundedCtfProofOperation(
   return store.prepareProofOperation(requireBoundedCtfProofOperationPreparation(input))
 }
 
-export interface SplitCollateralSelection {
-  inputs: Proof[]
-  keep: Proof[]
-  inputFeeSubunits: number
-  grossInputSubunits: number
-}
-
 export type CtfCollateralBaseAsset = MarketBaseAsset
 
 export interface CtfGrossInputPlanningKeyset {
@@ -408,58 +401,6 @@ export async function splitRegularProofsWithOperation(params: {
   return { ...completed, spent: preview.inputs.map(normalizeProof) }
 }
 
-export async function selectCollateralForCtfSplit(
-  mintUrl: string,
-  availableProofs: Proof[],
-  faceAmountSubunits: number,
-  baseAsset: CtfCollateralBaseAsset,
-): Promise<SplitCollateralSelection> {
-  if (!Number.isSafeInteger(faceAmountSubunits) || faceAmountSubunits <= 0) {
-    throw new Error('faceAmountSubunits must be a positive safe integer')
-  }
-  requireMarketBaseAsset(baseAsset, 'CTF split collateral baseAsset')
-
-  const mint = new CashuMint(mintUrl)
-  const wallet = new CashuWallet(mint, {
-    unit: requireCtfCollateralUnit(CTF_COLLATERAL_UNIT, 'CTF split collateral unit'),
-  })
-  await wallet.loadMint()
-  if (!wallet.selectProofsToSend) {
-    throw new Error('Cashu wallet adapter does not support fee-aware proof selection')
-  }
-
-  const selected = wallet.selectProofsToSend(
-    availableProofs.map(normalizeProof),
-    faceAmountSubunits,
-    true,
-    true,
-  )
-  const selectedSend = selected.send.map(normalizeProof)
-  const selectedKeep = selected.keep.map(normalizeProof)
-  const inputFeePpkBySelectedKeyset = await resolveInputFeePpkByProofKeyset(mint, selectedSend)
-  const inputFeeSubunits = computeInputFeeSubunitsForProofs(
-    selectedSend,
-    inputFeePpkBySelectedKeyset,
-  )
-  const grossInputSubunits = selectedSend.reduce(
-    (acc, proof) => acc + amountToNumber(proof.amount),
-    0,
-  )
-  const netInputSubunits = grossInputSubunits - inputFeeSubunits
-  if (netInputSubunits !== faceAmountSubunits) {
-    throw new Error(
-      `Selected collateral nets ${netInputSubunits} subunits after ${inputFeeSubunits} subunits of input fees, expected ${faceAmountSubunits}`,
-    )
-  }
-
-  return {
-    inputs: selectedSend,
-    keep: selectedKeep,
-    inputFeeSubunits,
-    grossInputSubunits,
-  }
-}
-
 export function computeGrossCtfInputAmountSubunits(params: {
   faceAmountSubunits: number
   keyset: CtfGrossInputPlanningKeyset
@@ -500,90 +441,6 @@ export function computeGrossCtfInputAmountSubunits(params: {
   throw new Error(
     `Could not find gross CTF input amount that nets ${faceAmountSubunits} subunits after input fees`,
   )
-}
-
-export async function resolveRootPreflightOutputAmountSubunits(params: {
-  mintUrl: string
-  baseAsset: CtfCollateralBaseAsset
-  conditionId: string
-  amountSubunits: number
-  lockOutcomeSetId: string
-  keepOutcomeSetId: string
-}): Promise<number> {
-  const amountSubunits = requirePositiveSafeInteger(params.amountSubunits, 'amountSubunits')
-  const transport = new CashuMintCtfSplitTransport(params.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(params.conditionId, {
-    lockOutcomeSetId: params.lockOutcomeSetId,
-    keepOutcomeSetId: params.keepOutcomeSetId,
-    baseAsset: params.baseAsset,
-  })
-
-  let preflightOutputAmountSubunits = amountSubunits
-  for (const keysetId of Object.values(outcomeCollectionKeysets)) {
-    const keyset = await transport.getKeys(keysetId)
-    const planningKeyset = {
-      id: keyset.id,
-      keys: keyset.keys,
-      input_fee_ppk: keyset.input_fee_ppk ?? 0,
-    }
-    const claimInputAmountSubunits = computeGrossCtfInputAmountSubunits({
-      faceAmountSubunits: amountSubunits,
-      keyset: planningKeyset,
-    })
-    preflightOutputAmountSubunits = Math.max(
-      preflightOutputAmountSubunits,
-      computeGrossCtfInputAmountSubunits({
-        faceAmountSubunits: claimInputAmountSubunits,
-        keyset: planningKeyset,
-      }),
-    )
-  }
-  return preflightOutputAmountSubunits
-}
-
-export async function resolveRootDirectLockOutputAmountSubunits(params: {
-  mintUrl: string
-  baseAsset: CtfCollateralBaseAsset
-  conditionId: string
-  amountSubunits: number
-  lockOutcomeSetId: string
-  keepOutcomeSetId: string
-}): Promise<number> {
-  const amountSubunits = requirePositiveSafeInteger(params.amountSubunits, 'amountSubunits')
-  const transport = new CashuMintCtfSplitTransport(params.mintUrl)
-  const outcomeCollectionKeysets = await transport.getRootPartitionKeysets(params.conditionId, {
-    lockOutcomeSetId: params.lockOutcomeSetId,
-    keepOutcomeSetId: params.keepOutcomeSetId,
-    baseAsset: params.baseAsset,
-  })
-  const outcomeLegs = resolveComplementaryOutcomeLegs(
-    params.lockOutcomeSetId,
-    params.keepOutcomeSetId,
-    outcomeCollectionKeysets,
-  )
-
-  let outputAmountSubunits = amountSubunits
-  for (const collection of outcomeLegs.lockCollections) {
-    const keysetId = outcomeCollectionKeysets[collection]
-    if (!keysetId) {
-      throw new Error(
-        `CTF split lock outcome ${collection} has no root keyset for condition ${params.conditionId}`,
-      )
-    }
-    const keyset = await transport.getKeys(keysetId)
-    outputAmountSubunits = Math.max(
-      outputAmountSubunits,
-      computeGrossCtfInputAmountSubunits({
-        faceAmountSubunits: amountSubunits,
-        keyset: {
-          id: keyset.id,
-          keys: keyset.keys,
-          input_fee_ppk: keyset.input_fee_ppk ?? 0,
-        },
-      }),
-    )
-  }
-  return outputAmountSubunits
 }
 
 export async function splitRootCompleteSet(

@@ -14,7 +14,6 @@ import {
   CashuMintCtfSplitTransport,
   resumeExactPersistedCtfSplit,
   splitCompleteSetWithOperation,
-  splitRegularProofsWithOperation,
   type CtfPrepareProofOperationInput,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
@@ -35,7 +34,9 @@ import {
   commitDaemonCounterTranscript,
   DaemonCounterSnapshotConflictError,
   assertExactProofReservationFromDatabase,
-  readAvailableWalletProofsFenced,
+  readSpendableWalletProofsFenced,
+  CustodyRepairRequiredError,
+  type SpendableWalletProofs,
   readProofOperationFenced,
   readRecoverableCompleteSetProofOperationPage,
   type CashuProofRecord,
@@ -50,11 +51,23 @@ import {
 } from './state.ts'
 import {
   createDaemonCounterSource,
-  splitAvailableMsatProofsForCtfCollateral,
+  executeCtfConversionPlan,
+  finishSavedCtfCollateralSplit,
+  resolveCtfConsolidationInputFees,
+  resolveCtfConsolidationOutputKeysets,
+  resolveMintKeysByKeyset,
+  resumeCtfConsolidationOperation,
   type CashuWalletLike,
-  type CtfCollateralOperationAuthority,
   type WalletOpsDependencies,
 } from './walletOps.ts'
+import {
+  COLLATERAL_COLLECTION,
+  planCtfCompleteSetSplit,
+  type CtfCompleteSetSplitRefusalReason,
+} from '@bitcaster-market/client-sdk/ctfConsolidation'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { createHash } from 'node:crypto'
+import { readMintCtfCondition } from './mintCtfCondition.ts'
 
 const DAEMON_COMPLETE_SET_REGULAR_SPLIT_PURPOSE = 'daemon-complete-set-regular-split'
 const DAEMON_COMPLETE_SET_CTF_SPLIT_PURPOSE = 'daemon-complete-set-ctf-split'
@@ -77,6 +90,8 @@ type CompleteSetDependencies = WalletOpsDependencies & {
     phase: 'counter-written' | 'journal-bound',
   ) => void
   readonly createCtfSplitTransport?: (mintUrl: string) => CtfSplitTransport
+  /** The mint condition read. Tests replace the HTTP request. */
+  readonly fetchConsolidationCondition?: typeof globalThis.fetch
   readonly createCtfResumeDependencies?: (mintUrl: string) => CompleteSetCtfResumeDependencies
 }
 
@@ -119,6 +134,11 @@ export function createDaemonCompleteSetOutputMode(input: {
   }
 }
 
+/**
+ * Split regular ecash into a complete outcome set. A new split is one
+ * custody-backed convert. A split that a released daemon saved in two stages
+ * finishes on its saved journals, so it is never lost.
+ */
 export async function splitWalletCompleteSet(
   input: CompleteSetSplitInput,
 ): Promise<CompleteSetSplitResult> {
@@ -128,6 +148,16 @@ export async function splitWalletCompleteSet(
   if (!input.secrets) throw new Error('daemon secrets are not initialized')
   const inputWithSecrets = { ...input, secrets: input.secrets }
   const mutation = requireCompleteSetCustodyMutation(input.deps)
+  if (input.recoveryReference === undefined && !(await hasSavedTwoStageSplit(input, mutation)))
+    return splitCompleteSetByConvert(inputWithSecrets, mutation)
+  return finishTwoStageCompleteSetSplit(inputWithSecrets, mutation)
+}
+
+async function finishTwoStageCompleteSetSplit(
+  input: CompleteSetSplitInput & { secrets: DaemonSecrets },
+  mutation: () => FencedStateMutation,
+): Promise<CompleteSetSplitResult> {
+  const inputWithSecrets = input
   const collateralAsset = { kind: 'sats', baseAsset: 'sat', unit: 'msat' } as const
   const recoveredOperation =
     input.recoveryReference === undefined
@@ -141,6 +171,220 @@ export async function splitWalletCompleteSet(
     return resumeExistingCompleteSetSplit(inputWithSecrets, mutation, collateralAsset, existingCtf)
   }
   return startCompleteSetSplit(inputWithSecrets, mutation, collateralAsset)
+}
+
+/** The convert operation of a new split. The root id is its idempotency key. */
+export function completeSetConvertOperationId(rootOperationId: string): string {
+  const digest = createHash('sha256')
+    .update('bitcaster:daemon-complete-set-split:v1\0')
+    .update(rootOperationId)
+    .digest('hex')
+    .slice(0, 32)
+  return `ctf-consolidation:split:${digest}`
+}
+
+/** A split refused before any effect, with the RPC code of the refusal. */
+export class CompleteSetSplitRefusedError extends Error {
+  readonly code: 'market-not-found' | 'market-not-pending' | 'insufficient-funds' | null
+  constructor(
+    code: 'market-not-found' | 'market-not-pending' | 'insufficient-funds' | null,
+    message: string,
+  ) {
+    super(message)
+    this.code = code
+  }
+}
+
+async function hasSavedTwoStageSplit(
+  input: Pick<CompleteSetSplitInput, 'operationId'>,
+  mutation: () => FencedStateMutation,
+): Promise<boolean> {
+  const authority = mutation()
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    authority.fence,
+    authority.observedAtMs,
+    (database) =>
+      readCompleteSetRecoveryRootFromDatabase(database, input.operationId) !== null ||
+      readDaemonProofOperationFromDatabase(database, `${input.operationId}:regular-split`) !==
+        null ||
+      readDaemonProofOperationFromDatabase(database, `${input.operationId}:ctf-split`) !== null,
+  )
+}
+
+/**
+ * One convert spends custody proofs `{'*': S}` into the face amount of each
+ * root-partition collection and the regular change. The saved operation is
+ * read first, so a retry with the same root id resumes it or returns its
+ * result.
+ */
+async function splitCompleteSetByConvert(
+  input: CompleteSetSplitInput & { secrets: DaemonSecrets },
+  mutation: () => FencedStateMutation,
+): Promise<CompleteSetSplitResult> {
+  const operationId = completeSetConvertOperationId(input.operationId)
+  const saved = await readProofOperationFenced(operationId, mutation())
+  if (saved !== null) {
+    assertSavedCompleteSetConvert(saved, input)
+    const resultProofs = await resumeCtfConsolidationOperation(saved, input.deps)
+    return completeSetConvertResponse(input, resultProofs)
+  }
+  await assertCompleteSetConditionPending(input)
+  const transport = createCtfSplitTransport(input.deps, input.mintUrl)
+  const partitionKeysets = structuredClone(
+    await transport.getRootPartitionKeysets(input.conditionId),
+  )
+  const collateralKeysetId = (
+    await resolveCtfConsolidationOutputKeysets(input.mintUrl, input.conditionId, input.deps)
+  )[COLLATERAL_COLLECTION]
+  if (collateralKeysetId === undefined)
+    throw new Error('mint did not return an active msat collateral keyset')
+  const available = await readSpendableWalletProofsFenced({
+    mintUrl: input.mintUrl,
+    asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
+    mutation: mutation(),
+  })
+  const proofs = available.proofs.map(({ proof }) => proof as Proof)
+  const plan = planCtfCompleteSetSplit({
+    conditionId: input.conditionId,
+    partitionKeysets,
+    collateralKeysetId,
+    proofs,
+    inputFeePpkByKeyset: await resolveCtfConsolidationInputFees(
+      input.mintUrl,
+      proofs.map(({ id }) => id),
+      input.deps,
+    ),
+    amountSubunits: input.amountMsat,
+  })
+  if (plan.kind === 'refused')
+    throw completeSetSplitRefusal(plan.reason, proofs, available, input.amountMsat)
+  const outputKeysets = await resolveMintKeysByKeyset(
+    input.mintUrl,
+    [...new Set(plan.outputs.map(({ keysetId }) => keysetId))],
+    input.deps,
+  )
+  const result = await executeCtfConversionPlan(
+    {
+      marketId: input.conditionId,
+      conditionId: input.conditionId,
+      type: 'split',
+      mintUrl: input.mintUrl,
+      plan,
+      outputKeysets,
+      secrets: input.secrets,
+    },
+    operationId,
+    { rootOperationId: input.operationId, amountMsat: input.amountMsat },
+    input.deps,
+  )
+  return {
+    operationId: input.operationId,
+    conditionId: input.conditionId,
+    amountMsat: input.amountMsat,
+    outcomeProofCounts: countOutcomeProofs(result.outputs.map(({ label }) => label)),
+  }
+}
+
+function completeSetSplitRefusal(
+  reason: CtfCompleteSetSplitRefusalReason,
+  proofs: readonly Proof[],
+  available: SpendableWalletProofs,
+  amount: number,
+): Error {
+  switch (reason) {
+    case 'insufficient-inputs': {
+      const spendable = proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
+      // Proofs outside custody count in the balance, but the split cannot spend them.
+      if (available.custodyRepairAmount > 0 && spendable + available.custodyRepairAmount > amount)
+        return new CustodyRepairRequiredError()
+      return new CompleteSetSplitRefusedError(
+        'insufficient-funds',
+        `the wallet holds ${spendable} msat, which cannot pay the split and its input fee`,
+      )
+    }
+    case 'input-fee-floor-zero':
+      return new CompleteSetSplitRefusedError(
+        null,
+        'the mint charges no input fee, so it refuses a convert',
+      )
+    case 'input-limit':
+      return new CompleteSetSplitRefusedError(
+        null,
+        'the split needs more input proofs than one operation holds; consolidate proofs first',
+      )
+    case 'output-group-limit':
+      return new CompleteSetSplitRefusedError(
+        null,
+        'the market has too many outcomes for one split',
+      )
+    default:
+      return assertNeverSplitRefusal(reason)
+  }
+}
+
+function assertNeverSplitRefusal(value: never): never {
+  throw new Error(`unhandled complete-set split refusal: ${String(value)}`)
+}
+
+/** A new split needs a condition that the mint records without a result. */
+async function assertCompleteSetConditionPending(
+  input: Pick<CompleteSetSplitInput, 'mintUrl' | 'conditionId' | 'deps'>,
+): Promise<void> {
+  const condition = await readMintCtfCondition({
+    mintUrl: input.mintUrl,
+    conditionId: input.conditionId,
+    fetch: input.deps.fetchConsolidationCondition,
+  })
+  if (condition.status === 'not-found')
+    throw new CompleteSetSplitRefusedError(
+      'market-not-found',
+      `market ${input.conditionId} was not found`,
+    )
+  if (condition.status !== 'pending')
+    throw new CompleteSetSplitRefusedError(
+      'market-not-pending',
+      `market ${input.conditionId} is not pending`,
+    )
+}
+
+function assertSavedCompleteSetConvert(
+  saved: ProofOperationRecord,
+  input: Pick<CompleteSetSplitInput, 'operationId' | 'mintUrl' | 'conditionId' | 'amountMsat'>,
+): void {
+  if (
+    saved.kind !== 'ctf-consolidation' ||
+    saved.metadata.type !== 'split' ||
+    saved.metadata.rootOperationId !== input.operationId ||
+    saved.mintUrl !== input.mintUrl ||
+    saved.metadata.conditionId !== input.conditionId ||
+    saved.metadata.amountMsat !== input.amountMsat
+  )
+    throw new Error('the operation id belongs to a different split')
+}
+
+function completeSetConvertResponse(
+  input: Pick<CompleteSetSplitInput, 'operationId' | 'conditionId' | 'amountMsat'>,
+  resultProofs: Record<string, Proof[]>,
+): CompleteSetSplitResult {
+  return {
+    operationId: input.operationId,
+    conditionId: input.conditionId,
+    amountMsat: input.amountMsat,
+    outcomeProofCounts: countOutcomeProofs(
+      Object.entries(resultProofs).flatMap(([collection, proofs]) => proofs.map(() => collection)),
+    ),
+  }
+}
+
+/** The change returns as regular collateral, so it is not an outcome. */
+function countOutcomeProofs(collections: readonly string[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  for (const collection of collections) {
+    if (collection === COLLATERAL_COLLECTION) continue
+    counts[collection] = (counts[collection] ?? 0) + 1
+  }
+  return counts
 }
 
 async function startCompleteSetSplit(
@@ -230,18 +474,6 @@ async function splitCompleteSetCollateral(
   collateralAsset: StoredProofAsset,
   ctfReservationId: string,
 ) {
-  let attached: CounterSource | undefined
-  const regularCounterSource: CounterSource = {
-    reserve: (id, count) => {
-      if (!attached) throw new Error('regular counter transcript is not attached')
-      return attached.reserve(id, count)
-    },
-    advanceToAtLeast: (id, next) => {
-      if (!attached) throw new Error('regular counter transcript is not attached')
-      return attached.advanceToAtLeast(id, next)
-    },
-  }
-  let counters: StageCounters | undefined
   const regularAuthority = createFencedCompleteSetProofOperationStore({
     kind: 'regular-handoff',
     mintUrl: input.mintUrl,
@@ -253,83 +485,16 @@ async function splitCompleteSetCollateral(
     root: completeSetRecoveryRoot(input),
     ctfHandoffAuthority: { reservationId: ctfReservationId, inputAsset: collateralAsset },
     mutation,
-    atomic: {
-      counters: {
-        source: regularCounterSource,
-        transcript: () => {
-          if (!counters) throw new Error('regular counter transcript is absent')
-          return counters.transcript()
-        },
-      },
-      deps: input.deps,
-    },
   })
-  const authority = createCompleteSetCollateralOperationAuthority(
-    regularAuthority,
-    collateralAsset,
-    mutation,
-  )
-  return splitAvailableMsatProofsForCtfCollateral(
+  return finishSavedCtfCollateralSplit(
     input.amountMsat,
     input.mintUrl,
     `${input.operationId}:regular-split`,
     input.secrets,
     input.deps,
-    'sat',
     {
-      ...authority,
-      regularCounterSource,
-      prepareRegularSplit: async (selected) => {
-        const keyset = selected.wallet.getKeyset?.()
-        if (!keyset || keyset.unit !== 'msat')
-          throw new Error('complete-set regular output keyset is invalid')
-        const pinnedWallet = {
-          getKeyset: (id?: string) => selected.wallet.getKeyset!(id ?? keyset.id),
-          prepareSwapToSend: selected.wallet.prepareSwapToSend!.bind(selected.wallet),
-          completeSwap: selected.wallet.completeSwap!.bind(selected.wallet),
-          checkProofsStates: selected.wallet.checkProofsStates?.bind(selected.wallet),
-        }
-        for (let attempt = 0; attempt < 3; attempt++) {
-          counters = createStageCounters([keyset.id], input.mintUrl, mutation)
-          attached = counters.source
-          try {
-            return await splitRegularProofsWithOperation({
-              mintUrl: input.mintUrl,
-              baseAsset: 'sat',
-              operationId: `${input.operationId}:regular-split`,
-              wallet: pinnedWallet,
-              proofs: [...selected.proofs],
-              amountSubunits: selected.amountSubunits,
-              proofOperationStore: authority.proofOperationStore,
-              beforeMintMutation: authority.beforeMintMutation,
-              deterministicPreparation: { seed: Buffer.from(input.secrets.walletSeedHex, 'hex') },
-            })
-          } catch (error) {
-            if (
-              error instanceof CompleteSetSavedPreparation &&
-              error.operationId === `${input.operationId}:regular-split`
-            )
-              return splitRegularProofsWithOperation({
-                mintUrl: input.mintUrl,
-                baseAsset: 'sat',
-                operationId: error.operationId,
-                wallet: pinnedWallet,
-                proofs: [],
-                amountSubunits: selected.amountSubunits,
-                proofOperationStore: authority.proofOperationStore,
-                beforeMintMutation: authority.beforeMintMutation,
-              })
-            if (
-              error instanceof CompleteSetCounterRetry &&
-              error.operationId === `${input.operationId}:regular-split` &&
-              attempt < 2
-            )
-              continue
-            throw error
-          }
-        }
-        throw new Error('complete-set regular preparation attempts exhausted')
-      },
+      proofOperationStore: regularAuthority.store,
+      beforeMintMutation: regularAuthority.beforeMintMutation,
     },
   )
 }
@@ -700,25 +865,6 @@ function requireCompleteSetCustodyMutation(
     throw new Error('complete-set conversion requires custody authority')
   }
   return () => ({ fence: deps.getCustodyFence!(), observedAtMs: Date.now() })
-}
-
-function createCompleteSetCollateralOperationAuthority(
-  authority: FencedCompleteSetProofOperationStore,
-  asset: StoredProofAsset,
-  mutation: () => FencedStateMutation,
-): CtfCollateralOperationAuthority {
-  return {
-    proofOperationStore: authority.store,
-    beforeMintMutation: authority.beforeMintMutation,
-    readAvailableProofs: async () =>
-      (
-        await readAvailableWalletProofsFenced({
-          mintUrl: authority.mintUrl,
-          asset,
-          mutation: mutation(),
-        })
-      ).map((record) => record.proof as Proof),
-  }
 }
 
 interface FencedCompleteSetProofOperationStore {

@@ -8,6 +8,7 @@ import {
   planCtfConsolidation,
   planCtfConsolidationAmounts,
   materializeCtfConsolidationPlan,
+  planCtfCompleteSetSplit,
   type CtfConsolidationParams,
 } from '../src/ctfConsolidation.ts'
 
@@ -363,3 +364,107 @@ for (const [strategy, inputs] of [
     assert.equal(calls, amountPlan.outputs.length)
   })
 }
+
+const SPLIT_PARTITION = { NO: 'ks-NO', YES: 'ks-YES' }
+
+function splitPlan(
+  proofs: Proof[],
+  amountSubunits: number,
+  inputFeePpkByKeyset: Record<string, number> = { 'ks-base': 1_000 },
+  partitionKeysets: Record<string, string> = SPLIT_PARTITION,
+) {
+  return planCtfCompleteSetSplit({
+    conditionId: CONDITION_ID,
+    partitionKeysets,
+    collateralKeysetId: 'ks-change',
+    proofs,
+    inputFeePpkByKeyset,
+    amountSubunits,
+  })
+}
+
+test('a complete-set split pays the face amount to each outcome and returns the change', () => {
+  const plan = splitPlan(
+    [proof('ks-base', 8, 'base-8'), proof('ks-base', 64, 'base-64'), proof('ks-base', 32, 'b-32')],
+    50,
+  )
+  assert.equal(plan.kind, 'plan')
+  if (plan.kind !== 'plan') return
+  // One 64 msat input at 1000 ppk costs 1 msat. 64 - 1 - 50 = 13 returns as change.
+  assert.deepEqual(
+    plan.inputs[COLLATERAL_COLLECTION]!.map(({ secret }) => secret),
+    ['secret-base-64'],
+  )
+  assert.equal(plan.feeSubunits, 1)
+  assert.equal(plan.collateralOutputSubunits, 13)
+  assert.deepEqual(plan.outputs, [
+    { collection: 'NO', amountSubunits: 50, keysetId: 'ks-NO' },
+    { collection: 'YES', amountSubunits: 50, keysetId: 'ks-YES' },
+    { collection: COLLATERAL_COLLECTION, amountSubunits: 13, keysetId: 'ks-change' },
+  ])
+  assert.deepEqual(plan.inputPayoff, { NO: 64, YES: 64 })
+  assert.deepEqual(plan.outputPayoff, { NO: 63, YES: 63 })
+})
+
+test('a complete-set split with an exact cover has no change output', () => {
+  const plan = splitPlan([proof('ks-base', 64, 'base-64')], 63)
+  assert.equal(plan.kind, 'plan')
+  if (plan.kind !== 'plan') return
+  assert.equal(plan.collateralOutputSubunits, 0)
+  assert.deepEqual(
+    plan.outputs.map(({ collection }) => collection),
+    ['NO', 'YES'],
+  )
+})
+
+test('a complete-set split adds the input fee of each keyset', () => {
+  const proofs = [proof('ks-a', 32, 'a-32'), proof('ks-b', 32, 'b-32')]
+  const fees = { 'ks-a': 1_000, 'ks-b': 500 }
+  // 1000 + 500 ppk round up to 2 msat, so 64 msat pay at most 62 msat.
+  assert.deepEqual(splitPlan(proofs, 63, fees), { kind: 'refused', reason: 'insufficient-inputs' })
+  const plan = splitPlan(proofs, 62, fees)
+  assert.equal(plan.kind, 'plan')
+  if (plan.kind !== 'plan') return
+  assert.equal(plan.feeSubunits, 2)
+  assert.equal(plan.collateralOutputSubunits, 0)
+})
+
+test('a complete-set split pays each collection of a partition with three outcomes', () => {
+  const plan = splitPlan([proof('ks-base', 128, 'base-128')], 100, undefined, {
+    A: 'ks-A',
+    B: 'ks-B',
+    C: 'ks-C',
+  })
+  assert.equal(plan.kind, 'plan')
+  if (plan.kind !== 'plan') return
+  assert.deepEqual(plan.outputPayoff, { A: 127, B: 127, C: 127 })
+  assert.deepEqual(
+    plan.outputs.map(({ collection, amountSubunits }) => [collection, amountSubunits]),
+    [
+      ['A', 100],
+      ['B', 100],
+      ['C', 100],
+      [COLLATERAL_COLLECTION, 27],
+    ],
+  )
+})
+
+test('a complete-set split refuses before any effect when the mint cannot accept it', () => {
+  assert.deepEqual(splitPlan([proof('ks-base', 16, 'base-16')], 16), {
+    kind: 'refused',
+    reason: 'insufficient-inputs',
+  })
+  assert.deepEqual(splitPlan([proof('ks-base', 64, 'base-64')], 16, { 'ks-base': 0 }), {
+    kind: 'refused',
+    reason: 'input-fee-floor-zero',
+  })
+  const ones = Array.from({ length: 300 }, (_, index) => proof('ks-base', 1, `one-${index}`))
+  assert.deepEqual(splitPlan(ones, 280), { kind: 'refused', reason: 'input-limit' })
+  const wide = Object.fromEntries(
+    Array.from({ length: 16 }, (_, index) => [`O${index}`, `ks-O${index}`]),
+  )
+  assert.deepEqual(splitPlan([proof('ks-base', 64, 'base-64')], 16, undefined, wide), {
+    kind: 'refused',
+    reason: 'output-group-limit',
+  })
+})

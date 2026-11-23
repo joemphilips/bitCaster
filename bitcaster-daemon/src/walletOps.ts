@@ -34,10 +34,7 @@ import {
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
 import {
-  computeGrossCtfInputAmountSubunits,
-  selectCollateralForCtfSplit,
   splitRegularProofsWithOperation,
-  type CtfGrossInputPlanningKeyset,
   type CtfProofOperationRecord,
   type CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
@@ -48,6 +45,7 @@ import {
   type CtfConsolidationAmountPlan,
   type CtfConsolidationPlan,
   type CtfConsolidationStrategy,
+  type CtfConversionStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import {
   amountToNumber,
@@ -126,9 +124,6 @@ import {
   DaemonCounterSnapshotConflictError,
   advanceDaemonKeysetCounter,
   ensureState,
-  getProofOperation,
-  markProofOperationCompleted,
-  prepareProofOperation,
   readDaemonKeysetCounters,
   readAvailableWalletProofAmountSamplesForReceive,
   readDaemonStateFromDatabase,
@@ -339,32 +334,16 @@ export interface PreparedCtfCollateralResult {
 export interface CtfCollateralOperationAuthority {
   readonly proofOperationStore: CtfProofOperationStore
   readonly beforeMintMutation: () => Promise<void>
-  readonly readAvailableProofs: () => Promise<Proof[]>
-  readonly regularCounterSource?: CounterSource
-  readonly prepareRegularSplit?: (input: {
-    readonly wallet: CashuWalletLike
-    readonly proofs: readonly Proof[]
-    readonly amountSubunits: number
-  }) => Promise<Awaited<ReturnType<typeof splitRegularProofsWithOperation>>>
 }
 
 export interface ExecuteCtfConsolidationPlanInput {
   marketId: string
   conditionId: string
-  type: CtfConsolidationStrategy
+  type: CtfConversionStrategy
   mintUrl: string
   plan: CtfConsolidationPlan
   outputsByCollection: Record<string, OutputData[]>
   secrets: WalletOpsSecrets
-}
-
-const DAEMON_CTF_PROOF_OPERATION_STORE: CtfProofOperationStore = {
-  getProofOperation: async (operationId) =>
-    (await getProofOperation(operationId)) as CtfProofOperationRecord | null,
-  prepareProofOperation: async (input) =>
-    (await prepareProofOperation(input)) as CtfProofOperationRecord,
-  markProofOperationCompleted: async (operationId, completion) =>
-    (await markProofOperationCompleted(operationId, completion)) as CtfProofOperationRecord,
 }
 
 export async function receiveWalletToken(
@@ -1122,92 +1101,37 @@ export async function reclaimDurableOutgoingCashuTransfer(
   )
 }
 
-export async function splitAvailableMsatProofsForCtfCollateral(
+/**
+ * Finish the regular stage of a split that a released daemon saved. A new
+ * split is one convert and has no regular stage, so the saved journal must
+ * exist.
+ */
+export async function finishSavedCtfCollateralSplit(
   amountMsat: number,
   mintUrl: string,
   operationId: string,
   secrets: WalletOpsSecrets,
-  deps: WalletOpsDependencies = {},
-  baseAssetInput?: string | null,
-  operationAuthority?: CtfCollateralOperationAuthority,
+  deps: WalletOpsDependencies,
+  operationAuthority: CtfCollateralOperationAuthority,
 ): Promise<PreparedCtfCollateralResult> {
   if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
     throw new Error('amountMsat must be a positive safe integer')
   }
-  const baseAsset = normalizeMarketBaseAsset(baseAssetInput)
-  const proofOperationStore =
-    operationAuthority?.proofOperationStore ?? DAEMON_CTF_PROOF_OPERATION_STORE
-  const existing = await proofOperationStore.getProofOperation(operationId)
-  const wallet = createWallet(
+  const baseAsset = normalizeMarketBaseAsset('sat')
+  const existing = await operationAuthority.proofOperationStore.getProofOperation(operationId)
+  if (!existing) throw new Error('complete-set saved regular split journal is absent')
+  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
+  if (existing.state !== 'completed') await wallet.loadMint()
+  const split = await splitRegularProofsWithOperation({
     mintUrl,
-    secrets,
-    deps,
     baseAsset,
-    undefined,
-    undefined,
-    operationAuthority?.regularCounterSource,
-  )
-  if (existing) {
-    if (existing.state !== 'completed') await wallet.loadMint()
-    const split = await splitRegularProofsWithOperation({
-      mintUrl,
-      baseAsset,
-      operationId,
-      wallet,
-      proofs: [],
-      amountSubunits: requirePersistedCtfCollateralAmount(existing),
-      proofOperationStore,
-      beforeMintMutation: operationAuthority?.beforeMintMutation,
-    })
-    const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
-    return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
-  }
-  await wallet.loadMint()
-
-  const available = await readAvailableCollateralProofs(mintUrl, baseAsset, operationAuthority)
-
-  try {
-    const exact = await validateExactCtfCollateralFromProofs(mintUrl, available, amountMsat, deps)
-    return { inputs: exact.inputs, spent: [], keep: [] }
-  } catch {
-    // Fall through to wallet-backed selection, then to a regular split if needed.
-  }
-
-  try {
-    const exact = await selectCollateralForCtfSplit(mintUrl, available, amountMsat, baseAsset)
-    return { inputs: exact.inputs, spent: [], keep: [] }
-  } catch {
-    // Fall through to a regular split that creates a gross CTF input.
-  }
-
-  if (!wallet.selectProofsToSend || !wallet.getFeesForProofs) {
-    throw new Error('cashu wallet does not support fee-aware proof selection')
-  }
-  const grossPlanningKeyset = await resolveGrossCtfInputPlanningKeyset(mintUrl, wallet, deps)
-  const grossCtfInputSubunits = computeGrossCtfInputAmountSubunits({
-    faceAmountSubunits: amountMsat,
-    keyset: grossPlanningKeyset,
+    operationId,
+    wallet,
+    proofs: [],
+    amountSubunits: requirePersistedCtfCollateralAmount(existing),
+    proofOperationStore: operationAuthority.proofOperationStore,
+    beforeMintMutation: operationAuthority.beforeMintMutation,
   })
-  const selected = wallet.selectProofsToSend(available, grossCtfInputSubunits, true, false)
-  if (selected.send.length === 0) {
-    throw new Error(`insufficient available msat in mint ${mintUrl}`)
-  }
-  const split = operationAuthority?.prepareRegularSplit
-    ? await operationAuthority.prepareRegularSplit({
-        wallet,
-        proofs: selected.send,
-        amountSubunits: grossCtfInputSubunits,
-      })
-    : await splitRegularProofsWithOperation({
-        mintUrl,
-        baseAsset,
-        operationId,
-        wallet,
-        proofs: selected.send,
-        amountSubunits: grossCtfInputSubunits,
-        proofOperationStore,
-        beforeMintMutation: operationAuthority?.beforeMintMutation,
-      })
   const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
   return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
 }
@@ -1218,45 +1142,6 @@ function requirePersistedCtfCollateralAmount(operation: CtfProofOperationRecord)
     throw new Error('persisted CTF collateral operation amount is invalid')
   }
   return amount
-}
-
-async function readAvailableCollateralProofs(
-  mintUrl: string,
-  baseAsset: 'sat',
-  operationAuthority: CtfCollateralOperationAuthority | undefined,
-): Promise<Proof[]> {
-  if (operationAuthority) return operationAuthority.readAvailableProofs()
-  return (await ensureState()).wallet.proofs
-    .filter(
-      (record) =>
-        record.mintUrl === mintUrl &&
-        record.state === 'available' &&
-        record.asset.kind === 'sats' &&
-        normalizeMarketBaseAsset(record.asset.baseAsset) === baseAsset &&
-        record.asset.unit === 'msat',
-    )
-    .map((record) => record.proof as Proof)
-}
-
-async function resolveGrossCtfInputPlanningKeyset(
-  mintUrl: string,
-  wallet: CashuWalletLike,
-  deps: WalletOpsDependencies,
-): Promise<CtfGrossInputPlanningKeyset> {
-  const keysetId = wallet.keysetId ?? wallet.getKeyset?.()?.id
-  if (!keysetId) {
-    throw new Error('cashu wallet did not expose an active keyset id')
-  }
-  const keysets = await resolveMintKeysByKeyset(mintUrl, [keysetId], deps)
-  const keyset = keysets[keysetId]
-  if (!keyset) {
-    throw new Error(`mint did not return keys for keyset ${keysetId}`)
-  }
-  return {
-    id: keyset.id,
-    keys: keyset.keys,
-    input_fee_ppk: keyset.input_fee_ppk ?? 0,
-  }
 }
 
 async function validateExactCtfCollateralFromProofs(
@@ -1639,17 +1524,47 @@ class SavedMarketConsolidation extends Error {
   }
 }
 
+type ExecuteCtfConversionInput = Omit<
+  ExecuteCtfConsolidationPlanInput,
+  'plan' | 'outputsByCollection'
+> & {
+  plan: CtfConsolidationAmountPlan
+  outputKeysets: Record<string, MintKeys>
+}
+
+/** The result of one convert. A consolidation reports its strategy, a split reports `split`. */
+export type CtfConversionResult = Omit<WalletConsolidationResult, 'type'> & {
+  type: CtfConversionStrategy
+}
+
 export async function executeCtfConsolidationPlan(
-  input: Omit<ExecuteCtfConsolidationPlanInput, 'plan' | 'outputsByCollection'> & {
-    plan: CtfConsolidationAmountPlan
-    outputKeysets: Record<string, MintKeys>
-  },
+  input: ExecuteCtfConversionInput & { type: CtfConsolidationStrategy },
   deps: WalletOpsDependencies = {},
 ): Promise<WalletConsolidationResult> {
+  const selectedInputs = flattenProofGroups(input.plan.inputs)
+  const result = await executeCtfConversionPlan(
+    input,
+    ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs),
+    {},
+    deps,
+  )
+  return { ...result, type: input.type }
+}
+
+/**
+ * Execute one convert from a planned set of custody proofs. The operation id
+ * is the idempotency key of the mint request. The extra metadata is saved
+ * with the target operation.
+ */
+export async function executeCtfConversionPlan(
+  input: ExecuteCtfConversionInput,
+  operationId: string,
+  extraMetadata: Readonly<Record<string, unknown>>,
+  deps: WalletOpsDependencies = {},
+): Promise<CtfConversionResult> {
   const fence = deps.getCustodyFence?.()
   if (!fence) throw new Error('wallet CTF consolidation requires custody authority')
   const selectedInputs = flattenProofGroups(input.plan.inputs)
-  const operationId = ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs)
   const validateSaved = (database: DatabaseSync) => {
     const entry = readDaemonProofOperationFromDatabase(database, operationId)
     if (!entry) return null
@@ -1685,7 +1600,7 @@ export async function executeCtfConsolidationPlan(
       validateSaved,
       { snapshot: true },
     )
-  const recover = async (entry: ProofOperationRecord): Promise<WalletConsolidationResult> => {
+  const recover = async (entry: ProofOperationRecord): Promise<CtfConversionResult> => {
     const fee = entry.metadata.feeSubunits
     const returned = entry.metadata.collateralOutputSubunits
     if (
@@ -1768,6 +1683,8 @@ export async function executeCtfConsolidationPlan(
     try {
       return await executePreparedCtfConsolidationPlan(
         { ...input, plan, outputsByCollection },
+        operationId,
+        extraMetadata,
         deps,
         transcript,
         authorityKeys,
@@ -1791,18 +1708,19 @@ export async function executeCtfConsolidationPlan(
 
 async function executePreparedCtfConsolidationPlan(
   input: ExecuteCtfConsolidationPlanInput,
+  operationId: string,
+  extraMetadata: Readonly<Record<string, unknown>>,
   deps: WalletOpsDependencies,
   transcript: SpeculativeCounterTranscript,
   pinnedKeysets: readonly DurableCustodyMintKeysetAuthority[],
   beforeCompare: (database: DatabaseSync) => void,
   afterPrepared: () => void,
-): Promise<WalletConsolidationResult> {
+): Promise<CtfConversionResult> {
   const selectedInputs = flattenProofGroups(input.plan.request.inputs)
   if (selectedInputs.length === 0) {
     throw new Error('CTF consolidation plan did not include input proofs')
   }
 
-  const operationId = ctfConsolidationOperationId(input.conditionId, input.type, selectedInputs)
   const fence = deps.getCustodyFence?.()
   if (fence === undefined) {
     throw new Error('wallet CTF consolidation requires custody authority')
@@ -1821,6 +1739,7 @@ async function executePreparedCtfConsolidationPlan(
         ]),
       ),
       metadata: {
+        ...extraMetadata,
         marketId: input.marketId,
         conditionId: input.conditionId,
         type: input.type,
@@ -2428,12 +2347,14 @@ export async function recoverPreparedWalletSends(
   const recoverable = Object.values(state.proofOperations).filter(
     (entry) =>
       entry.kind === 'ctf-consolidation' &&
-      (entry.state === 'prepared' ||
-        (entry.state === 'completed' && !isCtfConsolidationFinalized(entry, state.wallet.proofs))),
+      (entry.state === 'prepared' || entry.state === 'completed'),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
   for (const entry of recoverable) {
     try {
+      // Custody applies the result and completes the target in one transaction.
+      // A later spend can remove an output from the wallet, so the wallet cannot show this.
+      if (await isCtfConversionApplied(entry, deps)) continue
       await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
@@ -2669,7 +2590,7 @@ function requireTextMetadata(entry: ProofOperationRecord, key: string): string {
   return value
 }
 
-async function resumeCtfConsolidationOperation(
+export async function resumeCtfConsolidationOperation(
   entry: ProofOperationRecord,
   deps: WalletOpsDependencies,
 ): Promise<Record<string, Proof[]>> {
@@ -2681,6 +2602,9 @@ async function resumeCtfConsolidationOperation(
     )
   }
   const binding = await loadPersistedCtfCustodyBinding(entry, deps)
+  // An applied result is final. Its outputs can be spent since, so nothing is admitted again.
+  if (entry.state === 'completed' && binding.record.operation.result.state === 'applied')
+    return normalizeProofGroups(entry.resultProofs)
   const inputsByCollection = ctfInputGroupsFromBinding(binding)
   const outputsByCollection = ctfOutputGroupsFromBinding(binding)
   const persistedResult = await readPersistedCtfResult(binding, deps)
@@ -2944,30 +2868,14 @@ function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
   }
 }
 
-function isCtfConsolidationFinalized(
+/** A completed conversion is final when custody shows its result as applied. */
+async function isCtfConversionApplied(
   entry: ProofOperationRecord,
-  walletProofs: Array<{ mintUrl: string; proof: { secret: string } }>,
-): boolean {
-  const inputSecrets = new Set(entry.inputs.map((proof) => proof.secret))
-  if (
-    walletProofs.some(
-      (record) => record.mintUrl === entry.mintUrl && inputSecrets.has(record.proof.secret),
-    )
-  ) {
-    return false
-  }
-
-  const resultSecrets = Object.values(entry.resultProofs ?? {})
-    .flat()
-    .map((proof) => proof.secret)
-  return (
-    resultSecrets.length > 0 &&
-    resultSecrets.every((secret) =>
-      walletProofs.some(
-        (record) => record.mintUrl === entry.mintUrl && record.proof.secret === secret,
-      ),
-    )
-  )
+  deps: WalletOpsDependencies,
+): Promise<boolean> {
+  if (entry.state !== 'completed') return false
+  const binding = await loadPersistedCtfCustodyBinding(entry, deps)
+  return binding.record.operation.result.state === 'applied'
 }
 
 function ctfConsolidationOperationId(

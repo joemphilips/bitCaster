@@ -1109,10 +1109,24 @@ export function completeCtfConsolidationTargetFromDatabase(
       .get(readScopeId(database), operation.mintUrl, proof.secret)
     if (stale !== undefined) throw new Error('completed CTF consolidation retains a predecessor')
   }
+  const scopeId = readScopeId(database)
+  const canonicalProofQuery = prepareCanonicalProofQuery(database)
   for (const [group, proofs] of Object.entries(input.resultProofs)) {
     const asset = input.successorAssets[group]
     if (asset === undefined) throw new Error('CTF consolidation successor asset is missing')
     for (const proof of proofs) {
+      // A later operation can spend or reserve an output. Its wallet row must not come back.
+      if (
+        !isCanonicalAvailableWalletProof(
+          canonicalProofQuery,
+          scopeId,
+          { proof } as StoredProofRecord,
+          operation.mintUrl,
+          normalizeProofAsset(asset),
+          { requireVerifiedDleq: false },
+        )
+      )
+        continue
       admitRecoveredWalletProofFromDatabase(database, {
         mintUrl: operation.mintUrl,
         proof,

@@ -1,16 +1,10 @@
 import { serveOrderSubmission } from './orderSubmissionTransport.ts'
+import { readMintCtfCondition } from './mintCtfCondition.ts'
 import { DAEMON_ORDER_SUBMISSION_MEDIA_TYPE } from './protocol.ts'
 import type {
   SubmitOrderOptions,
   OrderQuotesRefreshingProgress,
 } from '@bitcaster-market/client-sdk/engineClient'
-import { verifyCtfConditionRegistration } from '@bitcaster-market/client-sdk/ctfConditionRegistration'
-import {
-  readMintConditionResolution,
-  type ConditionResolution,
-} from '@bitcaster-market/client-sdk/conditionResolution'
-import { readAllocationBoundedJsonResponse } from '@bitcaster-market/client-sdk/boundedJsonResponse'
-import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -126,7 +120,11 @@ import {
   type MarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { signNativeTradeComment } from './nostrAuth.ts'
-import { recoverCompleteSetSplits, splitWalletCompleteSet } from './completeSetConversion.ts'
+import {
+  CompleteSetSplitRefusedError,
+  recoverCompleteSetSplits,
+  splitWalletCompleteSet,
+} from './completeSetConversion.ts'
 import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { NativeLightningOps } from './nativeLightningOps.ts'
@@ -1094,18 +1092,30 @@ async function dispatchCommand(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return {
-        ok: true,
-        result: await splitWalletCompleteSet({
-          mintUrl: command.params.mintUrl ?? profile.mintUrl,
-          conditionId: command.params.conditionId,
-          amountMsat: command.params.amountMsat,
-          operationId:
-            command.params.operationId ??
-            `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
-          secrets,
-          deps,
-        }),
+      try {
+        return {
+          ok: true,
+          result: await splitWalletCompleteSet({
+            mintUrl: command.params.mintUrl ?? profile.mintUrl,
+            conditionId: command.params.conditionId,
+            amountMsat: command.params.amountMsat,
+            operationId:
+              command.params.operationId ??
+              `wallet-split-complete-set:${command.params.conditionId}:${Date.now()}`,
+            secrets,
+            deps,
+          }),
+        }
+      } catch (error) {
+        const repair = custodyRepairResponse(error)
+        if (repair !== null) return repair
+        if (error instanceof CompleteSetSplitRefusedError)
+          return {
+            ok: false,
+            ...(error.code === null ? {} : { code: error.code }),
+            error: error.message,
+          }
+        throw error
       }
     }
     case 'wallet.consolidateMarket': {
@@ -3508,33 +3518,26 @@ async function consolidateMarket(input: {
   }
   const conditionId = conditionIdFromMarketId(input.marketId)
   // The mint record is the source of the registration and of the close state.
-  const conditionResponse = await (input.deps.fetchConsolidationCondition ?? globalThis.fetch)(
-    `${input.mintUrl.replace(/\/$/, '')}/v1/conditions/${encodeURIComponent(conditionId)}`,
-    { signal: AbortSignal.timeout(15_000) },
-  )
-  if (conditionResponse.status === 404) {
+  const condition = await readMintCtfCondition({
+    mintUrl: input.mintUrl,
+    conditionId,
+    fetch: input.deps.fetchConsolidationCondition,
+  })
+  if (condition.status === 'not-found') {
     return {
       ok: false,
       code: 'market-not-found',
       error: `market ${conditionId} was not found`,
     }
   }
-  if (!conditionResponse.ok) throw new Error('mint condition registration is unavailable')
-  const condition = await readAllocationBoundedJsonResponse(conditionResponse, 2 * 1024 * 1024)
-  const registrationInput = {
-    condition,
-    mintUrl: input.mintUrl,
-    conditionId,
-    allowInsecureLoopbackHttp: isLoopbackHttpUrl(input.mintUrl),
-  }
-  const registration = verifyCtfConditionRegistration(registrationInput)
-  if (!mintConditionIsPending(readMintConditionResolution(registrationInput).state)) {
+  if (condition.status === 'not-pending') {
     return {
       ok: false,
       code: 'market-not-pending',
       error: `market ${conditionId} is not pending`,
     }
   }
+  const registration = condition.registration
 
   if (!input.deps.getCustodyFence)
     throw new Error('wallet CTF consolidation requires custody authority')
@@ -3658,20 +3661,6 @@ function dispatchConditionResolution(
       relayUrls: daemonOracleRelayUrls(() => activeNativeConfig().config.daemon.nostrRelays),
     })
   )
-}
-
-/** A consolidation needs a condition without a result. Each mint state is mapped. */
-function mintConditionIsPending(state: ConditionResolution['state']): boolean {
-  switch (state.status) {
-    case 'pending':
-      return true
-    case 'resolved':
-    case 'unverified':
-    case 'refused':
-      return false
-    default:
-      throw new Error(`unhandled mint condition state: ${JSON.stringify(state)}`)
-  }
 }
 
 async function loadMarket(client: EngineClientLike, conditionId: string): Promise<unknown | null> {

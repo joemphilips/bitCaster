@@ -62,7 +62,6 @@ import {
   writeState as persistState,
   type DaemonState,
 } from '../src/state.ts'
-import { splitAvailableMsatProofsForCtfCollateral } from '../src/walletOps.ts'
 import { withDaemonStateSqliteTransaction, type StateSqliteFaultPhase } from '../src/stateSqlite.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
@@ -636,61 +635,6 @@ test('daemon dispatch persists wallet and order state', async (t) => {
             },
           ],
         })
-      },
-    )
-
-    await t.test(
-      'preflight collateral preparation opens sat markets with msat wallet unit',
-      async () => {
-        const priorState = await readState()
-        const state = emptyDaemonState()
-        state.wallet.proofs.push(
-          proofRecord(
-            'https://mint-a.example',
-            1_000,
-            'available',
-            { kind: 'sats', baseAsset: 'sat' },
-            'msat-proof',
-          ),
-        )
-        await writeState(state)
-
-        const requestedUnits: Array<string | null | undefined> = []
-        try {
-          await assert.rejects(
-            () =>
-              splitAvailableMsatProofsForCtfCollateral(
-                1_000,
-                'https://mint-a.example',
-                'preflight-msat-unit',
-                secrets,
-                {
-                  createCashuWallet(_mintUrl, unit) {
-                    requestedUnits.push(unit)
-                    return {
-                      async loadMint() {},
-                      async receive() {
-                        throw new Error('receive unused')
-                      },
-                      async send() {
-                        throw new Error('send unused')
-                      },
-                    }
-                  },
-                },
-                'sat',
-              ),
-            /cashu wallet does not support fee-aware proof selection/,
-          )
-
-          assert.deepEqual(requestedUnits, ['msat'])
-        } finally {
-          if (priorState) {
-            await writeState(priorState)
-          } else {
-            await writeState(emptyDaemonState())
-          }
-        }
       },
     )
 

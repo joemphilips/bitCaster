@@ -1,5 +1,9 @@
 import type { CtfConvertRequest, Proof, SerializedBlindedMessage } from '@cashu/cashu-ts'
 import { amountToNumber, computeInputFeeSubunitsForProofs } from './proofSelection.ts'
+import {
+  DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+  DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX,
+} from './durableCustody.ts'
 import { parseOutcomeSetId } from './outcomeSets.ts'
 import {
   encodeMintOutcomeCollection,
@@ -10,6 +14,9 @@ import {
 export const COLLATERAL_COLLECTION = '*'
 
 export type CtfConsolidationStrategy = 't1' | 't2' | 't3'
+
+/** A convert plan: a consolidation strategy, or a complete-set split. */
+export type CtfConversionStrategy = CtfConsolidationStrategy | 'split'
 
 export type CtfConsolidationNoopReason =
   | 'market-not-pending'
@@ -44,7 +51,7 @@ export interface CtfConsolidationParams {
 
 export interface CtfConsolidationPlan {
   kind: 'plan'
-  strategy: CtfConsolidationStrategy
+  strategy: CtfConversionStrategy
   feeSubunits: number
   collateralOutputSubunits: number
   inputPayoff: Record<string, number>
@@ -111,6 +118,97 @@ export function materializeCtfConsolidationPlan(
     outputPayoff: plan.outputPayoff,
     request: { condition_id: plan.conditionId, inputs: plan.inputs, outputs },
   }
+}
+
+export type CtfCompleteSetSplitRefusalReason =
+  | 'insufficient-inputs'
+  | 'input-fee-floor-zero'
+  | 'input-limit'
+  | 'output-group-limit'
+
+export interface CtfCompleteSetSplitRefusal {
+  kind: 'refused'
+  reason: CtfCompleteSetSplitRefusalReason
+}
+
+/**
+ * Plan a complete-set split as one convert. The regular inputs pay the face
+ * amount F to each collection of the root partition and the input fee. The
+ * rest returns as regular change. The mint then holds, for each outcome,
+ * outputs = inputs - fee, with a fee above zero.
+ *
+ * The plan takes the largest proofs first. So it uses the fewest inputs, and
+ * the input fee is the smallest that the proofs allow.
+ */
+export function planCtfCompleteSetSplit(params: {
+  conditionId: string
+  /** The output keyset of each root-partition collection. */
+  partitionKeysets: Record<string, string>
+  collateralKeysetId: string
+  /** The regular proofs that custody holds as spendable. */
+  proofs: readonly Proof[]
+  inputFeePpkByKeyset: Record<string, number>
+  amountSubunits: number
+}): CtfConsolidationAmountPlan | CtfCompleteSetSplitRefusal {
+  const amount = params.amountSubunits
+  if (!Number.isSafeInteger(amount) || amount <= 0)
+    throw new Error('complete-set split amount must be a positive safe integer')
+  const collections = Object.keys(params.partitionKeysets).sort(compareCollections)
+  if (collections.length < 2) throw new Error('complete-set split partition is incomplete')
+  if (collections.length + 1 > DURABLE_CUSTODY_PROOF_GROUP_LIMIT_MAX)
+    return { kind: 'refused', reason: 'output-group-limit' }
+  const candidates = [...params.proofs].sort(
+    (left, right) =>
+      amountToNumber(right.amount) - amountToNumber(left.amount) ||
+      compareCollections(left.id, right.id) ||
+      compareCollections(left.secret, right.secret),
+  )
+  const selected: Proof[] = []
+  let gross = 0
+  let feeSubunits = 0
+  for (const proof of candidates) {
+    if (gross - feeSubunits >= amount && feeSubunits > 0) break
+    if (selected.length === DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
+      return { kind: 'refused', reason: 'input-limit' }
+    selected.push(proof)
+    gross += amountToNumber(proof.amount)
+    feeSubunits = computeConvertFeeSubunits(selected, params.inputFeePpkByKeyset)
+  }
+  if (gross - feeSubunits < amount) return { kind: 'refused', reason: 'insufficient-inputs' }
+  // The mint refuses a convert without a fee.
+  if (feeSubunits === 0) return { kind: 'refused', reason: 'input-fee-floor-zero' }
+  const changeSubunits = gross - feeSubunits - amount
+  const outputs: CtfConsolidationOutputFactoryInput[] = collections.map((collection) => ({
+    collection,
+    amountSubunits: amount,
+    keysetId: params.partitionKeysets[collection]!,
+  }))
+  if (changeSubunits > 0)
+    outputs.push({
+      collection: COLLATERAL_COLLECTION,
+      amountSubunits: changeSubunits,
+      keysetId: params.collateralKeysetId,
+    })
+  const outcomes = [...new Set(collections.flatMap((collection) => parseOutcomeSetId(collection)))]
+  const inputs = { [COLLATERAL_COLLECTION]: selected }
+  const inputPayoff = payoffVector(outcomes, inputs)
+  const outputPayoff = payoffVectorFromOutputAmounts(outcomes, outputs)
+  assertPayoffConservation(outcomes, outputPayoff, subtractFee(inputPayoff, feeSubunits))
+  return {
+    kind: 'plan',
+    strategy: 'split',
+    feeSubunits,
+    collateralOutputSubunits: changeSubunits,
+    inputPayoff,
+    outputPayoff,
+    conditionId: params.conditionId,
+    inputs,
+    outputs,
+  }
+}
+
+function compareCollections(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
 }
 
 export function planCtfConsolidationAmounts(params: AmountParams): AmountResult {

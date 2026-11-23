@@ -806,8 +806,6 @@ test('wallet recovery replays durable CTF result after an after-commit fault', a
     const operationId = Object.keys(committed.proofOperations)[0]
     assert.ok(operationId)
     assert.equal(committed.proofOperations[operationId]?.state, 'completed')
-    committed.wallet.proofs = []
-    await writeState(committed)
 
     let mintCalls = 0
     let resolverCalls = 0
@@ -829,7 +827,8 @@ test('wallet recovery replays durable CTF result after an after-commit fault', a
         throw new Error('after-commit replay must not call the mint')
       },
     })
-    assert.deepEqual(recovery, { recovered: [operationId], pending: [] })
+    // The fault came after the commit, so custody shows the applied result as final.
+    assert.deepEqual(recovery, { recovered: [], pending: [] })
     assert.equal(mintCalls, 0)
     assert.equal(resolverCalls, 0)
     assertWalletProofs(await readState(), {
@@ -1141,7 +1140,7 @@ test('wallet recovery restores a prepared CTF consolidation from a reordered spe
   })
 })
 
-test('wallet recovery sweep finalizes completed CTF consolidation operations', async () => {
+test('wallet recovery sweep leaves an applied CTF consolidation unchanged', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
     const response = await dispatch(
@@ -1157,8 +1156,6 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
     const operationId = Object.keys(completed.proofOperations)[0]
     assert.ok(operationId)
     assert.equal(completed.proofOperations[operationId]?.state, 'completed')
-    completed.wallet.proofs = []
-    await writeState(completed)
 
     const recovery = await recoverPreparedWalletSends({
       getCustodyFence: () => {
@@ -1182,10 +1179,7 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
       },
     })
 
-    assert.deepEqual(recovery, {
-      recovered: [operationId],
-      pending: [],
-    })
+    assert.deepEqual(recovery, { recovered: [], pending: [] })
     assertWalletProofs(await readState(), {
       sats: 1,
       outcomes: { C: 2 },
@@ -1194,7 +1188,78 @@ test('wallet recovery sweep finalizes completed CTF consolidation operations', a
   })
 })
 
-test('wallet recovery preserves committed CTF custody when the wallet projection is stale', async () => {
+test('wallet recovery does not admit again a consolidation output that a later spend used', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      depsForMarket(),
+    )
+    assert.equal(response.ok, true)
+    const completed = await readState()
+    assert.ok(completed)
+    const operation = Object.values(completed.proofOperations)[0]
+    assert.ok(operation)
+    const spentOutput = (operation.resultProofs?.[COLLATERAL_COLLECTION] ?? [])[0] as Proof
+    assert.ok(spentOutput)
+
+    // A later send spends the collateral output: custody marks it SPENT and the wallet drops it.
+    const fence = activeFence!
+    await withDurableCustodyUnitOfWork(
+      process.env.BITCASTER_DAEMON_HOME!,
+      fence,
+      Date.now(),
+      (database) => {
+        const custody = new DurableCustodySqliteStore(database)
+        const row = database
+          .prepare(
+            `SELECT proof_id AS proofId FROM custody_proofs
+             WHERE scope_id = ? AND keyset_id = ? AND amount = ? AND condition_id IS NULL`,
+          )
+          .get(fence.scopeId, spentOutput.id, amountToNumber(spentOutput.amount)) as
+          | { proofId: string }
+          | undefined
+        assert.ok(row)
+        const existing = custody.getProof(fence.scopeId, row.proofId)!
+        custody.putProofCas(
+          {
+            ...existing,
+            nut07State: 'SPENT',
+            selectability: 'spent',
+            revision: existing.revision + 1,
+            updatedAtMs: existing.updatedAtMs + 1,
+          },
+          existing.revision,
+        )
+      },
+    )
+    completed.wallet.proofs = completed.wallet.proofs.filter(
+      ({ proof }) => proof.secret !== spentOutput.secret,
+    )
+    await writeState(completed)
+    const before = (await readState())!.wallet.proofs.map(({ proof }) => proof.secret).sort()
+
+    const recovery = await recoverPreparedWalletSends({
+      getCustodyFence: () => fence,
+      ctfConvert: async () => {
+        throw new Error('a finalized consolidation must not call ctfConvert')
+      },
+    })
+
+    assert.deepEqual(recovery, { recovered: [], pending: [] })
+    assert.deepEqual(
+      (await readState())!.wallet.proofs.map(({ proof }) => proof.secret).sort(),
+      before,
+    )
+  })
+})
+
+// Custody applies a consolidation result and completes its target in one transaction.
+// A wallet row can then leave by a later spend, so recovery reads only the custody state.
+test('wallet recovery treats an applied CTF consolidation as final when the wallet projection differs', async () => {
   await withDaemonHome(async () => {
     const inputs = [proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')]
     await seedWallet(inputs)
@@ -1240,10 +1305,8 @@ test('wallet recovery preserves committed CTF custody when the wallet projection
         throw new Error('committed consolidation must not call ctfConvert')
       },
     })
-    assert.deepEqual(initialRecovery, {
-      recovered: [operationId],
-      pending: [],
-    })
+    assert.deepEqual(initialRecovery, { recovered: [], pending: [] })
+    assert.equal((await readState())?.wallet.proofs.length, 0)
 
     const committedState = await readState()
     assert.ok(committedState)
@@ -1307,10 +1370,7 @@ test('wallet recovery preserves committed CTF custody when the wallet projection
         throw new Error('committed consolidation must not call ctfConvert')
       },
     })
-    assert.deepEqual(retry, {
-      recovered: [operationId],
-      pending: [],
-    })
+    assert.deepEqual(retry, { recovered: [], pending: [] })
 
     const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
     try {
@@ -1332,11 +1392,11 @@ test('wallet recovery preserves committed CTF custody when the wallet projection
     } finally {
       database.close()
     }
-    assert.equal((await readState())?.wallet.proofs.length, 2)
+    assert.equal((await readState())?.wallet.proofs.length, 0)
   })
 })
 
-test('wallet recovery replays applied conditional custody offline after keyset rotation', async () => {
+test('wallet recovery reads applied conditional custody offline after keyset rotation', async () => {
   await withDaemonHome(async () => {
     const conditionId = registrations.exact.condition_id
     const keysets = conditionalOutputKeysets(conditionId)
@@ -1360,8 +1420,6 @@ test('wallet recovery replays applied conditional custody offline after keyset r
     assert.ok(completed)
     const operationId = Object.keys(completed.proofOperations)[0]
     assert.ok(operationId)
-    completed.wallet.proofs = []
-    await writeState(completed)
 
     const recovery = await recoverPreparedWalletSends({
       getCustodyFence: () => {
@@ -1378,7 +1436,7 @@ test('wallet recovery replays applied conditional custody offline after keyset r
         throw new Error('offline applied replay must not call the mint')
       },
     })
-    assert.deepEqual(recovery, { recovered: [operationId], pending: [] })
+    assert.deepEqual(recovery, { recovered: [], pending: [] })
     assertWalletProofs(await readState(), {
       sats: 1,
       outcomes: { C: 2 },
