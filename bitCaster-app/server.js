@@ -187,9 +187,15 @@ app.use(
   (_req, res) => res.status(404).end(),
 );
 app.use(express.static(__dirname));
-app.get("*", (_req, res) => res.sendFile(join(__dirname, "index.html")));
+// Express 5 route syntax: "/{*path}" also matches "/", where "/*path" needs one segment.
+app.get("/{*path}", (_req, res) => res.sendFile(join(__dirname, "index.html")));
 
-const server = app.listen(PORT, () => console.log(`Listening on port ${PORT}`));
+// Express 5 passes a listen error to this callback. Throw it so that the process stops
+// with the error, as an unhandled server error event does.
+const server = app.listen(PORT, (error) => {
+  if (error) throw error;
+  console.log(`Listening on port ${PORT}`);
+});
 if (hubsProxy) {
   // An upgrade request does not pass through the Express middleware. The proxy library
   // adds its own upgrade listener on its first HTTP request, and then its upgrade() does
