@@ -2513,6 +2513,40 @@ test('computeGrossCtfInputAmountSubunits handles F greater than 1 for many proof
   )
 })
 
+test('computeGrossCtfInputAmountSubunits refuses a face amount that no gross amount nets in bounded work', () => {
+  // At 1000 ppk each proof costs 1 subunit, so a gross amount G nets G - popcount(G).
+  // No G nets 20000: 20007 (0b100111000100111) nets 19999 and 20008 (0b100111000101000) nets 20002.
+  let keysetReads = 0
+  const keys = new Proxy(
+    Object.fromEntries(Array.from({ length: 16 }, (_, bit) => [2 ** bit, `k${bit}`])),
+    {
+      ownKeys(target) {
+        keysetReads += 1
+        return Reflect.ownKeys(target)
+      },
+    },
+  )
+
+  assert.throws(
+    () =>
+      computeGrossCtfInputAmountSubunits({
+        faceAmountSubunits: 20_000,
+        keyset: feePlanningKeyset(1000, keys),
+      }),
+    /Could not find gross CTF input amount that nets 20000 subunits after input fees/,
+  )
+  // The planner reads the keyset once for each candidate proof count, not once for each subunit.
+  assert.ok(keysetReads < 1_000, 'gross planning must not scan the face amount')
+})
+
+test('computeGrossCtfInputAmountSubunits finds an exact gross amount that the fee iteration misses', () => {
+  // At 3000 ppk each proof costs 3 subunits. From 14 the iteration alternates between 23 and 26.
+  // 20 (0b10100) has two proofs, so it nets 20 - 6 = 14. No smaller gross amount nets 14.
+  const keyset = feePlanningKeyset(3000, { 1: 'k1', 2: 'k2', 4: 'k4', 8: 'k8', 16: 'k16' })
+
+  assert.equal(computeGrossCtfInputAmountSubunits({ faceAmountSubunits: 14, keyset }), 20)
+})
+
 const CONDITION_ID = 'a'.repeat(64)
 const DETERMINISTIC_KEYSET_A = `01${'b'.repeat(64)}`
 const DETERMINISTIC_KEYSET_B = `01${'c'.repeat(64)}`

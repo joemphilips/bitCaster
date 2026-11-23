@@ -482,12 +482,14 @@ export function computeGrossCtfInputAmountSubunits(params: {
     grossAmountSubunits = nextGrossAmountSubunits
   }
 
-  const scanLimit = faceAmountSubunits + Math.max(faceAmountSubunits, 10_000)
-  for (
-    grossAmountSubunits = faceAmountSubunits;
-    grossAmountSubunits <= scanLimit;
-    grossAmountSubunits += 1
-  ) {
+  // The fee depends only on the proof count, so an exact gross amount is the face
+  // amount plus the fee of its own proof count. A CTF input holds at most
+  // DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX proofs. Test each count once, because a
+  // scan over every subunit blocks the caller for a time that grows with the amount.
+  // The candidates grow with the count, so the first match is the smallest gross amount.
+  for (let proofCount = 1; proofCount <= DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX; proofCount += 1) {
+    grossAmountSubunits =
+      faceAmountSubunits + Math.ceil((proofCount * keyset.input_fee_ppk) / 1_000)
     const feeSubunits = ctfInputFeeForGrossAmount(keyset, grossAmountSubunits)
     if (grossAmountSubunits - feeSubunits === faceAmountSubunits) {
       return grossAmountSubunits
