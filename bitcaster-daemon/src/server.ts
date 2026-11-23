@@ -184,6 +184,7 @@ import {
   receiveWalletToken,
   sendWalletToken,
   executeCtfConsolidationPlan,
+  CtfConversionRefusedError,
   resolveCtfConsolidationInputFees,
   resolveCtfConsolidationOutputKeysets,
   resolveMintKeysByKeyset,
@@ -3610,20 +3611,27 @@ async function consolidateMarket(input: {
     }
   }
 
-  return {
-    ok: true,
-    result: await executeCtfConsolidationPlan(
-      {
-        marketId: input.marketId,
-        conditionId,
-        type: input.type,
-        mintUrl: input.mintUrl,
-        plan,
-        outputKeysets,
-        secrets: input.secrets,
-      },
-      input.deps,
-    ),
+  try {
+    return {
+      ok: true,
+      result: await executeCtfConsolidationPlan(
+        {
+          marketId: input.marketId,
+          conditionId,
+          type: input.type,
+          mintUrl: input.mintUrl,
+          plan,
+          outputKeysets,
+          secrets: input.secrets,
+        },
+        input.deps,
+      ),
+    }
+  } catch (error) {
+    // The condition got its result after the pending check. The inputs are released.
+    if (error instanceof CtfConversionRefusedError)
+      return { ok: false, code: error.code, error: `market ${conditionId} is not pending` }
+    throw error
   }
 }
 

@@ -51,6 +51,7 @@ import {
 } from './state.ts'
 import {
   createDaemonCounterSource,
+  CtfConversionRefusedError,
   executeCtfConversionPlan,
   finishSavedCtfCollateralSplit,
   resolveCtfConsolidationInputFees,
@@ -226,7 +227,16 @@ async function splitCompleteSetByConvert(
   const saved = await readProofOperationFenced(operationId, mutation())
   if (saved !== null) {
     assertSavedCompleteSetConvert(saved, input)
-    const resultProofs = await resumeCtfConsolidationOperation(saved, input.deps)
+    if (saved.state === 'Failed')
+      throw new CompleteSetSplitRefusedError(
+        null,
+        'the mint refused this split; start a new split with a new operation id',
+      )
+    const resultProofs = await resumeCtfConsolidationOperation(saved, input.deps).catch(
+      (error: unknown) => {
+        throw completeSetConvertRefusal(error, input.conditionId)
+      },
+    )
     return completeSetConvertResponse(input, resultProofs)
   }
   await assertCompleteSetConditionPending(input)
@@ -277,13 +287,22 @@ async function splitCompleteSetByConvert(
     operationId,
     { rootOperationId: input.operationId, amountMsat: input.amountMsat },
     input.deps,
-  )
+  ).catch((error: unknown) => {
+    throw completeSetConvertRefusal(error, input.conditionId)
+  })
   return {
     operationId: input.operationId,
     conditionId: input.conditionId,
     amountMsat: input.amountMsat,
     outcomeProofCounts: countOutcomeProofs(result.outputs.map(({ label }) => label)),
   }
+}
+
+/** The condition got its result after the pending check. The inputs are released. */
+function completeSetConvertRefusal(error: unknown, conditionId: string): unknown {
+  return error instanceof CtfConversionRefusedError
+    ? new CompleteSetSplitRefusedError(error.code, `market ${conditionId} is not pending`)
+    : error
 }
 
 function completeSetSplitRefusal(

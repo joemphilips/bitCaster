@@ -1,5 +1,6 @@
 import {
   CheckStateEnum,
+  MintOperationError,
   createBlindSignature,
   createDLEQProof,
   deriveConditionalKeysetId,
@@ -133,6 +134,8 @@ async function fixture(options: { tokens?: number[][]; outcomes?: string[] } = {
       requests: [] as Array<Record<string, unknown>>,
       // A lost answer: the mint applies the convert, but the daemon receives no reply.
       loseAnswer: false,
+      // A definite mint refusal code, before any effect.
+      refuse: null as number | null,
       mintAttestation: undefined as Record<string, unknown> | undefined,
     }
     const transport: CtfSplitTransport = {
@@ -185,6 +188,7 @@ async function fixture(options: { tokens?: number[][]; outcomes?: string[] } = {
         }),
       ctfConvert: async (_mint, request, outputsByCollection) => {
         convert.requests.push(structuredClone(request) as unknown as Record<string, unknown>)
+        if (convert.refuse !== null) throw new MintOperationError(convert.refuse, 'refused')
         const signed = Object.fromEntries(
           Object.entries(outputsByCollection).map(([collection, outputs]) => [
             collection,
@@ -543,6 +547,32 @@ test('a split rolls back a fault before its commit and then succeeds', async () 
     assert.equal(f.convert.requests.length, 0)
     await f.split()
     assert.equal(f.convert.requests.length, 1)
+  } finally {
+    await f.close()
+  }
+})
+
+test('a split that the mint refuses for an attested condition releases its input for a new split', async () => {
+  const f = await fixture()
+  try {
+    const before = await custodyFacts(f.directory)
+    f.convert.refuse = 13042
+    assert.deepEqual(await f.dispatchSplit(100, 'refused-root'), {
+      ok: false,
+      code: 'market-not-pending',
+      error: `market ${f.conditionId} is not pending`,
+    })
+    f.convert.refuse = null
+    const released = await custodyFacts(f.directory)
+    assert.deepEqual(released.wallet, before.wallet)
+    assert.equal(released.walletOnly, 0)
+    assert.ok(released.operations.includes('ctf-consolidation/failed'))
+    const retry = await f.dispatchSplit(100, 'refused-root')
+    assert.equal(retry.ok, false)
+    assert.match(String(retry.error), /new operation id/)
+    // The released input pays a new split.
+    assert.equal((await f.dispatchSplit(100, 'new-root')).ok, true)
+    assert.equal(f.convert.requests.length, 2)
   } finally {
     await f.close()
   }

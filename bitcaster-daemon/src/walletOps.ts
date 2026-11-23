@@ -13,6 +13,7 @@ import {
   Amount,
   Mint as CashuMint,
   Wallet as CashuWallet,
+  CheckStateEnum,
   MintOperationError,
   OutputData,
   splitAmount,
@@ -136,6 +137,7 @@ import {
   type StoredProofAsset,
   completeCtfConsolidationTargetFromDatabase,
   prepareCtfConsolidationProofOperationWithExactReservation,
+  releaseCtfConsolidationProofReservationFromDatabase,
 } from './state.ts'
 import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
@@ -1802,11 +1804,21 @@ async function executePreparedCtfConsolidationPlan(
       ? await deps.ctfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
       : await executeMintCtfConvert(input.mintUrl, input.plan.request, input.outputsByCollection)
   } catch (error) {
-    throw new Error(
-      error instanceof MintOperationError
-        ? 'CTF consolidation mint rejection remains held for exact recovery'
-        : 'CTF consolidation mint result is uncertain',
-    )
+    if (error instanceof MintOperationError) {
+      await releaseFinalCtfConversionRefusal(
+        {
+          operationId,
+          custodyOperationId: binding.record.operation.operationId,
+          mintUrl: input.mintUrl,
+          inputs: binding.inputs,
+          inputAssets: binding.inputAssets,
+        },
+        error,
+        deps,
+      )
+      throw new Error('CTF consolidation mint rejection remains held for exact recovery')
+    }
+    throw new Error('CTF consolidation mint result is uncertain')
   }
 
   await finalizeCtfConsolidationResult(
@@ -2358,6 +2370,11 @@ export async function recoverPreparedWalletSends(
       await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
+      // The mint refused the convert for good and the inputs are released. Nothing is pending.
+      if (err instanceof CtfConversionRefusedError) {
+        result.recovered.push(entry.operationId)
+        continue
+      }
       result.pending.push({
         operationId: entry.operationId,
         error: errorMessage(err),
@@ -2747,6 +2764,17 @@ export async function resumeCtfConsolidationOperation(
           return restored
         }
       }
+      await releaseFinalCtfConversionRefusal(
+        {
+          operationId: entry.operationId,
+          custodyOperationId: binding.record.operation.operationId,
+          mintUrl: entry.mintUrl,
+          inputs: binding.inputs,
+          inputAssets: binding.inputAssets,
+        },
+        error,
+        deps,
+      )
       throw new Error('CTF consolidation mint rejection remains held for exact recovery')
     }
     throw new Error('CTF consolidation mint result is uncertain')
@@ -2866,6 +2894,125 @@ function assertCtfConsolidationOperation(entry: ProofOperationRecord): void {
   if (entry.kind !== 'ctf-consolidation') {
     throw new Error(`Proof operation ${entry.operationId} does not match CTF consolidation`)
   }
+}
+
+/**
+ * The mint refusals that no copy of the same convert can reverse. A delayed
+ * copy of an earlier attempt gets the same answer, so it cannot spend the
+ * inputs after a release.
+ *
+ * - 13042: the condition is attested. The mint changes a condition only from
+ *   pending to attested, and it never deletes one (cdk-sql-common
+ *   `record_condition_attestation`), so each later copy is refused too.
+ *
+ * 13021 (condition not found) is not here. The mint has no delete path, but a
+ * later registration of the same announcement makes the same condition id,
+ * and a delayed copy would then execute.
+ */
+const FINAL_CONVERT_REFUSAL_CODES: ReadonlyMap<number, 'market-not-pending'> = new Map([
+  [13042, 'market-not-pending'],
+])
+
+/** A convert that the mint refused for good. Its reservation is released. */
+export class CtfConversionRefusedError extends Error {
+  readonly code: 'market-not-pending'
+  readonly mintCode: number
+  constructor(code: 'market-not-pending', mintCode: number) {
+    super(`the mint refused the convert for good (${mintCode})`)
+    this.code = code
+    this.mintCode = mintCode
+  }
+}
+
+/**
+ * Release the reservation of a convert after a final refusal, but only when a
+ * NUT-07 read made after the refusal shows each input unspent. A pending,
+ * spent or mixed reading, or a failed read, keeps the hold. One fenced
+ * transaction aborts the custody operation, frees its inputs and fails the
+ * target.
+ */
+async function releaseFinalCtfConversionRefusal(
+  input: {
+    readonly operationId: string
+    readonly custodyOperationId: string
+    readonly mintUrl: string
+    readonly inputs: readonly Proof[]
+    readonly inputAssets: readonly StoredProofAsset[]
+  },
+  refusal: MintOperationError,
+  deps: WalletOpsDependencies,
+): Promise<void> {
+  const code = FINAL_CONVERT_REFUSAL_CODES.get(refusal.code)
+  if (code === undefined) return
+  const states = await readCtfConsolidationInputStates(input.mintUrl, input.inputs, deps).catch(
+    () => null,
+  )
+  if (
+    states === null ||
+    states.length !== input.inputs.length ||
+    states.some(({ state }) => state !== CheckStateEnum.UNSPENT)
+  )
+    return
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  const observedAtMs = Date.now()
+  await withDurableCustodyUnitOfWork(
+    profileDir(),
+    fence,
+    observedAtMs,
+    (database) => {
+      const record = new DurableCustodySqliteStore(database).getOperation(input.custodyOperationId)
+      if (
+        record === null ||
+        record.operation.result.state !== 'none' ||
+        (record.operation.state !== 'dispatch-intent' &&
+          record.operation.state !== 'transport-attempted')
+      )
+        throw new Error('refused CTF conversion custody operation cannot be released')
+      const authorization = custodyOwner(fence, observedAtMs)
+      const transaction = new DurableCustodyTransactionSqlite(
+        database,
+        fence.scopeId,
+        observedAtMs,
+        [record],
+      )
+      applyDurableCustodyTransaction(
+        transaction,
+        {
+          scope: record.scope,
+          owner: authorization,
+          operationRows: [
+            { operationId: input.custodyOperationId, expectedRevision: record.revision },
+          ],
+        },
+        (selected) =>
+          selected.transitionOperation({
+            operationId: input.custodyOperationId,
+            expectedRevision: record.revision,
+            transition: {
+              kind: 'release-unspent-reservation',
+              authorization,
+              expectedRevision: record.revision,
+            },
+          }),
+      )
+      transaction.rebuildActiveWorkIndex({
+        scopeId: fence.scopeId,
+        operationRows: [
+          { operationId: input.custodyOperationId, expectedRevision: record.revision + 1 },
+        ],
+      })
+      releaseCtfConsolidationProofReservationFromDatabase(database, {
+        operationId: input.operationId,
+        reservationId: `ctf-consolidation:${input.operationId}`,
+        inputAssets: input.inputAssets,
+        reason: `the mint refused the convert for good (${refusal.code})`,
+        observedAtMs,
+      })
+    },
+    deps.injectCustodyFault === undefined ? {} : { injectFault: deps.injectCustodyFault },
+  )
+  throw new CtfConversionRefusedError(code, refusal.code)
 }
 
 /** A completed conversion is final when custody shows its result as applied. */

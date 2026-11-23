@@ -485,6 +485,153 @@ test('wallet.consolidateMarket retains both reservations after a rejected reques
   })
 })
 
+/** The money rows of a consolidation, as counts by state. Never proof bodies. */
+async function consolidationReservationFacts() {
+  const database = await openDaemonStateSqlite(process.env.BITCASTER_DAEMON_HOME!)
+  try {
+    const scopeId = activeFence!.scopeId
+    const one = (sql: string) => database.prepare(sql).get(scopeId) as Record<string, unknown>
+    return {
+      target: one(
+        `SELECT state FROM target_proof_operations WHERE scope_id = ? AND kind = 'ctf-consolidation'`,
+      )?.state,
+      reservedWalletRows: one(
+        `SELECT COUNT(*) AS n FROM target_wallet_proofs WHERE scope_id = ? AND state = 'reserved'`,
+      ).n,
+      lockedCustodyRows: one(
+        `SELECT COUNT(*) AS n FROM custody_proofs WHERE scope_id = ? AND selectability = 'locked'`,
+      ).n,
+      custodyOperation: one(
+        `SELECT operation_state AS state FROM custody_operations
+         WHERE scope_id = ? AND semantic_kind = 'ctf-merge'`,
+      )?.state,
+    }
+  } finally {
+    database.close()
+  }
+}
+
+// A refusal that no copy of the same request can reverse releases the reservation, but only
+// when a NUT-07 read after the refusal shows each input unspent. Every other case holds it.
+for (const [name, code, reading, released] of [
+  ['an attested condition with unspent inputs', 13042, 'unspent', true],
+  ['an attested condition with pending inputs', 13042, 'pending', false],
+  ['an attested condition with spent inputs', 13042, 'spent', false],
+  ['an attested condition with mixed inputs', 13042, 'mixed', false],
+  ['an attested condition with a failed reading', 13042, 'failed', false],
+  ['a missing condition with unspent inputs', 13021, 'unspent', false],
+  ['a payoff refusal with unspent inputs', 13041, 'unspent', false],
+  ['a spent-input refusal with unspent inputs', 11001, 'unspent', false],
+] as const)
+  test(`a definite convert refusal for ${name} ${released ? 'releases' : 'holds'} the reservation`, async () => {
+    await withDaemonHome(async () => {
+      await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+      const states = (Ys: readonly string[]) =>
+        Ys.map((Y, index) =>
+          mintState(
+            Y,
+            reading === 'pending'
+              ? CheckStateEnum.PENDING
+              : reading === 'spent' || (reading === 'mixed' && index === 0)
+                ? CheckStateEnum.SPENT
+                : CheckStateEnum.UNSPENT,
+          ),
+        )
+      const response = await dispatch(
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(),
+          createCashuMint: () =>
+            reading === 'failed'
+              ? ({
+                  check: async () => {
+                    throw new Error('NUT-07 transport failure')
+                  },
+                } as never)
+              : stateMint(states),
+          ctfConvert: async () => {
+            throw new MintOperationError(code, 'definite convert refusal')
+          },
+        },
+      ).catch((error: unknown) => ({ ok: false, thrown: String(error) }))
+      const facts = await consolidationReservationFacts()
+      if (released) {
+        assert.deepEqual(response, {
+          ok: false,
+          code: 'market-not-pending',
+          error: `market ${registrations.cond2.condition_id} is not pending`,
+        })
+        assert.deepEqual(facts, {
+          target: 'failed',
+          reservedWalletRows: 0,
+          lockedCustodyRows: 0,
+          custodyOperation: 'aborted',
+        })
+        assert.deepEqual(
+          await recoverPreparedWalletSends({ getCustodyFence: () => activeFence! }),
+          {
+            recovered: [],
+            pending: [],
+          },
+        )
+      } else {
+        assert.match(
+          String((response as { thrown?: string }).thrown),
+          /CTF consolidation mint rejection remains held for exact recovery/,
+        )
+        assert.deepEqual(facts, {
+          target: 'prepared',
+          reservedWalletRows: 2,
+          lockedCustodyRows: 2,
+          custodyOperation: 'dispatch-intent',
+        })
+      }
+    })
+  })
+
+test('a definite convert refusal after an earlier uncertain attempt releases on recovery', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
+    await assert.rejects(
+      dispatch(
+        {
+          method: 'wallet.consolidateMarket',
+          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+        },
+        {
+          ...depsForMarket(),
+          ctfConvert: async () => {
+            throw new Error('lost mint answer')
+          },
+        },
+      ),
+      /CTF consolidation mint result is uncertain/,
+    )
+    // The condition is attested later. A delayed copy of the first attempt gets the same refusal.
+    let replays = 0
+    const recovery = await recoverPreparedWalletSends({
+      ...depsForMarket(),
+      getCustodyFence: () => activeFence!,
+      createCashuMint: () => stateMint((Ys) => Ys.map((Y) => mintState(Y, CheckStateEnum.UNSPENT))),
+      ctfConvert: async () => {
+        replays += 1
+        throw new MintOperationError(13042, 'convert not permitted')
+      },
+    })
+    assert.equal(replays, 1)
+    assert.equal(recovery.pending.length, 0)
+    assert.deepEqual(await consolidationReservationFacts(), {
+      target: 'failed',
+      reservedWalletRows: 0,
+      lockedCustodyRows: 0,
+      custodyOperation: 'aborted',
+    })
+  })
+})
+
 test('wallet.consolidateMarket keeps reservations when a definite rejection sees spent inputs', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(2, 'B|C', 'not-a'), proofRecord(2, 'A|C', 'not-b')])
