@@ -5,6 +5,9 @@ import starlight from '@astrojs/starlight'
 // https://astro.build/config
 export default defineConfig({
   output: 'static',
+  // Starlight 0.43 follows this option and its default changed to attribute
+  // selectors. Keep the :where() selectors so that style specificity stays the same.
+  scopedStyleStrategy: 'where',
   site: 'https://bitcasterdoc.com',
   base: process.env.BASE_URL || '/',
   // Astro doesn't honor PORT by default — wire it through explicitly so
@@ -54,12 +57,12 @@ export default defineConfig({
             {
               label: 'Getting Started',
               translations: { ja: 'はじめに' },
-              autogenerate: { directory: 'user-guide/getting-started' },
+              items: [{ autogenerate: { directory: 'user-guide/getting-started' } }],
             },
             {
               label: 'Core Concepts',
               translations: { ja: '基本コンセプト' },
-              autogenerate: { directory: 'user-guide/core-concepts' },
+              items: [{ autogenerate: { directory: 'user-guide/core-concepts' } }],
             },
           ],
         },
@@ -76,17 +79,17 @@ export default defineConfig({
             {
               label: 'Reference',
               translations: { ja: 'リファレンス' },
-              autogenerate: { directory: 'technical/reference' },
+              items: [{ autogenerate: { directory: 'technical/reference' } }],
             },
             {
               label: 'Architecture',
               translations: { ja: 'アーキテクチャ' },
-              autogenerate: { directory: 'technical/architecture' },
+              items: [{ autogenerate: { directory: 'technical/architecture' } }],
             },
             {
               label: 'Protocol',
               translations: { ja: 'プロトコル' },
-              autogenerate: { directory: 'technical/protocol' },
+              items: [{ autogenerate: { directory: 'technical/protocol' } }],
             },
           ],
         },

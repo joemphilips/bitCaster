@@ -3,15 +3,15 @@
   "type": "module",
   "version": "0.0.1",
   "scripts": {
-    "dev": "BASE_URL=/ astro dev",
-    "start": "BASE_URL=/ astro dev",
+    "dev": "BASE_URL=/ astro dev --ignore-lock",
+    "start": "BASE_URL=/ astro dev --ignore-lock",
     "build": "astro build",
     "preview": "astro preview",
     "astro": "astro"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.37.7",
-    "astro": "^5.18.2",
+    "@astrojs/starlight": "^0.43.1",
+    "astro": "^7.4.12",
     "sharp": "^0.35.5"
   }
 }
