@@ -50,9 +50,9 @@ import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import {
   admitExactAvailableWalletProofsFromDatabase,
   CustodyRepairRequiredError,
-  readAvailableWalletProofsFenced,
   reserveDaemonKeysetCounter,
 } from '../src/state.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const MINT_URL = 'https://mint.example'
 const WALLET_SEED_HEX = '31'.repeat(64)
@@ -611,10 +611,10 @@ test('completed real NUT08 change is recovered by production regular-msat seed s
   try {
     const quote = await f.ops.quote({ invoice: INVOICE })
     assert.equal((await f.ops.pay({ ...quote, approvedMaxDebitMsat: 1200 })).state, 'paid')
-    const expected = await readAvailableWalletProofsFenced({
-      mintUrl: MINT_URL,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      mutation: { fence: f.fence, observedAtMs: f.nextTime() },
+    const expected = await readAvailableWalletProofs(MINT_URL, {
+      kind: 'sats',
+      baseAsset: 'sat',
+      unit: 'msat',
     })
     recoveryDirectory = await mkdtemp(join(tmpdir(), 'melt-change-seed-scan-'))
     await bootstrapFreshDaemonProfile({
@@ -671,10 +671,10 @@ test('completed real NUT08 change is recovered by production regular-msat seed s
     )
     assert.equal(result.state, 'completed')
     assert.equal(result.scannedRanges[0]!.keysetId, KEYSET_ID)
-    const actual = await readAvailableWalletProofsFenced({
-      mintUrl: MINT_URL,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      mutation: { fence, observedAtMs: 3 },
+    const actual = await readAvailableWalletProofs(MINT_URL, {
+      kind: 'sats',
+      baseAsset: 'sat',
+      unit: 'msat',
     })
     const identity = (rows: typeof actual) =>
       rows
@@ -1013,11 +1013,7 @@ async function createFixture(
     ops,
     availableSecrets: async () =>
       (
-        await readAvailableWalletProofsFenced({
-          mintUrl: MINT_URL,
-          asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-          mutation: { fence, observedAtMs: ++nowMs },
-        })
+        await readAvailableWalletProofs(MINT_URL, { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
       ).map(({ proof }) => proof.secret),
     operationCount: async () =>
       withDaemonStateSqliteTransaction(

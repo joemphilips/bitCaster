@@ -40,8 +40,9 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease, renewCustodyScopeLease } from '../src/profileFencing.ts'
 import { NativeBolt11MintQuoteSqliteStore } from '../src/nativeBolt11MintQuoteSqlite.ts'
 import { createWallet } from '../src/walletOps.ts'
-import { readAvailableWalletProofsFenced, reserveDaemonKeysetCounter } from '../src/state.ts'
+import { reserveDaemonKeysetCounter } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const MINT_URL = 'https://mint.example'
 const WALLET_SEED_HEX = '11'.repeat(64)
@@ -160,10 +161,10 @@ test('recovers a hidden paid quote from staged custody without mint I/O or doubl
     assert.equal(fixture.calls.complete, beforeRetry.complete)
     assert.equal(fixture.calls.restore, beforeRetry.restore)
     assert.deepEqual(await fixture.counts(), { quotes: 1, operations: 1, active: 0, proofs: 1 })
-    const available = await readAvailableWalletProofsFenced({
-      mintUrl: MINT_URL,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      mutation: { fence: fixture.fence, observedAtMs: Date.now() },
+    const available = await readAvailableWalletProofs(MINT_URL, {
+      kind: 'sats',
+      baseAsset: 'sat',
+      unit: 'msat',
     })
     assert.equal(available.length, 1)
     assert.equal(Number(available[0]!.proof.amount), 1)

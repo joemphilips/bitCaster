@@ -1367,20 +1367,6 @@ export function replanCtfRangeRefundProofOperationFromDatabase(
   return updated
 }
 
-export async function readAvailableWalletProofsFenced(input: {
-  readonly mintUrl: string
-  readonly asset: StoredProofAsset
-  readonly mutation: FencedStateMutation
-}): Promise<StoredProofRecord[]> {
-  const asset = normalizeProofAsset(input.asset)
-  return withDurableCustodyFencedRead(
-    createDaemonStateSqliteSession(profileDir()),
-    input.mutation.fence,
-    input.mutation.observedAtMs,
-    (database) => readAvailableWalletProofsFromDatabase(database, input.mintUrl, asset),
-  )
-}
-
 /**
  * A command is short of funds only because custody does not hold some of the
  * available wallet proofs. A released daemon wrote some proofs only to the

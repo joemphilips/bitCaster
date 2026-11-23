@@ -42,7 +42,7 @@ import {
   prepareCompleteSetCtfProofOperationFenced,
   prepareCompleteSetRegularProofOperationFenced,
   prepareProofOperationWithExactReservation,
-  readAvailableWalletProofsFenced,
+  readSpendableWalletProofsFenced,
   readAvailableWalletProofAmountSamplesForReceive,
   readRecoverableCompleteSetProofOperationPage,
   readAvailableWalletProofGroupPage,
@@ -1487,13 +1487,14 @@ test('available wallet proof reads require the exact base asset', async () => {
       database.close()
     }
 
-    const proofs = await readAvailableWalletProofsFenced({
+    const spendable = await readSpendableWalletProofsFenced({
       mintUrl: 'http://localhost:8086',
       asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       mutation: await claimMutation(home, 'exact-proof-asset'),
     })
 
-    assert.equal(proofs.length, 0)
+    // The reader does not see the row, so it is neither spendable nor outside custody.
+    assert.deepEqual(spendable, { proofs: [], custodyRepairAmount: 0 })
   })
 })
 

@@ -49,11 +49,9 @@ import {
 } from '../src/nativeWalletMeltCoordinator.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import {
-  admitExactAvailableWalletProofsFromDatabase,
-  readAvailableWalletProofsFenced,
-} from '../src/state.ts'
+import { admitExactAvailableWalletProofsFromDatabase } from '../src/state.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const MINT_URL = 'https://mint.example'
 const PRIVATE_KEYS = Object.fromEntries(
@@ -385,10 +383,10 @@ test('paid native mint invoice outputs can fund a retained-input melt', async ()
     const recovered = await mintQuotes.recoverActivePage({ cursor: null })
     assert.equal(recovered.outcomes[0]?.outcome, 'recovered')
 
-    const availableAfterMint = await readAvailableWalletProofsFenced({
-      mintUrl: MINT_URL,
-      asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      mutation: { fence: fixture.fence, observedAtMs: Date.now() },
+    const availableAfterMint = await readAvailableWalletProofs(MINT_URL, {
+      kind: 'sats',
+      baseAsset: 'sat',
+      unit: 'msat',
     })
     const mintedProof = availableAfterMint.find(({ proof }) =>
       proof.secret.startsWith('invoice:'),
@@ -930,11 +928,7 @@ async function createFixture(selectability: 'selectable' | 'retained' = 'selecta
     custodyOperationId: custodyId(scopeId, operation.operationId),
     availableProofSecrets: async () =>
       (
-        await readAvailableWalletProofsFenced({
-          mintUrl: MINT_URL,
-          asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-          mutation: { fence, observedAtMs: Date.now() },
-        })
+        await readAvailableWalletProofs(MINT_URL, { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
       ).map(({ proof }) => proof.secret),
     readRows: async () =>
       withDaemonStateSqliteTransaction(directory, (database) => {

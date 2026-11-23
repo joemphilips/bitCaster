@@ -99,7 +99,6 @@ import {
   prepareCtfRangeRefundProofOperationFromDatabase,
   emptyDaemonState,
   readAvailableCanonicalWalletProofPageFromDatabase,
-  readAvailableWalletProofsFenced,
   readDaemonKeysetCounters,
   readState,
   recordOrderStatus,
@@ -125,6 +124,7 @@ import {
   serializeOutputDataArray,
 } from '../src/walletOps.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const REGISTERED_CONDITION = signedCtfRegistrationFixture(['YES', 'NO'], 'range-coordinator-test')
 const CONDITION_ID = REGISTERED_CONDITION.condition_id
@@ -9290,16 +9290,7 @@ test('completed regular range refund is found by the production regular-msat see
           observedAtMs: 2,
         })
         process.env.BITCASTER_DAEMON_HOME = directory
-        assert.equal(
-          (
-            await readAvailableWalletProofsFenced({
-              mintUrl: MINT_URL,
-              asset: regularAsset(),
-              mutation: { fence: profileFence, observedAtMs: 3 },
-            })
-          ).length,
-          0,
-        )
+        assert.equal((await readAvailableWalletProofs(MINT_URL, regularAsset())).length, 0)
         let regularLists = 0
         let restoreCalls = 0
         const transport: AllKeysetSeedRecoveryTransport = {
@@ -9357,13 +9348,7 @@ test('completed regular range refund is found by the production regular-msat see
           secret: proof.secret,
           C: proof.C,
         })
-        const actual = (
-          await readAvailableWalletProofsFenced({
-            mintUrl: MINT_URL,
-            asset: regularAsset(),
-            mutation: { fence: profileFence, observedAtMs: 3 },
-          })
-        )
+        const actual = (await readAvailableWalletProofs(MINT_URL, regularAsset()))
           .map((row) => identity(row.proof))
           .sort((a, b) => a.secret.localeCompare(b.secret))
         const expected = originalProofs

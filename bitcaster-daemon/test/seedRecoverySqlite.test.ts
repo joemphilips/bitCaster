@@ -29,10 +29,10 @@ import { withDaemonHome } from './seedRecoveryTestSupport.ts'
 import {
   advanceDaemonKeysetCounter,
   readDaemonStateFromDatabase,
-  readAvailableWalletProofsFenced,
   reserveDaemonKeysetCounter,
 } from '../src/state.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const KEYSET_ID = canonicalTestKeysetId('seed-recovery:one')
 const SECOND_KEYSET_ID = canonicalTestKeysetId('seed-recovery:two')
@@ -85,10 +85,10 @@ test('explicit ordinary recovery co-commits selectable and spent proofs with cur
       assert.equal(readDaemonStateFromDatabase(database)?.wallet.proofs.length, 1)
     })
     await withDaemonHome(directory, async () => {
-      const available = await readAvailableWalletProofsFenced({
-        mintUrl: 'https://mint.example',
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-        mutation: { fence: fixture.fence, observedAtMs: 4 },
+      const available = await readAvailableWalletProofs('https://mint.example', {
+        kind: 'sats',
+        baseAsset: 'sat',
+        unit: 'msat',
       })
       assert.deepEqual(
         available.map(({ proof }) => proof.secret),

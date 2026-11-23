@@ -19,13 +19,14 @@ import {
   type SerializedBlindedMessage,
 } from '@cashu/cashu-ts'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
-import { advanceDaemonKeysetCounter, readAvailableWalletProofsFenced } from '../src/state.ts'
+import { advanceDaemonKeysetCounter } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
 } from '../src/emergencySeedRecovery.ts'
 import { createSeedRecoveryProfile, withDaemonHome } from './seedRecoveryTestSupport.ts'
+import { readAvailableWalletProofs } from './support/availableWalletProofs.ts'
 
 const V2_ID = `01${'a'.repeat(64)}`
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 1])
@@ -200,16 +201,12 @@ test('all-keyset recovery discovers inactive CTF authority and admits exact Outc
     assert.equal(result.batchesProcessed, 2)
 
     await withDaemonHome(fixture.directory, async () => {
-      const available = await readAvailableWalletProofsFenced({
-        mintUrl: 'https://mint.example',
-        asset: {
-          kind: 'Outcome',
-          conditionId: conditional.condition_id,
-          outcomeSetId: conditional.outcome_collection,
-          baseAsset: 'sat',
-          unit: 'msat',
-        },
-        mutation: { fence: fixture.fence, observedAtMs: 5 },
+      const available = await readAvailableWalletProofs('https://mint.example', {
+        kind: 'Outcome',
+        conditionId: conditional.condition_id,
+        outcomeSetId: conditional.outcome_collection,
+        baseAsset: 'sat',
+        unit: 'msat',
       })
       assert.deepEqual(
         available.map(({ proof }) => Number(proof.amount)).sort((left, right) => left - right),
@@ -524,10 +521,10 @@ test('full recovery stops on restored amounts above the safe total without admis
       /more value than a wallet can hold/,
     )
     await withDaemonHome(fixture.directory, async () => {
-      const available = await readAvailableWalletProofsFenced({
-        mintUrl: 'https://mint.example',
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-        mutation: { fence: fixture.fence, observedAtMs: 5 },
+      const available = await readAvailableWalletProofs('https://mint.example', {
+        kind: 'sats',
+        baseAsset: 'sat',
+        unit: 'msat',
       })
       assert.equal(available.length, 0)
     })
