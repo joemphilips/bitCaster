@@ -266,3 +266,15 @@ bitcaster-cli wallet retire-condition <condition-id>
 結果も同じ方法で読むため、エンジンの停止中にも使えます。
 `wallet claim` も同じ方法で結果を読みます。
 daemon が検証済みの結果を読めない場合、コマンドはコード `condition-retirement-result-unavailable` で停止し、何も保存しません。
+
+整理は `wallet claim` と同じ方法で償還します。
+daemon のカストディ記録は報酬を通常の資金として保持するため、`wallet send` と注文でその報酬を使えます。
+整理では、ミントに償還のリクエストを複数回送ることがあります。
+報酬を受け取った各リクエストは、ウォレットのアクティビティに `payout_claimed` の項目を 1 件追加します。
+カストディ記録については、[コマンドが使えない資金](/ja/technical/reference/cli-setup/#コマンドが使えない資金)を参照してください。
+
+整理は、条件の利用可能な各ポジションをカストディ記録が保持している場合にだけ開始します。
+そうでない場合、`wallet retire-condition` はコード `condition-retirement-custody-incomplete` で停止し、何も保存しません。
+`--acknowledge` を付けない場合も同じです。
+自動の整理も開始しません。
+daemon はこの条件を確認に失敗した条件として扱うため、ほかのコマンドを停止せず、同じ間隔で再試行します。

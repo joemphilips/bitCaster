@@ -181,6 +181,48 @@ daemon はそれらの出力を返金として使いません。
 コード付きの拒否では「mint request was refused (mint code 11001)」と表示し、`mintError` にコードと短い詳細を含めます。
 その他のミントの HTTP 応答では「mint request failed (HTTP 502)」と表示します。
 
+## コマンドが使えない資金
+
+daemon は、使える各 proof のカストディ記録を保持します。
+この記録のない proof も `wallet balance` には含まれますが、どのコマンドもその proof を使いません。
+そのような proof でしかコマンドを完了できない場合、コマンドは何も実行せずにコード `custody-repair-required` で停止します。
+`error` のテキストは、利用可能な資金の一部をカストディが記録しておらず、このコマンドではその資金を使えないことを示します。
+このコードで停止することがあるコマンドは、`wallet send`、`wallet pay quote`、`wallet pay execute`、`market fund`、`score buy`、`order submit` の Score 補充、`wallet split`、`wallet consolidate` です。
+記録のある proof で支払えるコマンドは停止しません。
+
+## ポジションを分割・統合する
+
+`wallet split <condition-id> <amount-sats>` は、通常の資金を、マーケットの各アウトカム集合の指定額に変えます。
+金額が入力 proof の額と一致する必要はありません。
+分割はミントでの 1 回の変換なので、入力 proof に対する入力手数料を 1 回だけ支払います。
+おつりは通常の資金として戻ります。
+同じ `--operation-id` で再試行すると、保存された分割を再開するか、その結果を返します。
+条件、金額、ミントのいずれかが異なる別の分割の操作 ID は拒否します。
+
+分割と `wallet consolidate <market-id>` は、何かを実行する前にミントで条件を読みます。
+ミントが条件を知らない場合、コマンドはコード `market-not-found` で停止します。
+ミントが条件の結果を記録している場合、コマンドはコード `market-not-pending` で停止します。
+これらの拒否では資金を予約しません。
+
+分割は、何も実行せずに次のコードで停止することもあります。
+
+- `insufficient-funds`: 通常の資金では、金額と入力手数料を支払えません。
+  `result.requiredMsat` は金額と入力手数料の合計です。`result.availableMsat` は、分割で使える通常の資金です。
+  カストディ記録のない proof があれば分割を完了できる場合、コードは `custody-repair-required` になります。
+- `split-input-fee-zero`: ミントが入力手数料を課さず、手数料のない変換をミントが拒否します。
+- `split-input-limit`: 分割に 256 個を超える入力 proof が必要です。より少ない金額で分割してください。
+- `split-group-limit`: マーケットのアウトカム集合が 15 個を超えています。1 回の変換が持てる出力グループは最大 16 個で、おつりがそのうち 1 個を使います。
+- `split-output-limit`: 分割に 256 個を超える出力が必要です。より少ない金額で分割してください。
+
+この確認の後に、ミントが結果を記録することがあります。
+その場合、ミントは変換を拒否し、分割または統合はコード `market-not-pending` で停止します。
+その後、daemon はミントで各入力の状態を読みます。
+すべての入力が未使用であれば、daemon は資金を解放し、その資金をもう一度使えます。
+それ以外の場合、資金は予約されたままです。
+
+`wallet consolidate-proofs` はなくなりました。
+`order fee-preview` と `order submit` の `--consolidate-proofs` オプションは別の機能です。
+
 ## 資金を安全に保つ
 
 エージェントは CLI ウォレットのすべての資金を操作できます。

@@ -263,3 +263,17 @@ the same way, so it also works while the engine is down. `wallet claim` reads
 the result in the same way. When the daemon cannot read a verified result, the
 command stops with the code `condition-retirement-result-unavailable` and saves
 nothing.
+
+A cleanup redeems as `wallet claim` does. The custody record of the daemon
+holds the payout as regular funds, so `wallet send` and orders can spend it. A
+cleanup can send more than one redeem request to the mint. Each request that
+pays out adds one `payout_claimed` entry to the wallet Activity. See
+[Funds that a command cannot spend](/technical/reference/cli-setup/#funds-that-a-command-cannot-spend)
+for the custody record.
+
+A cleanup starts only when the custody record holds each available position of
+the condition. Otherwise `wallet retire-condition` stops with the code
+`condition-retirement-custody-incomplete` and saves nothing, also without
+`--acknowledge`. The automatic cleanup does not start either. It counts the
+condition as a check that failed, so it does not stop other commands, and it
+tries again on the same schedule.

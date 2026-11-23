@@ -175,6 +175,51 @@ When another wallet command fails because of a mint answer, the `error` text is 
 refusal shows "mint request was refused (mint code 11001)", with the code and a short detail in
 `mintError`. Another mint HTTP answer shows "mint request failed (HTTP 502)".
 
+## Funds that a command cannot spend
+
+The daemon keeps a custody record of each proof that it can spend. A proof without this record
+still counts in `wallet balance`, but no command spends it. When only such proofs could complete a
+command, the command stops before any effect with the code `custody-repair-required`. The `error`
+text states that custody does not record some available funds and that this command cannot spend
+them. These commands can stop with this code: `wallet send`, `wallet pay quote`,
+`wallet pay execute`, `market fund`, `score buy`, the Score top-up of `order submit`, `wallet split`,
+and `wallet consolidate`. A command that the recorded proofs can pay does not stop.
+
+## Split and consolidate positions
+
+`wallet split <condition-id> <amount-sats>` turns regular funds into the given amount of each
+outcome collection of the market. The amount does not need to match the amounts of the input
+proofs. The split is one convert at the mint, so it pays one input fee for its input proofs. The
+change returns as regular funds. A retry with the same `--operation-id` resumes the saved split or
+returns its result. The daemon refuses an operation id of another split, with another condition,
+amount, or mint.
+
+A split and `wallet consolidate <market-id>` read the condition at the mint before any effect. When
+the mint does not know the condition, the command stops with the code `market-not-found`. When the
+mint records a result for the condition, the command stops with the code `market-not-pending`. These
+refusals reserve no funds.
+
+A split also stops before any effect with these codes:
+
+- `insufficient-funds`: the regular funds cannot pay the amount and the input fee.
+  `result.requiredMsat` is the amount and the input fee. `result.availableMsat` is the regular
+  funds that the split can spend. When proofs without a custody record would complete the split,
+  the code is `custody-repair-required`.
+- `split-input-fee-zero`: the mint charges no input fee, and the mint refuses a convert without a
+  fee.
+- `split-input-limit`: the split needs more than 256 input proofs. Split a smaller amount.
+- `split-group-limit`: the market has more than 15 outcome collections. One convert holds at most
+  16 output groups, and the change uses one of them.
+- `split-output-limit`: the split needs more than 256 outputs. Split a smaller amount.
+
+The mint can record the result after this check. Then the mint refuses the convert, and the split or
+the consolidation stops with the code `market-not-pending`. The daemon then reads the state of each
+input at the mint. When each input is unspent, the daemon releases the funds, and you can use them
+again. Otherwise the funds stay reserved.
+
+`wallet consolidate-proofs` no longer exists. The option `--consolidate-proofs` of
+`order fee-preview` and `order submit` is a different feature.
+
 ## Keep your funds safe
 
 The agent controls all funds in the CLI wallet. It can spend them on trades, fees, and Participation

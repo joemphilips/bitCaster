@@ -38,6 +38,7 @@ site gets another language.
 | Bot that quotes both sides of a market | market maker | マーケットメーカー |
 | Non-refundable budget given to the market maker | funding | 資金提供 |
 | Depth available to trade against | liquidity | 流動性 |
+| The daemon's record of each proof that it can spend | custody record | カストディ記録 |
 
 Do not replace settlement terms with resolution terms. Keep the result text
 available to assistive technology. Do not use an emoji as the only result cue.
