@@ -5,6 +5,7 @@ import {
   createDLEQProof,
   deriveConditionalKeysetId,
   getEncodedToken,
+  hashToCurve,
   pointFromHex,
   type MintKeys,
   type OutputData,
@@ -12,12 +13,13 @@ import {
 } from '@cashu/cashu-ts'
 import { bytesToHex } from '@noble/curves/utils.js'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import test from 'node:test'
 import { COLLATERAL_COLLECTION } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { CtfSplitTransport } from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
-import { signedCtfRegistrationFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
+import { attestableCtfConditionFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
 import {
   mintDenominationKeys,
   mintDenominationPrivateKey,
@@ -28,6 +30,7 @@ import {
 } from '../src/completeSetConversion.ts'
 import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableWalletReceiveCoordinator } from '../src/durableWalletReceiveCoordinator.ts'
+import { claimDaemonPosition } from '../src/nativePositionClaim.ts'
 import { readSecrets } from '../src/secrets.ts'
 import { dispatch } from '../src/server.ts'
 import { addAvailableProofs, getProofOperation } from '../src/state.ts'
@@ -35,12 +38,14 @@ import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { readDaemonWalletBalance } from '../src/walletBalance.ts'
 import {
   deserializeOutputGroups,
+  type CashuWalletLike,
   prepareRegularWalletReceive,
   recoverPreparedWalletSends,
   resumeCtfConsolidationOperation,
   sendWalletToken,
 } from '../src/walletOps.ts'
 import { serviceFixture, MINT, SEED } from './nativePaymentRequestServiceFixture.ts'
+import { resolvedResolution } from './support/conditionResolutionStub.ts'
 
 // The service fixture signs its regular keyset with this scalar and these denominations.
 const MINT_PRIVATE_KEY = Uint8Array.from([...new Uint8Array(31), 7])
@@ -97,7 +102,10 @@ function signOutput(output: OutputData, keys: MintKeys): Proof {
  */
 async function fixture(options: { tokens?: number[][]; outcomes?: string[] } = {}) {
   const outcomes = options.outcomes ?? ['A', 'B']
-  const registration = signedCtfRegistrationFixture(outcomes, `split-${outcomes.join('-')}`)
+  const eventId = `split-${outcomes.join('-')}`
+  // The oracle can attest the first outcome after the split.
+  const oracle = attestableCtfConditionFixture({ outcomes, eventId, winner: outcomes[0]! })
+  const registration = oracle.registration
   const conditionId = registration.condition_id
   const partition = conditionalKeysets(conditionId, outcomes)
   const f = await serviceFixture({ defaultWallet: true, largeDenominations: true, inputFeePpk: 1 })
@@ -214,6 +222,47 @@ async function fixture(options: { tokens?: number[][]; outcomes?: string[] } = {
       conditionId,
       convert,
       deps,
+      /** Claim the winning first outcome through the claim code, against a redeeming mint. */
+      claimWinner: async () => {
+        const winner = outcomes[0]!
+        const redeem = redeemingMint(conditionId, partition, regular as MintKeys, keysById)
+        const result = await claimDaemonPosition({
+          conditionId,
+          outcomeCollection: winner,
+          profile: PROFILE,
+          secrets: { walletSeedHex: SEED },
+          fence: f.fence,
+          walletDependencies: { ...deps, createCashuWallet: () => redeem.wallet },
+          resolution: resolvedResolution({
+            conditionId,
+            attestedOutcome: winner,
+            oracleWitness: {
+              oracle_sigs: [
+                {
+                  oracle_pubkey: oracle.oraclePublicKey,
+                  oracle_sig: oracle.signature,
+                  outcome: winner,
+                },
+              ],
+            },
+            registeredAuthority: {
+              eventId,
+              outcomes: [...outcomes],
+              threshold: 1,
+              oracles: [
+                {
+                  oraclePublicKey: oracle.oraclePublicKey,
+                  noncePoint: oracle.signature.slice(0, 64),
+                  announcementIdentity: createHash('sha256')
+                    .update(Buffer.from(registration.announcements[0]!, 'hex'))
+                    .digest('hex'),
+                },
+              ],
+            },
+          }),
+        })
+        return { result, redeemRequests: redeem.requests }
+      },
       split: (amountMsat = 100, operationId = 'split-root', override: Dependencies = deps) =>
         splitWalletCompleteSet({
           operationId,
@@ -240,6 +289,63 @@ async function fixture(options: { tokens?: number[][]; outcomes?: string[] } = {
   }
 }
 const KEYS_COUNT = 15
+
+/**
+ * A mint that redeems winning outcome proofs into regular proofs. It signs the
+ * exact outputs of each request, as the position claim tests do.
+ */
+function redeemingMint(
+  conditionId: string,
+  partition: Record<string, string>,
+  regular: MintKeys,
+  keysById: ReadonlyMap<string, MintKeys>,
+) {
+  const keysets = [
+    { id: regular.id, unit: 'msat', active: true, input_fee_ppk: 1, keys: regular.keys },
+    ...Object.entries(partition).map(([outcome, id]) => ({
+      id,
+      unit: 'msat',
+      active: true,
+      input_fee_ppk: 1,
+      keys: KEYS,
+      conditional: {
+        condition_id: conditionId,
+        outcome_collection: outcome,
+        outcome_collection_id: deriveRootCtfOutcomeCollectionId({
+          conditionId,
+          outcomeCollection: outcome,
+        }),
+      },
+    })),
+  ] as unknown as MintKeys[]
+  const requests: Array<{ readonly inputs: readonly Proof[] }> = []
+  const wallet = {
+    mint: {
+      getKeySets: async () => ({ keysets }),
+      getKeys: async (id?: string) => ({
+        keysets: id === undefined ? keysets : keysets.filter((keyset) => keyset.id === id),
+      }),
+    },
+    loadMint: async () => undefined,
+    redeemOutcomeProofs: async ({
+      inputs,
+      outputs,
+    }: {
+      inputs: Proof[]
+      outputs: OutputData[]
+    }) => {
+      requests.push({ inputs: structuredClone(inputs) })
+      return outputs.map((output) => signOutput(output, keysById.get(output.blindedMessage.id)!))
+    },
+    checkProofsStates: async (proofs: Array<Pick<Proof, 'secret'>>) =>
+      proofs.map(({ secret }) => ({
+        Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
+        state: CheckStateEnum.UNSPENT,
+        witness: null,
+      })),
+  }
+  return { wallet: wallet as unknown as CashuWalletLike, requests }
+}
 
 /** Counts and amounts only; never proof bodies or secrets. */
 async function custodyFacts(directory: string) {
@@ -400,6 +506,36 @@ test('a split takes the largest inputs first and pays one fee for them', async (
   }
 })
 
+test('a claim redeems the winning outcome that a split made, and its payout enters custody', async () => {
+  const f = await fixture()
+  try {
+    await f.split()
+    const { result, redeemRequests } = await f.claimWinner()
+    assert.equal(result.legs.length, 1)
+    assert.equal(result.legs[0]!.state, 'completed')
+    assert.equal(result.legs[0]!.oracleEvidence.status, 'verified')
+    // Three outcome A proofs pay 100 msat and the 1 msat input fee of their keyset.
+    assert.equal(result.legs[0]!.payoutAmountSubunits, 99)
+    assert.equal(redeemRequests.length, 1)
+    assert.equal(redeemRequests[0]!.inputs.length, 3)
+    const facts = await custodyFacts(f.directory)
+    assert.equal(facts.walletOnly, 0)
+    assert.deepEqual(facts.wallet, ['outcome/B/available:100', 'sats/*/available:126'])
+    assert.deepEqual(facts.custody, [
+      '*/retained/UNSPENT:27',
+      '*/selectable/UNSPENT:99',
+      '*/spent/SPENT:128',
+      'A/spent/SPENT:100',
+      'B/retained/UNSPENT:100',
+    ])
+    // The payout and the split change pay a send that neither pays alone.
+    await f.send(110, 'after-claim')
+    assert.equal((await custodyFacts(f.directory)).walletOnly, 0)
+  } finally {
+    await f.close()
+  }
+})
+
 test('the change of a split pays a later send, with and without the other funds', async () => {
   const f = await fixture({
     tokens: [
@@ -467,6 +603,47 @@ for (const resume of ['retry', 'recovery'] as const)
         'sats/*/available:27',
       ])
       assert.deepEqual(await conversions(), ['ctf-consolidation/completed'])
+    } finally {
+      await f.close()
+    }
+  })
+
+for (const lost of ['preparation', 'completion'] as const)
+  test(`a split whose ${lost} COMMIT reply is lost converts once and keeps canonical custody`, async () => {
+    const f = await fixture()
+    try {
+      // The first commit binds the split before the mint. The second applies its result.
+      let commits = 0
+      const loseReply = {
+        ...f.deps,
+        injectCustodyFault: (phase: string) => {
+          if (phase !== 'after-commit') return
+          commits += 1
+          if (commits === (lost === 'preparation' ? 1 : 2))
+            throw new Error('controlled lost COMMIT reply')
+        },
+      }
+      if (lost === 'preparation') {
+        // The executor reads the saved operation and resumes it in the same call.
+        const result = await f.split(100, 'split-root', loseReply)
+        assert.deepEqual(result.outcomeProofCounts, { A: 3, B: 3 })
+      } else {
+        await assert.rejects(f.split(100, 'split-root', loseReply), /controlled lost COMMIT reply/)
+        // A retry reads the completed operation and returns its saved result.
+        assert.deepEqual((await f.split()).outcomeProofCounts, { A: 3, B: 3 })
+      }
+      assert.equal(f.convert.requests.length, 1)
+      const facts = await custodyFacts(f.directory)
+      assert.equal(facts.walletOnly, 0)
+      assert.deepEqual(facts.custody, [
+        '*/retained/UNSPENT:27',
+        '*/spent/SPENT:128',
+        'A/retained/UNSPENT:100',
+        'B/retained/UNSPENT:100',
+      ])
+      assert.deepEqual(await recoverPreparedWalletSends(f.deps), { recovered: [], pending: [] })
+      assert.deepEqual(await custodyFacts(f.directory), facts)
+      assert.equal(f.convert.requests.length, 1)
     } finally {
       await f.close()
     }
