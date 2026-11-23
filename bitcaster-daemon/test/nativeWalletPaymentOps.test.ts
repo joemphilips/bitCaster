@@ -49,6 +49,7 @@ import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import {
   admitExactAvailableWalletProofsFromDatabase,
+  CustodyRepairRequiredError,
   readAvailableWalletProofsFenced,
   reserveDaemonKeysetCounter,
 } from '../src/state.ts'
@@ -105,6 +106,23 @@ test('quote reports exact msat debit facts without preparing outputs or reservin
       counter: 0,
       complete: 0,
     })
+    assert.deepEqual(await fixture.availableSecrets(), ['melt-input'])
+    assert.equal(await fixture.operationCount(), 0)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('a payment that only a proof outside custody could pay refuses before any reservation', async () => {
+  const fixture = await createFixture(false, false, false, {}, true)
+  try {
+    await assert.rejects(
+      fixture.ops.quote({ invoice: INVOICE }),
+      (error: unknown) =>
+        error instanceof CustodyRepairRequiredError && error.code === 'custody-repair-required',
+    )
+    assert.equal(fixture.calls.select, 1)
+    assert.equal(fixture.calls.prepare, 0)
     assert.deepEqual(await fixture.availableSecrets(), ['melt-input'])
     assert.equal(await fixture.operationCount(), 0)
   } finally {
@@ -685,6 +703,7 @@ async function createFixture(
   noChange = false,
   legacySelection = false,
   mintLimits: FixtureMintLimits = {},
+  inputOutsideCustody = false,
 ) {
   const keysetId = noChange
     ? deriveKeysetId(KEYS, { unit: 'msat', versionByte: 1, input_fee_ppk: 0 })
@@ -811,9 +830,11 @@ async function createFixture(
       revision: 0,
       nowMs,
     })
-    new DurableCustodySqliteStore(database).putProofBatchCas([
-      { proof: row, expectedRevision: null },
-    ])
+    // A released daemon wrote some proofs only to the wallet table.
+    if (!inputOutsideCustody)
+      new DurableCustodySqliteStore(database).putProofBatchCas([
+        { proof: row, expectedRevision: null },
+      ])
     admitExactAvailableWalletProofsFromDatabase(database, {
       mintUrl: MINT_URL,
       proofs: [inputProof],

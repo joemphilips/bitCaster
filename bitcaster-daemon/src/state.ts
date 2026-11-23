@@ -44,6 +44,7 @@ import {
   normalizeMarketDivisibility,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { amountToNumber, sumProofs } from '@bitcaster-market/client-sdk/proofSelection'
+import { COLLATERAL_COLLECTION } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { createDurableCustodyProofMaterialRecord } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
 import { mapConfirmedTradeActivities } from '@bitcaster-market/client-sdk/activityLog'
 import {
@@ -1363,6 +1364,115 @@ export async function readAvailableWalletProofsFenced(input: {
     input.mutation.fence,
     input.mutation.observedAtMs,
     (database) => readAvailableWalletProofsFromDatabase(database, input.mintUrl, asset),
+  )
+}
+
+/**
+ * A command is short of funds only because custody does not hold some of the
+ * available wallet proofs. A released daemon wrote some proofs only to the
+ * wallet table. They count in the balance, but a command cannot spend them
+ * until custody holds them.
+ */
+export class CustodyRepairRequiredError extends Error {
+  readonly code = 'custody-repair-required'
+  constructor() {
+    super('custody does not hold some available funds; run wallet recovery before you use them')
+  }
+}
+
+/**
+ * The available proofs of one asset that custody holds as spendable, and the
+ * total amount of the other available proofs of that asset. A send, a melt, a
+ * funding delivery and a consolidation spend only the first group, as an order
+ * does. Unlike an order, they do not need a verified DLEQ proof.
+ */
+export interface SpendableWalletProofs {
+  readonly proofs: StoredProofRecord[]
+  readonly custodyRepairAmount: number
+}
+
+export async function readSpendableWalletProofsFenced(input: {
+  readonly mintUrl: string
+  readonly asset: StoredProofAsset
+  readonly mutation: FencedStateMutation
+}): Promise<SpendableWalletProofs> {
+  const asset = normalizeProofAsset(input.asset)
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => readSpendableWalletProofsFromDatabase(database, input.mintUrl, asset),
+  )
+}
+
+export function readSpendableWalletProofsFromDatabase(
+  database: DatabaseSync,
+  mintUrl: string,
+  asset: StoredProofAsset,
+): SpendableWalletProofs {
+  const scopeId = readScopeId(database)
+  const canonicalProofQuery = prepareCanonicalProofQuery(database)
+  const proofs: StoredProofRecord[] = []
+  let custodyRepairAmount = 0
+  for (const record of readAvailableWalletProofsFromDatabase(database, mintUrl, asset)) {
+    if (
+      isCanonicalAvailableWalletProof(canonicalProofQuery, scopeId, record, mintUrl, asset, {
+        requireVerifiedDleq: false,
+      })
+    )
+      proofs.push(record)
+    else custodyRepairAmount += amountToNumber(record.proof.amount)
+  }
+  return { proofs, custodyRepairAmount }
+}
+
+/**
+ * The available msat collateral and the available outcome proofs of one
+ * condition, grouped by collection. A consolidation plans only from the
+ * proofs that custody holds. The other proofs are returned apart.
+ */
+export async function readSpendableMarketProofsFenced(input: {
+  readonly mintUrl: string
+  readonly conditionId: string
+  readonly mutation: FencedStateMutation
+}): Promise<{
+  readonly spendable: Record<string, CashuProofRecord[]>
+  readonly outsideCustody: Record<string, CashuProofRecord[]>
+}> {
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    input.mutation.fence,
+    input.mutation.observedAtMs,
+    (database) => {
+      const scopeId = readScopeId(database)
+      const canonicalProofQuery = prepareCanonicalProofQuery(database)
+      const rows = database
+        .prepare(
+          `SELECT * FROM target_wallet_proofs
+           WHERE scope_id = ? AND normalized_mint = ? AND state = 'available' AND unit = 'msat'
+             AND (asset_kind = 'sats' OR (asset_kind = 'outcome' AND condition_id = ?))
+           ORDER BY proof_id`,
+        )
+        .all(scopeId, input.mintUrl, input.conditionId) as Array<Record<string, unknown>>
+      const spendable: Record<string, CashuProofRecord[]> = {}
+      const outsideCustody: Record<string, CashuProofRecord[]> = {}
+      for (const record of rows.map(decodeWalletProofRow)) {
+        const asset = normalizeProofAsset(record.asset)
+        const collection = asset.kind === 'Outcome' ? asset.outcomeSetId : COLLATERAL_COLLECTION
+        const target = isCanonicalAvailableWalletProof(
+          canonicalProofQuery,
+          scopeId,
+          record,
+          input.mintUrl,
+          asset,
+          { requireVerifiedDleq: false },
+        )
+          ? spendable
+          : outsideCustody
+        ;(target[collection] ??= []).push(record.proof)
+      }
+      return { spendable, outsideCustody }
+    },
   )
 }
 
@@ -3692,18 +3802,7 @@ export function readAvailableCanonicalWalletProofPageFromDatabase(
   const limit = boundedPageLimit(input.limit)
   const asset = normalizeProofAsset(input.asset)
   const scopeId = readScopeId(database)
-  const canonicalProofQuery = database.prepare(
-    `SELECT proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
-            base_asset, condition_id, outcome_set_id, product_binding,
-            proof_body, proof_fingerprint, signature_verified, dleq_state,
-            nut07_state, selectability, storage_class, reservation_operation_id,
-            EXISTS (
-              SELECT 1 FROM custody_proof_reservations AS reservations
-              WHERE reservations.scope_id = custody_proofs.scope_id
-                AND reservations.proof_id = custody_proofs.proof_id
-            ) AS has_reservation
-     FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
-  )
+  const canonicalProofQuery = prepareCanonicalProofQuery(database)
   const accepted: Array<{
     readonly proof: StoredProofRecord
     readonly cursor: WalletProofPageCursor
@@ -3725,6 +3824,7 @@ export function readAvailableCanonicalWalletProofPageFromDatabase(
           row.proof,
           input.mintUrl,
           asset,
+          { requireVerifiedDleq: true },
         )
       ) {
         continue
@@ -3886,12 +3986,32 @@ function readAvailableWalletProofRowsFromDatabase(
   }
 }
 
+function prepareCanonicalProofQuery(database: DatabaseSync): StatementSync {
+  return database.prepare(
+    `SELECT proof_id, scope_id, normalized_mint, unit, keyset_id, amount,
+            base_asset, condition_id, outcome_set_id, product_binding,
+            proof_body, proof_fingerprint, signature_verified, dleq_state,
+            nut07_state, selectability, storage_class, reservation_operation_id,
+            EXISTS (
+              SELECT 1 FROM custody_proof_reservations AS reservations
+              WHERE reservations.scope_id = custody_proofs.scope_id
+                AND reservations.proof_id = custody_proofs.proof_id
+            ) AS has_reservation
+     FROM custody_proofs WHERE scope_id = ? AND proof_id = ?`,
+  )
+}
+
+/**
+ * An order sends its collateral to a counterparty, so it needs a verified DLEQ
+ * proof. Other spends need only the exact unspent custody row.
+ */
 function isCanonicalAvailableWalletProof(
   canonicalProofQuery: StatementSync,
   scopeId: string,
   record: StoredProofRecord,
   mintUrl: string,
   asset: StoredProofAsset,
+  options: { readonly requireVerifiedDleq: boolean },
 ): boolean {
   const proof = normalizeCashuProofRecord(record.proof)
   if (proof.id === undefined) return false
@@ -3926,7 +4046,7 @@ function isCanonicalAvailableWalletProof(
     isDeepStrictEqual(raw.proof_body, material.proofBody) &&
     raw.proof_fingerprint === material.proofFingerprint &&
     raw.signature_verified === 1 &&
-    raw.dleq_state === 'verified' &&
+    (raw.dleq_state === 'verified' || !options.requireVerifiedDleq) &&
     raw.nut07_state === 'UNSPENT' &&
     (raw.selectability === 'selectable' || raw.selectability === 'retained') &&
     (raw.storage_class === 'pinned-operation-bound-deterministic' ||

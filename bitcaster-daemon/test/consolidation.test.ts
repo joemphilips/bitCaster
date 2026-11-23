@@ -195,6 +195,65 @@ test('wallet.consolidateMarket T3 spends only the market positions, never regula
   })
 })
 
+test('wallet.consolidateMarket refuses when only positions outside custody complete a plan', async () => {
+  await withDaemonHome(async () => {
+    // A released split wrote B and C only to the wallet table.
+    await seedWallet(
+      [proofRecord(10, 'A', 't3-canonical-a')],
+      [proofRecord(10, 'B', 't3-released-b'), proofRecord(10, 'C', 't3-released-c')],
+    )
+    const before = await consolidationMoneyRows()
+
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond3.condition_id}-A`, type: 't3' },
+      },
+      {
+        ...depsForMarket(),
+        ctfConvert: async () => {
+          throw new Error('a refused consolidation must not reach the mint')
+        },
+      },
+    )
+
+    assert.equal(response.ok, false)
+    assert.equal(response.code, 'custody-repair-required')
+    assert.deepEqual(await consolidationMoneyRows(), before)
+  })
+})
+
+test('wallet.consolidateMarket plans only from custody proofs', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet(
+      [
+        proofRecord(10, 'A', 't3-custody-set-a'),
+        proofRecord(10, 'B', 't3-custody-set-b'),
+        proofRecord(10, 'C', 't3-custody-set-c'),
+      ],
+      [proofRecord(4, 'A', 't3-released-a')],
+    )
+
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond3.condition_id}-A`, type: 't3' },
+      },
+      depsForMarket(),
+    )
+
+    assert.equal(response.ok, true)
+    const result = response.result as { status: string; collateralReturnedMsat: number }
+    assert.equal(result.status, 'consolidated')
+    assert.equal(result.collateralReturnedMsat, 9)
+    assertWalletProofs(await readState(), {
+      sats: 9,
+      outcomes: { A: 4, B: 0, C: 0 },
+      spent: ['secret-t3-custody-set-a', 'secret-t3-custody-set-b', 'secret-t3-custody-set-c'],
+    })
+  })
+})
+
 test('wallet.consolidateMarket T3 skips a lone position and keeps regular collateral', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(10, 'A', 't3-lone-a'), satRecord(5, 'regular')])
@@ -559,22 +618,22 @@ test('wallet.consolidateMarket rejects forged canonical proof material before mi
       database.close()
     }
     let mintCalls = 0
-    await assert.rejects(
-      dispatch(
-        {
-          method: 'wallet.consolidateMarket',
-          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+    // A proof whose custody row differs is not spendable, so the plan cannot use it.
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      {
+        ...depsForMarket(),
+        ctfConvert: async () => {
+          mintCalls += 1
+          throw new Error('forged material reached mint')
         },
-        {
-          ...depsForMarket(),
-          ctfConvert: async () => {
-            mintCalls += 1
-            throw new Error('forged material reached mint')
-          },
-        },
-      ),
-      /canonical input material differs from custody/,
+      },
     )
+    assert.equal(response.ok, false)
+    assert.equal(response.code, 'custody-repair-required')
     assert.equal(mintCalls, 0)
   })
 })
@@ -591,22 +650,22 @@ test('wallet.consolidateMarket rejects forged canonical asset metadata before mi
       database.close()
     }
     let mintCalls = 0
-    await assert.rejects(
-      dispatch(
-        {
-          method: 'wallet.consolidateMarket',
-          params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+    // A proof whose custody row differs is not spendable, so the plan cannot use it.
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond2.condition_id}-A`, type: 't2' },
+      },
+      {
+        ...depsForMarket(),
+        ctfConvert: async () => {
+          mintCalls += 1
+          throw new Error('forged asset reached mint')
         },
-        {
-          ...depsForMarket(),
-          ctfConvert: async () => {
-            mintCalls += 1
-            throw new Error('forged asset reached mint')
-          },
-        },
-      ),
-      /canonical input material differs from custody/,
+      },
     )
+    assert.equal(response.ok, false)
+    assert.equal(response.code, 'custody-repair-required')
     assert.equal(mintCalls, 0)
   })
 })
@@ -1359,9 +1418,12 @@ async function withDaemonHome(run: () => Promise<void>): Promise<void> {
   }
 }
 
-async function seedWallet(records: ReturnType<typeof proofRecord>[]): Promise<void> {
+async function seedWallet(
+  records: ReturnType<typeof proofRecord>[],
+  outsideCustody: ReturnType<typeof proofRecord>[] = [],
+): Promise<void> {
   const state = emptyDaemonState()
-  state.wallet.proofs.push(...records)
+  state.wallet.proofs.push(...records, ...outsideCustody)
   await writeState(state)
   await seedCustodyRows(records)
 }

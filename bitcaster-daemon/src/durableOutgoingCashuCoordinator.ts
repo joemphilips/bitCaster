@@ -96,7 +96,9 @@ import {
   admitExactAvailableWalletProofsFromDatabase,
   prepareProofOperationWithExactReservationFromDatabase,
   readDaemonProofOperationFromDatabase,
-  readAvailableWalletProofsFenced,
+  readSpendableWalletProofsFenced,
+  CustodyRepairRequiredError,
+  type SpendableWalletProofs,
   type StoredOutputData,
 } from './state.ts'
 import type { CashuWalletLike, WalletOpsDependencies } from './walletOps.ts'
@@ -1499,12 +1501,13 @@ export class DaemonDurableOutgoingCashuCoordinator {
       (database) => this.#selectSavedPreparation(database, input),
     )
     if (saved) return { transfer: saved, wallet: input.wallet, mode: 'recover' }
-    const available = await readAvailableWalletProofsFenced({
+    const available = await readSpendableWalletProofsFenced({
       mintUrl: input.mintUrl,
       asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       mutation: { fence, observedAtMs },
     })
-    const proofs = available.map(({ proof }) => proof as Proof)
+    assertSpendableFundsCanPay(input.wallet, available, input.amountMsat)
+    const proofs = available.proofs.map(({ proof }) => proof as Proof)
     assertV2OutgoingProofs(proofs)
     const { wallet, preparation, transcript } = await prepareSpeculativeWalletSend({
       storage: this.#storage,
@@ -1799,15 +1802,16 @@ export class DaemonDurableOutgoingCashuCoordinator {
     }
     const fence = this.#getFence()
     const observedAtMs = this.#now()
-    const available = await readAvailableWalletProofsFenced({
+    const available = await readSpendableWalletProofsFenced({
       mintUrl: input.mintUrl,
       asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
       mutation: { fence, observedAtMs },
     })
-    assertV2OutgoingProofs(available.map(({ proof }) => proof))
+    assertSpendableFundsCanPay(input.wallet, available, input.amountMsat)
+    assertV2OutgoingProofs(available.proofs.map(({ proof }) => proof))
     const preview = await input.wallet.prepareSwapToSend(
       input.amountMsat,
-      available.map(({ proof }) => proof as Proof),
+      available.proofs.map(({ proof }) => proof as Proof),
       undefined,
       { send: { type: 'random' }, keep: { type: 'random' } },
     )
@@ -2164,6 +2168,25 @@ function outgoingKeysets(
       identity: { kind: 'regular' as const },
     }
   })
+}
+
+/**
+ * Refuse a send that the custody funds cannot pay but that the proofs outside
+ * custody would complete. Without a fee-aware selection, compare face amounts.
+ */
+function assertSpendableFundsCanPay(
+  wallet: CashuWalletLike,
+  available: SpendableWalletProofs,
+  amountMsat: number,
+): void {
+  if (available.custodyRepairAmount === 0) return
+  const proofs = available.proofs.map(({ proof }) => proof as Proof)
+  const canonicalMsat = proofs.reduce((sum, proof) => sum + amountToNumber(proof.amount), 0)
+  const canPay = wallet.selectProofsToSend
+    ? wallet.selectProofsToSend(proofs, amountMsat, true).send.length > 0
+    : canonicalMsat >= amountMsat
+  if (!canPay && canonicalMsat + available.custodyRepairAmount >= amountMsat)
+    throw new CustodyRepairRequiredError()
 }
 
 function custodyRevisions(

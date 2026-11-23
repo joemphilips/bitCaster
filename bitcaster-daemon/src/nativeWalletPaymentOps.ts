@@ -14,6 +14,7 @@ import { serializeDurableWalletMeltOperation } from '@bitcaster-market/client-sd
 import {
   computeInputFeeSubunitsForProofs,
   amountToNumber,
+  sumProofs,
 } from '@bitcaster-market/client-sdk/proofSelection'
 import {
   isWalletPaymentOperationId,
@@ -36,7 +37,8 @@ import {
 } from './walletOps.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
-  readAvailableWalletProofsFenced,
+  readSpendableWalletProofsFenced,
+  CustodyRepairRequiredError,
   readDaemonCounterSnapshots,
   DaemonCounterSnapshotConflictError,
 } from './state.ts'
@@ -513,14 +515,19 @@ async function selectCanonicalInputs(input: {
   const amountMsat = amountToNumber(input.quote.amount)
   const feeReserveMsat = amountToNumber(input.quote.fee_reserve)
   const target = checkedAdd(amountMsat, feeReserveMsat)
-  const available = await readAvailableWalletProofsFenced({
+  const available = await readSpendableWalletProofsFenced({
     mintUrl: input.mintUrl,
     asset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
     mutation: { fence: input.getFence(), observedAtMs: input.now() },
   })
-  const candidates = available.map(({ proof }) => proof as Proof)
+  const candidates = available.proofs.map(({ proof }) => proof as Proof)
   const selected = input.wallet.selectProofsToSend(candidates, target, true).send
-  if (selected.length === 0) throw new Error('native wallet payment has insufficient msat proofs')
+  if (selected.length === 0) {
+    // Proofs outside custody count in the balance, but a payment cannot spend them.
+    if (sumProofs(candidates) + available.custodyRepairAmount >= target)
+      throw new CustodyRepairRequiredError()
+    throw new Error('native wallet payment has insufficient msat proofs')
+  }
   const fees: Record<string, number> = {}
   for (const keysetId of new Set(selected.map(({ id }) => id))) {
     const keyset = input.wallet.getKeyset(keysetId)

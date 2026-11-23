@@ -116,7 +116,6 @@ import type {
   PreviewFokOrderCapacityResponse,
 } from '@bitcaster-market/client-sdk/fokOrderPreview'
 import {
-  COLLATERAL_COLLECTION,
   planCtfConsolidationAmounts,
   type CtfConsolidationStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
@@ -161,11 +160,14 @@ import { readDaemonConditionalKeysetExpiryWarnings } from './conditionalKeysetEx
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets, readSelectedDaemonSigner, hasUnfinishedDaemonAccountWork } from './secrets.ts'
 import {
+  CustodyRepairRequiredError,
   ensureState,
   listProofOperations,
   listLocalOrders,
+  readSpendableMarketProofsFenced,
   recordSubmittedOrder,
   recordOrderStatus,
+  type CashuProofRecord,
 } from './state.ts'
 import {
   recoverPreparedWalletSends,
@@ -628,6 +630,8 @@ function positionClaimRefusalCause(error: unknown): string {
 }
 
 function normalizeRpcError(err: unknown): DaemonResponse {
+  const repair = custodyRepairResponse(err)
+  if (repair !== null) return repair
   const mintFailure = mintAnswerRpcError(err)
   if (mintFailure !== null) return mintFailure
   if (!(err instanceof Error)) {
@@ -638,6 +642,13 @@ function normalizeRpcError(err: unknown): DaemonResponse {
   const cause = 'cause' in err && err.cause instanceof Error ? err.cause.message : undefined
   const detail = [err.message, status ? `status=${status}` : null, cause].filter(Boolean).join('; ')
   return { ok: false, error: detail || err.message }
+}
+
+/** A command that only funds outside custody could pay is refused before any effect. */
+function custodyRepairResponse(err: unknown): DaemonResponse | null {
+  return err instanceof CustodyRepairRequiredError
+    ? { ok: false, code: err.code, error: err.message }
+    : null
 }
 
 /** An RPC error that holds a mint answer gets fixed text, or null without one. */
@@ -1048,6 +1059,10 @@ async function dispatchCommand(
             command.params.operationId,
           ),
         }
+      } catch (error) {
+        const repair = custodyRepairResponse(error)
+        if (repair !== null) return repair
+        throw error
       } finally {
         deps.triggerCustodyRecovery?.()
       }
@@ -1102,13 +1117,19 @@ async function dispatchCommand(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      return consolidateMarket({
-        marketId: command.params.marketId,
-        type: command.params.type,
-        mintUrl: profile.mintUrl,
-        secrets,
-        deps,
-      })
+      try {
+        return await consolidateMarket({
+          marketId: command.params.marketId,
+          type: command.params.type,
+          mintUrl: profile.mintUrl,
+          secrets,
+          deps,
+        })
+      } catch (error) {
+        const repair = custodyRepairResponse(error)
+        if (repair !== null) return repair
+        throw error
+      }
     }
     case 'wallet.consolidateProofs': {
       const profile = await readProfile()
@@ -2685,6 +2706,8 @@ async function dispatchNativeWalletPayment(
         if (error instanceof NativeMintPaymentAmountError) {
           return nativeMintPaymentAmountFailure(error)
         }
+        const repair = custodyRepairResponse(error)
+        if (repair !== null) return repair
         return {
           ok: false,
           code: 'wallet-payment-quote-unavailable',
@@ -2701,7 +2724,9 @@ async function dispatchNativeWalletPayment(
             approvedMaxDebitMsat: consent.totalWalletDebitMsat,
           }),
         }
-      } catch {
+      } catch (error) {
+        const repair = custodyRepairResponse(error)
+        if (repair !== null) return repair
         return {
           ok: false,
           code: 'wallet-payment-unconfirmed',
@@ -2853,7 +2878,9 @@ async function dispatchParticipationScore(
           cost,
         },
       }
-    } catch {
+    } catch (error) {
+      const repair = custodyRepairResponse(error)
+      if (repair !== null) return repair
       return {
         ok: false,
         code: 'score-quote-unavailable',
@@ -2975,6 +3002,8 @@ async function dispatchParticipationScore(
         result: scoreDeliveryStatusResult(consent, remoteStatus.state, remoteStatus.result),
       }
     }
+    const repair = custodyRepairResponse(error)
+    if (repair !== null) return repair
     const message =
       error instanceof Error &&
       (error.message === 'outgoing wallet debit exceeds the approved maximum' ||
@@ -3229,6 +3258,8 @@ async function dispatchMarketFunding(
         },
       }
     } catch (error) {
+      const repair = custodyRepairResponse(error)
+      if (repair !== null) return repair
       const refusal = safeMarketFundingRefusal(error)
       if (refusal !== null) {
         return { ok: false, code: 'market-funding-refused', error: refusal }
@@ -3272,6 +3303,8 @@ async function dispatchMarketFunding(
       },
     }
   } catch (error) {
+    const repair = custodyRepairResponse(error)
+    if (repair !== null) return repair
     const attemptId = attempt.kind === 'begin' ? attempt.newAttemptId : attempt.transferId
     const refusal = safeMarketFundingRefusal(error)
     return {
@@ -3503,13 +3536,20 @@ async function consolidateMarket(input: {
     }
   }
 
-  const proofsByCollection = await availableMarketProofs({
+  if (!input.deps.getCustodyFence)
+    throw new Error('wallet CTF consolidation requires custody authority')
+  const available = await readSpendableMarketProofsFenced({
     mintUrl: input.mintUrl,
     conditionId,
+    mutation: { fence: input.deps.getCustodyFence(), observedAtMs: Date.now() },
   })
+  const proofsByCollection = proofGroups(available.spendable)
+  const outsideCustody = proofGroups(available.outsideCustody)
   const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
     input.mintUrl,
-    Object.values(proofsByCollection).flatMap((proofs) => proofs.map((proof) => proof.id)),
+    [...Object.values(proofsByCollection), ...Object.values(outsideCustody)].flatMap((proofs) =>
+      proofs.map((proof) => proof.id),
+    ),
     input.deps,
   )
   const outputKeysetByCollection = await resolveCtfConsolidationOutputKeysets(
@@ -3522,16 +3562,26 @@ async function consolidateMarket(input: {
     Object.values(outputKeysetByCollection),
     input.deps,
   )
-  const plan = planCtfConsolidationAmounts({
-    conditionId,
-    registration,
-    outcomes: [...registration.outcomes],
-    marketStatus: 'pending',
-    strategy: input.type,
-    proofsByCollection,
-    inputFeePpkByKeyset,
-    outputKeysetByCollection,
-  })
+  const planFrom = (groups: Record<string, Proof[]>) =>
+    planCtfConsolidationAmounts({
+      conditionId,
+      registration,
+      outcomes: [...registration.outcomes],
+      marketStatus: 'pending',
+      strategy: input.type,
+      proofsByCollection: groups,
+      inputFeePpkByKeyset,
+      outputKeysetByCollection,
+    })
+  const plan = planFrom(proofsByCollection)
+
+  // Proofs outside custody count in the balance, but a consolidation cannot spend them.
+  if (
+    plan.kind === 'noop' &&
+    Object.keys(outsideCustody).length > 0 &&
+    planFrom(mergeProofGroups(proofsByCollection, outsideCustody)).kind === 'plan'
+  )
+    throw new CustodyRepairRequiredError()
 
   if (plan.kind === 'noop') {
     if (plan.reason === 'net-collateral-nonpositive') {
@@ -3574,30 +3624,23 @@ async function consolidateMarket(input: {
   }
 }
 
-async function availableMarketProofs(input: {
-  mintUrl: string
-  conditionId: string
-}): Promise<Record<string, Proof[]>> {
-  const state = await ensureState()
-  const groups: Record<string, Proof[]> = {}
-  for (const record of state.wallet.proofs) {
-    if (record.mintUrl !== input.mintUrl || record.state !== 'available') continue
-    if (record.asset.unit !== 'msat') continue
-    if (record.asset.kind === 'sats') {
-      groups[COLLATERAL_COLLECTION] = [
-        ...(groups[COLLATERAL_COLLECTION] ?? []),
-        record.proof as Proof,
-      ]
-      continue
-    }
-    if (record.asset.kind === 'Outcome' && record.asset.conditionId === input.conditionId) {
-      groups[record.asset.outcomeSetId] = [
-        ...(groups[record.asset.outcomeSetId] ?? []),
-        record.proof as Proof,
-      ]
-    }
-  }
-  return groups
+function proofGroups(groups: Record<string, CashuProofRecord[]>): Record<string, Proof[]> {
+  return Object.fromEntries(
+    Object.entries(groups).map(([collection, proofs]) => [
+      collection,
+      proofs.map((proof) => proof as Proof),
+    ]),
+  )
+}
+
+function mergeProofGroups(
+  left: Record<string, Proof[]>,
+  right: Record<string, Proof[]>,
+): Record<string, Proof[]> {
+  const merged: Record<string, Proof[]> = { ...left }
+  for (const [collection, proofs] of Object.entries(right))
+    merged[collection] = [...(merged[collection] ?? []), ...proofs]
+  return merged
 }
 
 /** The result of a condition from the mint, then the oracle relays. The engine is not read. */
