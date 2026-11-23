@@ -613,6 +613,20 @@ export async function handleRequest(
   }
 }
 
+/**
+ * The operator log names the cause of a refused claim. A message can hold an
+ * amount, an id, or mint text, so the log keeps it only when it is fixed text:
+ * lowercase words and spaces, with no digit or symbol.
+ */
+function positionClaimRefusalCause(error: unknown): string {
+  const name = error instanceof Error && /^[A-Za-z]{1,64}$/.test(error.name) ? error.name : 'Error'
+  const reason =
+    error instanceof Error && /^[a-z]+(?: [a-z]+){0,23}$/.test(error.message)
+      ? error.message
+      : 'unclassified'
+  return `(${name}): ${reason}`
+}
+
 function normalizeRpcError(err: unknown): DaemonResponse {
   const mintFailure = mintAnswerRpcError(err)
   if (mintFailure !== null) return mintFailure
@@ -1174,6 +1188,7 @@ async function dispatchCommand(
         // The mint cannot redeem the claim now. The claim saved nothing, so the user can retry.
         if (error instanceof PositionClaimResultUnavailableError)
           return { ok: false, code: error.code, error: error.message }
+        process.stderr.write(`Position claim refused ${positionClaimRefusalCause(error)}\n`)
         return {
           ok: false,
           code: 'position-claim-refused',

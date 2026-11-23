@@ -1069,6 +1069,45 @@ test('claim requires ready custody and redacts invalid requests before network I
   }
 })
 
+test('a refused claim logs only the error name and its fixed reason', async () => {
+  const fixture = await createFixture()
+  const lines: string[] = []
+  const write = process.stderr.write
+  try {
+    // Only the local wallet mirror holds this proof. Custody has no canonical record of it.
+    await fixture.add('mirror-only-input', CURRENT_ID, 'YES', fixture.conditionId, 8, false)
+    process.stderr.write = ((chunk: string | Uint8Array) => {
+      lines.push(String(chunk))
+      return true
+    }) as typeof process.stderr.write
+    const response = await dispatch(
+      {
+        method: 'wallet.claimPosition',
+        params: { conditionId: fixture.conditionId, outcomeCollection: 'YES' },
+      },
+      {
+        ...fixture.common.walletDependencies,
+        getCustodyFence: () => fixture.common.fence,
+        conditionResolution: fixture.common.resolution,
+        createEngineClient: () => ({}) as never,
+      },
+    )
+    process.stderr.write = write
+    assert.deepEqual(response, {
+      ok: false,
+      code: 'position-claim-refused',
+      error: 'position claim could not use the exact custody target',
+    })
+    assert.deepEqual(lines, [
+      'Position claim refused (Error): position claim canonical predecessor is absent or foreign\n',
+    ])
+    assert.equal(fixture.wallet.requests.length, 0)
+  } finally {
+    process.stderr.write = write
+    await fixture.dispose()
+  }
+})
+
 async function createFixture(seed = '11'.repeat(64), resolvedOutcome = 'YES') {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-position-claim-'))
   const previous = process.env.BITCASTER_DAEMON_HOME
