@@ -80,7 +80,7 @@ test('a wake before the listen only records itself, and the first scan after the
         retireResolvedDaemonConditions: async () => {
           discoveryListening.push(listening)
           markDiscovered()
-          return { results: [], awaitingAttestation: [] }
+          return { results: [], awaitingAttestation: [], discoveryFailures: [] }
         },
       },
     })

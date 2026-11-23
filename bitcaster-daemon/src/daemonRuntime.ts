@@ -243,7 +243,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     })
   const runAutomaticRetirementScan = async (): Promise<ResolvedConditionDiscovery> => {
     const resumed = await resumeConditionRetirements()
-    if (!automaticRetirement) return { results: resumed, awaitingAttestation: [] }
+    if (!automaticRetirement)
+      return { results: resumed, awaitingAttestation: [], discoveryFailures: [] }
     const discovered = await retireResolvedDaemonConditions({
       profile,
       secrets,
@@ -255,6 +256,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     return {
       results: mergeRetirementResults(resumed, discovered.results),
       awaitingAttestation: discovered.awaitingAttestation,
+      discoveryFailures: discovered.discoveryFailures,
     }
   }
   // One retirement scan runs at a time, and only after the RPC server listens.
@@ -723,7 +725,14 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         }
         const pending = scan.results.filter((entry) => entry.error !== null)
         readiness.completeAutomaticRetirementScan(generation, pending.length > 0)
-        if (pending.length > 0 || scan.awaitingAttestation.length > 0) retirementRetry.schedule()
+        // ADR-033 holds funds only until unfinished recovery completes. A failed
+        // discovery started no work, so it only reads the condition again later.
+        if (
+          pending.length > 0 ||
+          scan.awaitingAttestation.length > 0 ||
+          scan.discoveryFailures.length > 0
+        )
+          retirementRetry.schedule()
         else retirementRetry.reset()
         await refreshNativePaymentRequestReceiver()
         for (const entry of pending) {
@@ -734,6 +743,11 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         for (const conditionId of scan.awaitingAttestation) {
           process.stderr.write(
             `Condition ${conditionId} is closed; its attestation is not readable yet\n`,
+          )
+        }
+        for (const entry of scan.discoveryFailures) {
+          process.stderr.write(
+            `Condition ${entry.conditionId} could not be checked; it is read again later: ${entry.error}\n`,
           )
         }
         if (pending.length === 0 && readiness.isReady()) markCustodyReady()

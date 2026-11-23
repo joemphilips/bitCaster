@@ -82,10 +82,16 @@ export interface ConditionRetirementResult {
 }
 
 export interface ResolvedConditionDiscovery {
-  /** The conditions that the scan retired, or that failed. */
+  /** The conditions that the scan retired, or whose started retirement failed. */
   readonly results: ConditionRetirementResult[]
   /** The closed conditions without a readable attestation. A later scan reads them again. */
   readonly awaitingAttestation: string[]
+  /**
+   * The conditions that failed before a retirement started, for example
+   * because the engine did not answer. Nothing is unfinished, so they do not
+   * hold the funds commands. A later scan reads them again.
+   */
+  readonly discoveryFailures: ConditionRetirementResult[]
 }
 
 export async function retireResolvedDaemonConditions(input: {
@@ -100,6 +106,7 @@ export async function retireResolvedDaemonConditions(input: {
 }): Promise<ResolvedConditionDiscovery> {
   const results: ConditionRetirementResult[] = []
   const awaitingAttestation: string[] = []
+  const discoveryFailures: ConditionRetirementResult[] = []
   for (const conditionId of await heldConditionIds(input.profile.mintUrl)) {
     try {
       const attestation = await readAttestationWithin(
@@ -123,10 +130,24 @@ export async function retireResolvedDaemonConditions(input: {
       })
       results.push({ conditionId, error: null })
     } catch (error) {
-      results.push({ conditionId, error: boundedErrorText(error) })
+      const failure = { conditionId, error: boundedErrorText(error) }
+      if (await retirementStarted(input.fence, input.profile, conditionId)) results.push(failure)
+      else discoveryFailures.push(failure)
     }
   }
-  return { results, awaitingAttestation }
+  return { results, awaitingAttestation, discoveryFailures }
+}
+
+/** A retirement started when its inventory is `retiring`. Then its work is unfinished. */
+async function retirementStarted(
+  fence: CustodyScopeFence,
+  profile: DaemonProfile,
+  conditionId: string,
+): Promise<boolean> {
+  const inventory = await loadManagedConditionInventory(
+    inventoryBinding(fence, profile, canonicalConditionId(conditionId)),
+  )
+  return inventory?.state.state === 'retiring'
 }
 
 async function readAttestationWithin(

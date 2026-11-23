@@ -216,7 +216,7 @@ test('automatic retirement reads only the conditions that the wallet still holds
       },
       walletDependencies: common.walletDependencies,
     })
-    assert.deepEqual(results, { results: [], awaitingAttestation: [] })
+    assert.deepEqual(results, { results: [], awaitingAttestation: [], discoveryFailures: [] })
     assert.deepEqual(
       requested.map((entry) => entry.conditionId),
       [conditionId],
@@ -227,7 +227,7 @@ test('automatic retirement reads only the conditions that the wallet still holds
   }
 })
 
-test('an engine read that does not answer in time leaves the condition pending', async () => {
+test('an engine read that does not answer in time is a discovery failure', async () => {
   const { profile, fence, common, conditionId, dispose } = await createRetirementFixture(1)
   try {
     const results = await retireResolvedDaemonConditions({
@@ -245,8 +245,9 @@ test('an engine read that does not answer in time leaves the condition pending',
       walletDependencies: common.walletDependencies,
     })
     assert.deepEqual(results, {
-      results: [{ conditionId, error: 'condition attestation read timed out' }],
+      results: [],
       awaitingAttestation: [],
+      discoveryFailures: [{ conditionId, error: 'condition attestation read timed out' }],
     })
   } finally {
     await dispose()
@@ -267,16 +268,22 @@ test('a closed condition without a readable attestation waits for a retry, then 
       })
     const unreadable = { getConditionAttestation: async () => null }
     // An open condition has no attestation yet. That is no reason to read it again soon.
-    assert.deepEqual(await discover(unreadable, []), { results: [], awaitingAttestation: [] })
+    assert.deepEqual(await discover(unreadable, []), {
+      results: [],
+      awaitingAttestation: [],
+      discoveryFailures: [],
+    })
     // The close event can come before the engine can return the attestation.
     assert.deepEqual(await discover(unreadable, [conditionId]), {
       results: [],
       awaitingAttestation: [conditionId],
+      discoveryFailures: [],
     })
     assert.equal(wallet.redeemCalls, 0)
     assert.deepEqual(await discover(common.engine, [conditionId]), {
       results: [{ conditionId, error: null }],
       awaitingAttestation: [],
+      discoveryFailures: [],
     })
     const redeemed = wallet.redeemCalls
     assert.ok(redeemed > 0)
@@ -284,8 +291,32 @@ test('a closed condition without a readable attestation waits for a retry, then 
     assert.deepEqual(await discover(common.engine, [conditionId]), {
       results: [],
       awaitingAttestation: [],
+      discoveryFailures: [],
     })
     assert.equal(wallet.redeemCalls, redeemed)
+  } finally {
+    await dispose()
+  }
+})
+
+test('a failure after the retirement starts stays an unfinished retirement', async () => {
+  const { profile, fence, common, conditionId, wallet, dispose } = await createRetirementFixture(1)
+  try {
+    wallet.error = new Error('mint unavailable')
+    const results = await retireResolvedDaemonConditions({
+      profile,
+      secrets: common.secrets,
+      fence,
+      engine: common.engine,
+      walletDependencies: common.walletDependencies,
+    })
+    // The redeem started, so the daemon must finish this retirement before it uses funds.
+    assert.equal(wallet.redeemCalls, 1)
+    assert.equal(results.results.length, 1)
+    assert.equal(results.results[0]!.conditionId, conditionId)
+    assert.notEqual(results.results[0]!.error, null)
+    assert.deepEqual(results.awaitingAttestation, [])
+    assert.deepEqual(results.discoveryFailures, [])
   } finally {
     await dispose()
   }
@@ -315,8 +346,9 @@ test('a retirement failure reports a mint answer only as fixed text', async () =
         walletDependencies: common.walletDependencies,
       })
       assert.deepEqual(results, {
-        results: [{ conditionId, error: expected }],
+        results: [],
         awaitingAttestation: [],
+        discoveryFailures: [{ conditionId, error: expected }],
       })
     }
   } finally {
