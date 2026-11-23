@@ -584,6 +584,31 @@ export class DurableCustodySqliteStore {
     return row.length === 0 ? null : this.getOperation(row[0]!.operationId)
   }
 
+  /**
+   * The result state of one operation of the scope, or null when the scope has
+   * no such operation. It reads one column, so a caller can skip finished work
+   * without a read of the full operation or its artifacts.
+   */
+  getOperationResultState(
+    scopeId: string,
+    operationId: string,
+  ): DurableCustodyRecord['operation']['result']['state'] | null {
+    const row = this.#database
+      .prepare(
+        `SELECT result_state AS resultState FROM custody_operations
+         WHERE scope_id = ? AND operation_id = ?`,
+      )
+      .get(scopeId, operationId) as { resultState: string } | undefined
+    if (row === undefined) return null
+    if (
+      row.resultState !== 'none' &&
+      row.resultState !== 'verified-staged' &&
+      row.resultState !== 'applied'
+    )
+      throw new Error('custody operation result state is invalid')
+    return row.resultState
+  }
+
   getArtifact(input: {
     scopeId: string
     operationId: string

@@ -2286,11 +2286,12 @@ export async function recoverPreparedWalletSends(
       (entry.state === 'prepared' || entry.state === 'completed'),
   )
   const result: WalletSendRecoveryResult = { recovered: [], pending: [] }
+  const applied = await readAppliedCtfConversions(recoverable, deps)
   for (const entry of recoverable) {
     try {
       // Custody applies the result and completes the target in one transaction.
       // A later spend can remove an output from the wallet, so the wallet cannot show this.
-      if (await isCtfConversionApplied(entry, deps)) continue
+      if (applied.has(entry.operationId)) continue
       await resumeCtfConsolidationOperation(entry, deps)
       result.recovered.push(entry.operationId)
     } catch (err) {
@@ -2323,15 +2324,20 @@ async function loadPersistedCtfCustodyBinding(
   )
 }
 
+/** The custody operation of one conversion target. */
+function ctfConversionCustodyOperationId(scopeId: string, operationId: string): string {
+  return deriveDurableCustodyOperationId(scopeId, {
+    retainedOperationKey: operationId,
+    binding: { kind: 'wallet', activityId: operationId, stage: 'ctf-merge' },
+  })
+}
+
 function readPersistedCtfCustodyBindingFromDatabase(
   database: DatabaseSync,
   entry: ProofOperationRecord,
   scopeId: string,
 ): CtfCustodyBinding {
-  const custodyOperationId = deriveDurableCustodyOperationId(scopeId, {
-    retainedOperationKey: entry.operationId,
-    binding: { kind: 'wallet', activityId: entry.operationId, stage: 'ctf-merge' },
-  })
+  const custodyOperationId = ctfConversionCustodyOperationId(scopeId, entry.operationId)
   const custody = new DurableCustodySqliteStore(database)
   const record = custody.getOperation(custodyOperationId)
   if (record === null) {
@@ -2927,14 +2933,38 @@ async function releaseFinalCtfConversionRefusal(
   throw new CtfConversionRefusedError(code, refusal.code)
 }
 
-/** A completed conversion is final when custody shows its result as applied. */
-async function isCtfConversionApplied(
-  entry: ProofOperationRecord,
+/**
+ * The completed conversions whose custody result is applied. They are final.
+ * One read takes only the result state of each, so the cost of a recovery
+ * pass does not include the saved artifacts of finished conversions.
+ */
+async function readAppliedCtfConversions(
+  entries: readonly ProofOperationRecord[],
   deps: WalletOpsDependencies,
-): Promise<boolean> {
-  if (entry.state !== 'completed') return false
-  const binding = await loadPersistedCtfCustodyBinding(entry, deps)
-  return binding.record.operation.result.state === 'applied'
+): Promise<ReadonlySet<string>> {
+  const completed = entries.filter(({ state }) => state === 'completed')
+  if (completed.length === 0) return new Set()
+  const fence = deps.getCustodyFence?.()
+  if (fence === undefined) throw new Error('wallet CTF consolidation requires custody authority')
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    fence,
+    Date.now(),
+    (database) => {
+      const custody = new DurableCustodySqliteStore(database)
+      return new Set(
+        completed
+          .filter(
+            ({ operationId }) =>
+              custody.getOperationResultState(
+                fence.scopeId,
+                ctfConversionCustodyOperationId(fence.scopeId, operationId),
+              ) === 'applied',
+          )
+          .map(({ operationId }) => operationId),
+      )
+    },
+  )
 }
 
 function ctfConsolidationOperationId(

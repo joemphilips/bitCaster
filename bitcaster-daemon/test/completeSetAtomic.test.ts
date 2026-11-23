@@ -26,6 +26,7 @@ import {
   completeSetConvertOperationId,
   splitWalletCompleteSet,
 } from '../src/completeSetConversion.ts'
+import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
 import { DaemonDurableWalletReceiveCoordinator } from '../src/durableWalletReceiveCoordinator.ts'
 import { readSecrets } from '../src/secrets.ts'
 import { dispatch } from '../src/server.ts'
@@ -482,6 +483,29 @@ test('recovery does not admit again a split output that a later send spent', asy
     assert.deepEqual(await recoverPreparedWalletSends(f.deps), { recovered: [], pending: [] })
     assert.deepEqual(await readDaemonWalletBalance(f.directory), balance)
     assert.deepEqual(await custodyFacts(f.directory), facts)
+  } finally {
+    await f.close()
+  }
+})
+
+test('recovery skips a completed split without a read of its custody artifacts', async () => {
+  const f = await fixture()
+  try {
+    await f.split()
+    const getArtifact = DurableCustodySqliteStore.prototype.getArtifact
+    let artifactReads = 0
+    DurableCustodySqliteStore.prototype.getArtifact = function (...args) {
+      artifactReads += 1
+      return getArtifact.apply(this, args)
+    }
+    try {
+      assert.deepEqual(await recoverPreparedWalletSends(f.deps), { recovered: [], pending: [] })
+    } finally {
+      DurableCustodySqliteStore.prototype.getArtifact = getArtifact
+    }
+    // A completed split is final when custody shows its result as applied. Its saved
+    // request, output plan and private material stay unread.
+    assert.equal(artifactReads, 0)
   } finally {
     await f.close()
   }
