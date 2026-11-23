@@ -56,7 +56,7 @@ CLI を利用できます。コマンドは、プログラムが読み取れる 
 `bitcaster-cli config set --recovery-index-realm <realm>` で設定します。
 `bitcaster-cli wallet backup status` は、デーモンの書き込みの状態を JSON で返します。
 `realm`、`status`、および `pending` または `blocked` の場合の `reason` を含みます。
-[CLI のウォレットのバックアップ](/ja/user-guide/getting-started/wallet-backup/#cli-のウォレットのバックアップ)を参照してください。
+[CLI のウォレットのバックアップ](/ja/technical/reference/wallet-recovery/#cli-のウォレットのバックアップ)を参照してください。
 `bitcaster-cli market comments <condition-id>` は公開コメントを JSON で取得します。
 この読み取りにウォレットは不要です。
 
@@ -101,7 +101,7 @@ CLI クライアントにも、同じ公開認可ルールと決済ルールが�
 
 ### CLI の設定
 
-CLI の各設定には、`config.json` のキー、環境変数、グローバルオプションがあります。
+CLI の各設定には、`config.json` の `daemon` オブジェクトのキー、環境変数、グローバルオプションがあります。
 
 | キー                                   | 環境変数                                             | オプション                                   | 値                                                                                | 既定値                  |
 | -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | --------------------------------------------------------------------------------- | ----------------------- |
@@ -140,11 +140,11 @@ CLI が起動したデーモンは、その CLI の環境変数とオプショ�
 
 デーモンは、注文やウォレットのバックアップの書き込みなど、エンジンへの要求に署名します。
 このため、デーモンは信頼済みのエンジンの URL でだけ起動します。信頼済みの URL は、既定の
-URL、または `config.json` の `trustedEngineUrls` にある URL です。CLI は、デーモンを
+URL、または `config.json` の `cli.trustedEngineUrls` にある URL です。CLI は、デーモンを
 起動または再起動する前に、デーモンのエンジンの URL をどの層の値でも確認します。
 それ以外の URL では、CLI はその URL を信頼するか確認します。確認なしで信頼するには、
 グローバルオプション `--trust-engine-url` を付けてください。CLI はその URL を
-`trustedEngineUrls` に保存し、保存した URL を標準エラーに書き込みます。端末がない場合、
+`cli.trustedEngineUrls` に保存し、保存した URL を標準エラーに書き込みます。端末がない場合、
 CLI は確認しません。終了コード 3 で停止し、エラーは URL を示します。URL の設定と信頼を
 1 つのコマンドで行うには、`bitcaster-cli config set --engine-url <url> --trust-engine-url`
 を使います。`config set` では、このオプションはそのコマンドが書き込む URL だけを信頼する

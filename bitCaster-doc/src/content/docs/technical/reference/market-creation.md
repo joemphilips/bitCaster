@@ -95,6 +95,14 @@ If the engine request fails, resume the saved creation instead of starting
 another one. Use the original wallet, oracle key, mint, and engine.
 Keep the local browser data or daemon profile until creation finishes.
 
+A saved creation belongs to the Nostr ID that started it. If you change your
+Nostr ID, the browser shows the ID that owns the saved creation. Switch back to
+that ID to resume it. This browser keeps the oracle data of that ID, so
+another ID cannot create a market here. With the original ID, you can discard
+the saved creation if no registration fee payment has started. Your draft
+stays, and you can create the market again. A creation with a fee payment
+cannot be discarded.
+
 The client retains the original announcement, market details, thumbnail,
 and registration payment reference. Reloading does not require you to select
 the thumbnail again. After mint registration is confirmed, resuming does not

@@ -77,16 +77,17 @@ bin directory of npm. This build does not include the oracle helper, so it canno
 a release archive to create markets.
 
 The CLI defaults to a local development engine and mint. Set the bitCaster engine URL and mint
-URL. Then create the wallet profile:
+URL. `--trust-engine-url` trusts the engine URL: the daemon starts only with a trusted engine URL,
+and without a terminal the CLI cannot ask you. Then create the wallet profile:
 
 ```bash
-bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
+bitcaster-cli config set --engine-url https://api.bitcaster.market --trust-engine-url --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```
 
 `daemon init` creates a new wallet seed and Nostr key in `~/.bitcaster`. To keep the agent's wallet
-apart from other CLI wallets, add `--datadir <path>` to every command. Pay the Lightning invoice
+apart from other CLI wallets, add `--datadir <path>` to every command, or set `BITCASTER_DATADIR`. Pay the Lightning invoice
 from another wallet. Then check it with `bitcaster-cli wallet invoice show <quote-record-id>` and
 `bitcaster-cli wallet balance`. Amounts use msat: 1,000 msat is 1 sat.
 
@@ -127,6 +128,9 @@ bitcaster-cli market create --creation-id <id> \
   --relay <relay-url> --max-wallet-debit-msat <msat>
 ```
 
+To add an image, add `--thumbnail <file>`. The file must be a JPEG, PNG, or WebP image of at most
+5 MiB. A relative path starts at the current directory.
+
 Keep the creation id. Use it with `market creation-status` and `market creation-resume`. The first
 market creation on a new engine URL asks you to confirm the URL. Without a terminal prompt, the CLI
 refuses. Run that first creation yourself, or add `--trust-engine-url` after you check the URL.
@@ -138,6 +142,11 @@ JSON is the default output, and `--json` selects it explicitly. Daemon results h
 code is 1. A usage error exits with code 2. A validation error exits with code 3. Warnings and
 progress messages go to standard error. `market watch` and `wallet watch` print one JSON object on
 each line. A few setup commands, such as `daemon init`, print plain text.
+
+A result can also contain a `warnings` array. The code `conditional-keyset-final-expiry-soon` means
+that a position in the wallet reaches the final expiry of its mint keyset in less than 7 days, or is
+past it. After that time, the mint does not have to honor the position. Tell the agent to sell or
+claim that position first. See [Final expiry warnings](/technical/#final-expiry-warnings).
 
 ## If the mint refuses an order
 

@@ -58,7 +58,7 @@ The daemon writes the wallet backup of its profile. Set the backup environment w
 `bitcaster-cli config set --recovery-index-realm <realm>`.
 `bitcaster-cli wallet backup status` returns the state of the daemon writer as JSON:
 `realm`, `status`, and a `reason` for `pending` or `blocked`.
-See [Wallet backup](/user-guide/getting-started/wallet-backup/#wallet-backup-of-the-cli).
+See [Wallet backup of the CLI](/technical/reference/wallet-recovery/#wallet-backup-of-the-cli).
 Use `bitcaster-cli market comments <condition-id>` to read public comments as JSON.
 This read does not need a wallet.
 
@@ -103,8 +103,8 @@ CLI clients use the same public authorization and settlement rules.
 
 ### CLI settings
 
-Each CLI setting has a key in `config.json`, an environment variable, and a
-global option:
+Each CLI setting has a key in the `daemon` object of `config.json`, an
+environment variable, and a global option:
 
 | Key                                    | Environment variable                                 | Option                                       | Value                                                                         | Default                 |
 | -------------------------------------- | ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------- | ----------------------- |
@@ -145,11 +145,11 @@ you want.
 
 The daemon signs its requests to the engine, for example its orders and its
 wallet backup writes. So it starts only with a trusted engine URL: the default
-URL, or a URL in `trustedEngineUrls` of `config.json`. Before the CLI starts or
+URL, or a URL in `cli.trustedEngineUrls` of `config.json`. Before the CLI starts or
 restarts the daemon, it checks the engine URL of the daemon, from any layer.
 For another URL, the CLI asks you to trust it. Add the global option
 `--trust-engine-url` to trust it without the question. The CLI then saves the
-URL in `trustedEngineUrls` and writes the saved URL to standard error. Without a
+URL in `cli.trustedEngineUrls` and writes the saved URL to standard error. Without a
 terminal, the CLI does not ask. It stops with exit code 3, and the error names
 the URL. To set and trust a URL in one command, use
 `bitcaster-cli config set --engine-url <url> --trust-engine-url`. With

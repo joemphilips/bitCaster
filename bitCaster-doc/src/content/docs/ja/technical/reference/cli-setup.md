@@ -76,16 +76,18 @@ bitcaster-cli --help
 マーケットを作成するには、リリースのアーカイブを使ってください。
 
 CLI の初期設定は、ローカル開発用のエンジンとミントを指します。
-bitCaster のエンジン URL とミント URL を設定してください。その後、ウォレットのプロファイルを作成します。
+bitCaster のエンジン URL とミント URL を設定してください。
+`--trust-engine-url` はエンジン URL を信頼します。デーモンは信頼済みのエンジン URL でだけ起動し、
+ターミナルがない場合、CLI は確認の質問ができません。その後、ウォレットのプロファイルを作成します。
 
 ```bash
-bitcaster-cli config set --engine-url https://api.bitcaster.market --mint-url https://mint.bitcaster.cash
+bitcaster-cli config set --engine-url https://api.bitcaster.market --trust-engine-url --mint-url https://mint.bitcaster.cash
 bitcaster-cli daemon init
 bitcaster-cli wallet invoice create --amount-msat 25000
 ```
 
 `daemon init` は、新しいウォレットシードと Nostr 鍵を `~/.bitcaster` に作成します。
-エージェントのウォレットを他の CLI ウォレットと分けるには、すべてのコマンドに `--datadir <path>` を付けてください。
+エージェントのウォレットを他の CLI ウォレットと分けるには、すべてのコマンドに `--datadir <path>` を付けるか、`BITCASTER_DATADIR` を設定してください。
 Lightning インボイスは別のウォレットから支払います。
 その後、`bitcaster-cli wallet invoice show <quote-record-id>` と `bitcaster-cli wallet balance` で確認します。
 金額の単位は msat です。1,000 msat が 1 sat です。
@@ -128,6 +130,10 @@ bitcaster-cli market create --creation-id <id> \
   --relay <relay-url> --max-wallet-debit-msat <msat>
 ```
 
+画像を付けるには、`--thumbnail <file>` を指定します。
+ファイルは、5 MiB 以下の JPEG、PNG、WebP 画像にしてください。
+相対パスは、現在のディレクトリを基準にします。
+
 作成 ID は保管してください。
 `market creation-status` と `market creation-resume` で使います。
 新しいエンジン URL で初めてマーケットを作成するとき、CLI は URL の確認を求めます。
@@ -142,6 +148,13 @@ daemon の結果は `{ "ok": true, "result": ... }` の形式です。
 使い方の誤りは終了コード 2、検証エラーは終了コード 3 で終了します。警告と進捗メッセージは標準エラー出力に出ます。
 `market watch` と `wallet watch` は、1 行に 1 つの JSON オブジェクトを出力します。
 `daemon init` など一部の準備用コマンドは、プレーンテキストを出力します。
+
+結果は `warnings` 配列を含むこともあります。
+コード `conditional-keyset-final-expiry-soon` は、保有するポジションのミントのキーセットが
+7 日未満で最終期限になること、または最終期限を過ぎたことを示します。
+この時刻の後、ミントはそのポジションに応じる義務がありません。
+先にそのポジションを売るか償還するよう、エージェントに指示してください。
+[最終期限の警告](/ja/technical/#最終期限の警告)を参照してください。
 
 ## ミントが注文を拒否したとき
 

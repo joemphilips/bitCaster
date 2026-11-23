@@ -33,7 +33,7 @@ bitCaster takes the opposite stance and makes it obvious who is responsible. The
 
 A market closes when its oracle's result arrives or when its deadline passes, whichever comes first. If the deadline comes first, the market shows **Awaiting resolution** until the oracle reports. Then it shows **Resolved**.
 
-To collect, open your [Portfolio](https://bitcaster.market/portfolio) and choose **Cash out** on a winning position. Your winnings arrive as ordinary ecash, which you can withdraw over Lightning. Don't wait forever, because the mint may redeem winning shares only for a limited period.
+To collect, open your [Portfolio](https://bitcaster.market/portfolio) and choose **Cash out** on a winning position. The CLI [claims your payouts on its own](/technical/reference/resolution/#using-the-cli) while it runs, even when the matching engine is down. Your winnings arrive as ordinary ecash, which you can withdraw over Lightning. Don't wait forever, because the mint may redeem winning shares only for a limited period.
 
 ## If the oracle never reports
 

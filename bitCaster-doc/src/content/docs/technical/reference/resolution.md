@@ -211,18 +211,55 @@ An unverified status includes a reason and the same warning as the browser.
 A refused leg stays pending when verified evidence does not prove that its exact
 collection lost. Keep the wallet data and use the existing recovery operation.
 
-The native daemon retains resolved-condition proofs until you authorize
-redemption and inventory cleanup. Preview the action and estimated mint fee with:
+The command continues only when the mint can redeem the claim: the daemon has
+verified oracle evidence, or the mint has recorded the result. In each other
+case, the command stops with the code `position-claim-result-unavailable` and
+saves no operation. This occurs when the mint does not answer, when no verified
+result exists yet, when the mint does not redeem the condition by an oracle
+result, or when the mint reports another outcome without verified evidence.
+Run the command again later.
+
+By default, the native daemon redeems and cleans up the inventory of a resolved
+condition automatically after it verifies the oracle attestation. Winning proofs
+are redeemed. Losing proofs and proofs that cost too much to redeem remain
+visible as audit records. The daemon does not silently delete them. The daemon
+does this work only while it runs.
+
+The daemon does not need the engine to learn the result. It reads the
+condition record at the mint first. If the mint has no verified result, the
+daemon reads the oracle attestation from the configured Nostr relays. If this
+profile created the market, the daemon also reads the relays that it published
+to. The daemon verifies each signature against the oracle announcement that the
+mint registered. It ignores an attestation that does not verify. Then it redeems
+with that attestation, and the mint records the result.
+
+When the daemon starts, it checks each held condition again. Before the event
+maturity in the announcement, the daemon reads only the mint, and it checks the
+condition again at that time. After the maturity, the daemon reads the mint and
+the relays until it finds the result. A market close that the engine reports
+makes this check start earlier. If the daemon cannot check a condition, for
+example because the mint does not answer, it also reads the condition again
+later. These checks do not stop other commands. The daemon tries again after 30
+seconds. After each try, it waits twice as long, up to 5 minutes. While a
+started automatic cleanup remains unfinished, commands that use funds stop with
+the code `custody-recovery-pending`. The daemon tries again on the same
+schedule.
+
+To keep resolved-condition proofs until you authorize the action, run
+`bitcaster-cli config set --auto-retire-resolved-condition-inventory false`.
+This sets `daemon.autoRetireResolvedConditionInventory` in
+`~/.bitcaster/config.json`. The default is `true`. The command restarts a
+daemon that the CLI started. Restart another daemon yourself.
+
+Preview the action and estimated mint fee with:
 
 ```sh
 bitcaster-cli wallet retire-condition <condition-id>
 ```
 
-Add `--acknowledge` to authorize the action. Winning proofs are redeemed.
-Losing proofs and proofs that cost too much to redeem remain visible as audit
-records. The command does not silently delete them.
-
-To authorize this flow automatically after a verified oracle attestation, set
-`daemon.autoRetireResolvedConditionInventory` to `true` in
-`~/.bitcaster/config.json`. The default is `false`. Restart the daemon after
-changing the setting.
+Add `--acknowledge` to authorize the action. The command applies the same rules
+to winning and losing proofs as the automatic cleanup. It reads the result in
+the same way, so it also works while the engine is down. `wallet claim` reads
+the result in the same way. When the daemon cannot read a verified result, the
+command stops with the code `condition-retirement-result-unavailable` and saves
+nothing.
