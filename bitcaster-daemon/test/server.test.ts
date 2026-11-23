@@ -7,16 +7,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { readRpcToken } from '../src/rpcAuth.ts'
-import { createDaemonSecrets, readSecrets } from '../src/secrets.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
-import { completedProofAuthorityDigest } from '@bitcaster-market/client-sdk/ctfSplit'
-import { emptyDaemonState, readDaemonKeysetCounters, writeState } from '../src/state.ts'
 import { dispatch, startDaemonServer } from '../src/server.ts'
-import {
-  createDaemonCompleteSetOutputMode,
-  recoverCompleteSetSplits,
-} from '../src/completeSetConversion.ts'
 import {
   composeStartupCustodyRecovery,
   createCustodyReadinessTracker,
@@ -37,106 +30,6 @@ test('startDaemonServer rejects non-loopback bind hosts', async () => {
     () => startDaemonServer({ host: '0.0.0.0', port: 0 }),
     /refuses to bind non-loopback host 0\.0\.0\.0/,
   )
-})
-
-test('complete-set conversion binds its deterministic counters to the live custody fence', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-complete-set-counter-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  process.env.BITCASTER_DAEMON_HOME = directory
-  try {
-    const profile = await bootstrapFreshDaemonProfile({
-      directory,
-      engineBaseUrl: 'https://engine.example',
-      mintUrl: 'https://mint.example',
-      walletSeedHex: '11'.repeat(64),
-      nostrSecretKeyHex: '22'.repeat(32),
-    })
-    const fence = await claimCustodyScopeLease(directory, {
-      scopeId: profile.walletScopeId,
-      incarnationId: 'complete-set-test',
-      observedAtMs: 1,
-    })
-    const mode = createDaemonCompleteSetOutputMode({
-      walletSeedHex: '11'.repeat(64),
-      deps: { getCustodyFence: () => fence },
-      mintUrl: 'https://mint.example',
-    })
-
-    assert.deepEqual(await mode.counterSource.reserve(`01${'a'.repeat(64)}`, 3), {
-      start: 0,
-      count: 3,
-    })
-    assert.deepEqual(
-      await readDaemonKeysetCounters({ normalizedMint: 'https://mint.example', unit: 'msat' }),
-      { [`01${'a'.repeat(64)}`]: 3 },
-    )
-    const loopbackMode = createDaemonCompleteSetOutputMode({
-      walletSeedHex: '11'.repeat(64),
-      deps: { getCustodyFence: () => fence },
-      mintUrl: 'http://localhost:8086',
-    })
-    assert.deepEqual(await loopbackMode.counterSource.reserve(`01${'b'.repeat(64)}`, 2), {
-      start: 0,
-      count: 2,
-    })
-    assert.deepEqual(
-      await readDaemonKeysetCounters({ normalizedMint: 'http://localhost:8086', unit: 'msat' }),
-      { [`01${'b'.repeat(64)}`]: 2 },
-    )
-    assert.throws(
-      () =>
-        createDaemonCompleteSetOutputMode({
-          walletSeedHex: '11'.repeat(64),
-          deps: {},
-          mintUrl: 'https://mint.example',
-        }),
-      /authority/,
-    )
-  } finally {
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('complete-set startup recovery skips an atomically completed CTF operation', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-complete-set-recovery-'))
-  const previousHome = process.env.BITCASTER_DAEMON_HOME
-  process.env.BITCASTER_DAEMON_HOME = directory
-  try {
-    const profile = await bootstrapFreshDaemonProfile({
-      directory,
-      engineBaseUrl: 'https://engine.example',
-      mintUrl: 'https://mint.example',
-      walletSeedHex: '11'.repeat(64),
-      nostrSecretKeyHex: '22'.repeat(32),
-    })
-    const fence = await claimCustodyScopeLease(directory, {
-      scopeId: profile.walletScopeId,
-      incarnationId: 'complete-set-recovery-test',
-      observedAtMs: 1,
-    })
-    const state = emptyDaemonState()
-    state.proofOperations['root:ctf-split'] = completedCompleteSetOperation()
-    await writeState(state)
-    const originalFetch = globalThis.fetch
-    globalThis.fetch = async () => {
-      throw new Error('completed complete-set recovery must not call the mint')
-    }
-    try {
-      const result = await recoverCompleteSetSplits({
-        secrets: (await readSecrets())!,
-        deps: { getCustodyFence: () => fence },
-      })
-      assert.deepEqual(result, { recovered: [], recoveredCount: 0, pending: [] })
-    } finally {
-      globalThis.fetch = originalFetch
-    }
-  } finally {
-    if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
-    else process.env.BITCASTER_DAEMON_HOME = previousHome
-    await rm(directory, { recursive: true, force: true })
-  }
 })
 
 test('complete-set pending reports custody unavailable and later clear recovery can mark ready', async () => {
@@ -500,55 +393,6 @@ test('startDaemonServer requires initialized RPC token for non-health commands',
     await rm(home, { recursive: true, force: true })
   }
 })
-
-function completedCompleteSetOperation() {
-  const conditionId = 'ab'.repeat(32)
-  const resultProofs = {
-    A: [{ id: 'outcome-keyset', amount: 1, secret: 'outcome-A', C: 'C-A' }],
-    B: [{ id: 'outcome-keyset', amount: 1, secret: 'outcome-B', C: 'C-B' }],
-  }
-  return {
-    operationId: 'root:ctf-split',
-    kind: 'ctf-split' as const,
-    state: 'completed' as const,
-    mintUrl: 'https://mint.example',
-    inputs: [{ id: 'collateral-keyset', amount: 1, secret: 'collateral', C: 'C-collateral' }],
-    outputs: {
-      A: [
-        {
-          blindedMessage: { amount: 1, id: 'outcome-keyset', B_: 'blind-A' },
-          blindingFactor: 'factor-A',
-          secret: 'output-A',
-        },
-      ],
-      B: [
-        {
-          blindedMessage: { amount: 1, id: 'outcome-keyset', B_: 'blind-B' },
-          blindingFactor: 'factor-B',
-          secret: 'output-B',
-        },
-      ],
-    },
-    metadata: {
-      purpose: 'daemon-complete-set-ctf-split',
-      rootOperationId: 'root',
-      conditionId,
-      amountMsat: 1,
-      amountSubunits: 1,
-      reservationId: 'root:ctf-split:reservation',
-      inputAsset: { kind: 'sats', baseAsset: 'sat', unit: 'msat' },
-      successorAssets: {
-        A: { kind: 'Outcome', conditionId, outcomeSetId: 'A', baseAsset: 'sat', unit: 'msat' },
-        B: { kind: 'Outcome', conditionId, outcomeSetId: 'B', baseAsset: 'sat', unit: 'msat' },
-      },
-    },
-    resultProofs,
-    resultProofsDigest: completedProofAuthorityDigest(resultProofs),
-    lastError: null,
-    createdAt: 1,
-    updatedAt: 2,
-  }
-}
 
 function postSocketJson(socketPath: string, body: unknown): Promise<unknown> {
   const text = JSON.stringify(body)

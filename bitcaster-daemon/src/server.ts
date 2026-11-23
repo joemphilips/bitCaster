@@ -120,11 +120,7 @@ import {
   type MarketBaseAsset,
 } from '@bitcaster-market/client-sdk/marketUnits'
 import { signNativeTradeComment } from './nostrAuth.ts'
-import {
-  CompleteSetSplitRefusedError,
-  recoverCompleteSetSplits,
-  splitWalletCompleteSet,
-} from './completeSetConversion.ts'
+import { CompleteSetSplitRefusedError, splitWalletCompleteSet } from './completeSetConversion.ts'
 import { composeStartupCustodyRecovery, outgoingCashuRecoveryStatus } from './startupRecovery.ts'
 import type { ManualCustodyRecoveryStatus } from './startupRecovery.ts'
 import type { NativeLightningOps } from './nativeLightningOps.ts'
@@ -1318,7 +1314,6 @@ async function dispatchCommand(
         mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
         dependencies: deps,
       })
-      const completeSets = await recoverCompleteSetSplits({ secrets, deps })
       const positionClaims = await recoverDaemonPositionClaims({
         profile,
         secrets,
@@ -1343,7 +1338,6 @@ async function dispatchCommand(
         imports,
         outgoing,
         consolidation,
-        completeSets,
         positionClaims,
         ...(invoiceRecovery === undefined ? [] : [invoiceRecovery.recovery]),
         ...(paymentRecovery === undefined ? [] : [paymentRecovery.recovery]),
@@ -1373,7 +1367,6 @@ async function dispatchCommand(
           imports.hasMore ||
           outgoingStatus.blockingPending ||
           consolidation.pending.length > 0 ||
-          completeSets.pending.length > 0 ||
           positionClaims.pending.length > 0 ||
           (invoiceRecovery?.blockingPending ?? false) ||
           (paymentRecovery?.blockingPending ?? false),
@@ -1387,7 +1380,6 @@ async function dispatchCommand(
           imports.hasMore ||
           outgoingStatus.retryPending ||
           consolidation.pending.length > 0 ||
-          completeSets.pending.length > 0 ||
           positionClaims.pending.length > 0 ||
           (invoiceRecovery?.retryPending ?? false) ||
           (paymentRecovery?.retryPending ?? false),

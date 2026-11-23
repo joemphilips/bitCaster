@@ -34,11 +34,6 @@ import {
 } from '@cashu/cashu-ts'
 import { createHash, randomUUID } from 'node:crypto'
 import { isDeepStrictEqual } from 'node:util'
-import {
-  splitRegularProofsWithOperation,
-  type CtfProofOperationRecord,
-  type CtfProofOperationStore,
-} from '@bitcaster-market/client-sdk/ctfSplit'
 import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import {
   COLLATERAL_COLLECTION,
@@ -48,10 +43,7 @@ import {
   type CtfConsolidationStrategy,
   type CtfConversionStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
-import {
-  amountToNumber,
-  computeInputFeeSubunitsForProofs,
-} from '@bitcaster-market/client-sdk/proofSelection'
+import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { classifyCtfRangeSourceRecovery } from '@bitcaster-market/client-sdk/ctfRangeSourceRecovery'
 import {
   CtfRangeRecoveryTransportError,
@@ -322,17 +314,6 @@ export interface WalletReceiveRecoveryResult {
   pending: Array<{ operationId: string; error: string }>
   pendingCount: number
   hasMore: boolean
-}
-
-export interface PreparedCtfCollateralResult {
-  inputs: Proof[]
-  spent: Proof[]
-  keep: Proof[]
-}
-
-export interface CtfCollateralOperationAuthority {
-  readonly proofOperationStore: CtfProofOperationStore
-  readonly beforeMintMutation: () => Promise<void>
 }
 
 export interface ExecuteCtfConsolidationPlanInput {
@@ -1098,77 +1079,6 @@ export async function reclaimDurableOutgoingCashuTransfer(
         }),
     }),
   )
-}
-
-/**
- * Finish the regular stage of a split that a released daemon saved. A new
- * split is one convert and has no regular stage, so the saved journal must
- * exist.
- */
-export async function finishSavedCtfCollateralSplit(
-  amountMsat: number,
-  mintUrl: string,
-  operationId: string,
-  secrets: WalletOpsSecrets,
-  deps: WalletOpsDependencies,
-  operationAuthority: CtfCollateralOperationAuthority,
-): Promise<PreparedCtfCollateralResult> {
-  if (!Number.isSafeInteger(amountMsat) || amountMsat <= 0) {
-    throw new Error('amountMsat must be a positive safe integer')
-  }
-  const baseAsset = normalizeMarketBaseAsset('sat')
-  const existing = await operationAuthority.proofOperationStore.getProofOperation(operationId)
-  if (!existing) throw new Error('complete-set saved regular split journal is absent')
-  const wallet = createWallet(mintUrl, secrets, deps, baseAsset)
-  if (existing.state !== 'completed') await wallet.loadMint()
-  const split = await splitRegularProofsWithOperation({
-    mintUrl,
-    baseAsset,
-    operationId,
-    wallet,
-    proofs: [],
-    amountSubunits: requirePersistedCtfCollateralAmount(existing),
-    proofOperationStore: operationAuthority.proofOperationStore,
-    beforeMintMutation: operationAuthority.beforeMintMutation,
-  })
-  const exact = await validateExactCtfCollateralFromProofs(mintUrl, split.send, amountMsat, deps)
-  return { inputs: exact.inputs, spent: split.spent, keep: split.keep }
-}
-
-function requirePersistedCtfCollateralAmount(operation: CtfProofOperationRecord): number {
-  const amount = operation.metadata.amount
-  if (typeof amount !== 'number' || !Number.isSafeInteger(amount) || amount <= 0) {
-    throw new Error('persisted CTF collateral operation amount is invalid')
-  }
-  return amount
-}
-
-async function validateExactCtfCollateralFromProofs(
-  mintUrl: string,
-  proofs: Proof[],
-  faceAmountSubunits: number,
-  deps: WalletOpsDependencies,
-): Promise<{
-  inputs: Proof[]
-  keep: Proof[]
-  inputFeeSubunits: number
-  grossInputSubunits: number
-}> {
-  const inputs = proofs.map(normalizeProof)
-  const inputFeePpkByKeyset = await resolveCtfConsolidationInputFees(
-    mintUrl,
-    inputs.map((proof) => proof.id),
-    deps,
-  )
-  const inputFeeSubunits = computeInputFeeSubunitsForProofs(inputs, inputFeePpkByKeyset)
-  const grossInputSubunits = inputs.reduce((acc, proof) => acc + amountToNumber(proof.amount), 0)
-  const netInputSubunits = grossInputSubunits - inputFeeSubunits
-  if (netInputSubunits !== faceAmountSubunits) {
-    throw new Error(
-      `CTF split inputs net ${netInputSubunits} msat after ${inputFeeSubunits} msat input fee, expected ${faceAmountSubunits}`,
-    )
-  }
-  return { inputs, keep: [], inputFeeSubunits, grossInputSubunits }
 }
 
 type CtfCustodyBinding = {

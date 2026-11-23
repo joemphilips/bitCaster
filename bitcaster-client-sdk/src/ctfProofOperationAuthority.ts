@@ -61,28 +61,6 @@ export function createCtfProofOperationCompletion(
   }
 }
 
-/**
- * Complete a regular split. When one selection covers the requested amount
- * exactly, the saved swap has no keep output, and the mint returns no change.
- * Only then can the keep group be empty. Every other group needs a proof.
- */
-export function createRegularSplitCompletion(
-  resultProofs: { readonly send: Proof[]; readonly keep: Proof[] },
-  savedKeepOutputCount: number,
-): Extract<CtfProofOperationCompletion, { kind: 'ctf-redeem' | 'regular-split' }> {
-  if (resultProofs.keep.length > 0 || savedKeepOutputCount > 0) {
-    return createCtfProofOperationCompletion('regular-split', { ...resultProofs })
-  }
-  requireProofGroups(
-    { send: resultProofs.send },
-    'proof operation completion',
-    DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX,
-  )
-  const completed: Record<string, Proof[]> = { send: resultProofs.send, keep: [] }
-  canonicalAuthorityBytes({ kind: 'regular-split', resultProofs: completed })
-  return { kind: 'regular-split', resultProofs: completed }
-}
-
 export function requireBoundedCtfProofOperationPreparation(
   input: CtfPrepareProofOperationInput,
 ): CtfPrepareProofOperationInput {
@@ -229,12 +207,6 @@ export function requireStringMapping(value: unknown, context: string): Record<st
   )
 }
 
-export function sortedStringMapping(mapping: Record<string, string>): Record<string, string> {
-  return Object.fromEntries(
-    Object.entries(mapping).sort(([left], [right]) => compareCanonicalText(left, right)),
-  )
-}
-
 export function completedProofAuthorityDigest(resultProofs: Record<string, Proof[]>): string {
   const bounded = requireProofGroups(
     resultProofs,
@@ -275,23 +247,6 @@ export function canonicalProofOperationMintIdentity(value: unknown): string {
   }
   const path = url.pathname.replace(/\/+$/, '')
   return `${url.origin}${path === '' ? '' : path}`
-}
-
-export function validateSplitStoredOutputAuthority(
-  entry: CtfProofOperationRecord,
-  outcomeKeysets: Record<string, string>,
-  amountSubunits: number,
-): void {
-  assertBoundedAuthorityGraph(entry, 'CTF split proof operation record')
-  canonicalAuthorityBytes(entry)
-  const groups = requireStoredOutputGroups(entry.outputs, 'CTF split stored outputs')
-  requireExactGroupKeys(groups, Object.keys(outcomeKeysets), 'CTF split stored outputs')
-  for (const [collection, outputs] of Object.entries(groups)) {
-    validateOutputDescriptors(outputs, outcomeKeysets[collection]!, amountSubunits, collection)
-  }
-  if (entry.state === 'completed') {
-    validateCompletedResultGroups(entry, groups, outcomeKeysets, 'CTF split completed result')
-  }
 }
 
 export function validateMergeStoredOutputAuthority(

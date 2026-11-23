@@ -845,10 +845,6 @@ const RECOVERY_OWNER_BLOCKERS = [
     sql: `SELECT 1 FROM custody_active_work WHERE scope_id = ? LIMIT 1`,
   },
   {
-    className: 'daemon-complete-set-recovery-root',
-    sql: `SELECT 1 FROM daemon_complete_set_recovery_roots WHERE scope_id = ? LIMIT 1`,
-  },
-  {
     className: 'daemon-ctf-range-nonterminal',
     sql: `SELECT 1 FROM daemon_ctf_range_preparations
           WHERE scope_id = ? AND lifecycle_state <> 'terminal' LIMIT 1`,

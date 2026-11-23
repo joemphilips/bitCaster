@@ -1,5 +1,3 @@
-import { COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT } from './state.ts'
-
 export interface StartupRecoveryResult {
   readonly recovered: readonly string[]
   readonly recoveredCount?: number
@@ -43,6 +41,9 @@ interface TimerHandle {
   unref?(): void
 }
 
+/** A recovery result names at most this many recovered operations. */
+const RECOVERED_SAMPLE_LIMIT = 64
+
 export function composeStartupCustodyRecovery(recoveries: readonly StartupRecoveryResult[]): {
   readonly recovered: string[]
   readonly recoveredCount: number
@@ -54,7 +55,7 @@ export function composeStartupCustodyRecovery(recoveries: readonly StartupRecove
   for (const recovery of recoveries) {
     recoveredCount += recovery.recoveredCount ?? recovery.recovered.length
     for (const operationId of recovery.recovered) {
-      if (recovered.length < COMPLETE_SET_RECOVERY_PAGE_SAMPLE_LIMIT) recovered.push(operationId)
+      if (recovered.length < RECOVERED_SAMPLE_LIMIT) recovered.push(operationId)
     }
     pending.push(...recovery.pending)
   }

@@ -88,7 +88,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   const { createNativeWalletPaymentRecoveryPager } =
     await import('./nativeWalletPaymentRecovery.ts')
   const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
-  const { recoverCompleteSetSplits } = await import('./completeSetConversion.ts')
   const { recoverDaemonPositionClaims } = await import('./nativePositionClaim.ts')
   const {
     composeStartupCustodyRecovery,
@@ -477,10 +476,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
             }
           : undefined,
       )
-      const completeSetRecovery = await recoverCompleteSetSplits({
-        secrets,
-        deps: { getCustodyFence: currentFence },
-      })
       const invoiceRecovery = await nativeLightningOps.recoverPage()
       const positionClaimRecovery = await recoverDaemonPositionClaims({
         profile,
@@ -496,7 +491,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         receiveRecovery,
         importRecovery,
         outgoingRecovery,
-        completeSetRecovery,
         positionClaimRecovery,
         invoiceRecovery.recovery,
         paymentRecoveryPage.recovery,
@@ -530,7 +524,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         receiveRecovery.hasMore ||
         importRecovery.pendingCount > 0 ||
         importRecovery.hasMore ||
-        completeSetRecovery.pending.length > 0 ||
         positionClaimRecovery.pending.length > 0 ||
         outgoingStatus.blockingPending ||
         invoiceRecovery.blockingPending ||
@@ -549,7 +542,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
           receiveRecovery.hasMore ||
           importRecovery.pendingCount > 0 ||
           importRecovery.hasMore ||
-          completeSetRecovery.pending.length > 0 ||
           positionClaimRecovery.pending.length > 0 ||
           outgoingStatus.retryPending ||
           invoiceRecovery.retryPending ||

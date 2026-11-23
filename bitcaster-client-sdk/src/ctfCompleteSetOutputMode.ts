@@ -4,10 +4,7 @@ import {
   reserveAndConstructDurableSeedDerivedOutputs,
   type DurableSeedDerivedOutputPlan,
 } from './durableSeedDerivedOutputs.ts'
-import {
-  DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX,
-  DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX,
-} from './durableCustody.ts'
+import { DURABLE_CUSTODY_KEYSET_BINDING_LIMIT_MAX } from './durableCustody.ts'
 import {
   fitsDurableSeedDerivedCounterRange,
   isCanonicalNut02V2KeysetId,
@@ -92,53 +89,6 @@ function validateCompleteSetOutputMode<TMakeOutputs>(
     default:
       throw new Error('CTF output mode is invalid')
   }
-}
-
-export async function planSeedDerivedCompleteSetSplitOutputs(input: {
-  readonly amountSubunits: number
-  readonly outcomeCollectionKeysets: Record<string, string>
-  readonly getKeys: (keysetId: string) => Promise<MintKeys>
-}): Promise<Record<string, PlannedSeedDerivedOutputGroup>> {
-  const groups: Record<string, PlannedSeedDerivedOutputGroup> = {}
-  const keysetsById = new Map<string, MintKeys>()
-  for (const [collection, keysetId] of Object.entries(input.outcomeCollectionKeysets).sort(
-    ([left], [right]) => (left < right ? -1 : left > right ? 1 : 0),
-  )) {
-    const keyset = keysetsById.get(keysetId) ?? (await input.getKeys(keysetId))
-    keysetsById.set(keysetId, keyset)
-    requireSeedDerivedCompleteSetKeyset(keyset, keysetId)
-    groups[collection] = {
-      keyset,
-      amounts: standardDenominationAmounts(input.amountSubunits, keyset),
-    }
-  }
-  const outputCount = Object.values(groups).reduce((sum, group) => sum + group.amounts.length, 0)
-  if (outputCount > DURABLE_CUSTODY_BLINDED_OUTPUT_LIMIT_MAX) {
-    throw new Error('CTF split cumulative blinded output limit exceeded')
-  }
-  return groups
-}
-
-export async function reserveSeedDerivedCompleteSetSplitOutputs(input: {
-  readonly mode: SeedDerivedCompleteSetOutputMode
-  readonly groups: Record<string, PlannedSeedDerivedOutputGroup>
-}): Promise<Record<string, PreparedSeedDerivedOutputGroup>> {
-  const groups: Record<string, PreparedSeedDerivedOutputGroup> = {}
-  for (const label of Object.keys(input.groups).sort(compareText)) {
-    const group = input.groups[label]!
-    const planned = await reserveAndConstructDurableSeedDerivedOutputs({
-      seed: input.mode.seed,
-      counterSource: input.mode.counterSource,
-      keyset: group.keyset,
-      amounts: group.amounts,
-    })
-    groups[label] = {
-      descriptor: descriptorFromPlan(planned.plan),
-      outputData: planned.outputData,
-      keyset: group.keyset,
-    }
-  }
-  return groups
 }
 
 export function seedDerivedOutputDescriptorsFromPlans(
@@ -375,8 +325,4 @@ function samePersistedOutput(output: PersistedCompleteSetOutput, derived: Output
 
 function bytesToHex(value: Uint8Array): string {
   return Array.from(value, (byte) => byte.toString(16).padStart(2, '0')).join('')
-}
-
-function compareText(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0
 }
