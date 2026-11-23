@@ -70,6 +70,65 @@ test('T3 converts a complete uniform holding into pure base collateral', () => {
   assert.deepEqual(Object.keys(result.request.outputs), [COLLATERAL_COLLECTION])
 })
 
+test('T3 leaves the regular collateral of the wallet out of the conversion', () => {
+  const result = planCtfConsolidation(
+    params('t3', {
+      A: [proof('ks-A', 10, 'a-10')],
+      B: [proof('ks-B', 10, 'b-10')],
+      C: [proof('ks-C', 10, 'c-10')],
+      [COLLATERAL_COLLECTION]: [proof('ks-base', 5, 'base-5')],
+    }),
+  )
+
+  assert.equal(result.kind, 'plan')
+  if (result.kind !== 'plan') return
+  // Regular collateral adds the same amount to each outcome. It releases no
+  // collateral and only adds input fees, so it is never an input.
+  assert.deepEqual(Object.keys(result.request.inputs).sort(), ['A', 'B', 'C'])
+  assert.equal(result.feeSubunits, 1)
+  assert.equal(result.collateralOutputSubunits, 9)
+  assert.deepEqual(Object.keys(result.request.outputs), [COLLATERAL_COLLECTION])
+})
+
+test('T3 skips a position without a complete set, also when the wallet holds regular collateral', () => {
+  const result = planCtfConsolidation(
+    params('t3', {
+      A: [proof('ks-A', 10, 'a-10')],
+      [COLLATERAL_COLLECTION]: [proof('ks-base', 5, 'base-5')],
+    }),
+  )
+
+  assert.deepEqual(result, {
+    kind: 'noop',
+    strategy: 't3',
+    reason: 'insufficient-outcome-floor',
+    feeSubunits: 1,
+    inputPayoff: { A: 10, B: 0, C: 0 },
+  })
+})
+
+test('T1 skips a binary market, where the complement of one outcome is the other outcome', () => {
+  const input = params('t1', {
+    YES: [proof('ks-YES', 10, 'yes-10')],
+    [COLLATERAL_COLLECTION]: [proof('ks-base', 1, 'base-1')],
+  })
+  input.outcomes = ['YES', 'NO']
+  input.registration = { ...input.registration, outcomes: ['YES', 'NO'] }
+  input.inputFeePpkByKeyset = { 'ks-YES': 1, 'ks-NO': 1, 'ks-base': 1 }
+  input.outputKeysetByCollection = {
+    YES: 'ks-YES',
+    NO: 'ks-NO',
+    [COLLATERAL_COLLECTION]: 'ks-base',
+  }
+
+  // A merge would give back the same YES position and charge the fee.
+  assert.deepEqual(planCtfConsolidation(input), {
+    kind: 'noop',
+    strategy: 't1',
+    reason: 'no-matching-inputs',
+  })
+})
+
 test('T2 skips when the fee floor consumes the available collateral gain', () => {
   const result = planCtfConsolidation(
     params('t2', {

@@ -170,6 +170,9 @@ export function payoffVector(
 }
 
 function planT1(params: AmountParams, market: NormalizedMarket): AmountResult {
+  // In a binary market the complement of one outcome is the other singleton.
+  // A merge would give back the same position for a fee.
+  if (market.outcomes.length < 3) return noop(params.strategy, 'no-matching-inputs')
   const singletonCollections = market.outcomes.filter(
     (outcome) => sumProofs(market.proofsByCollection[outcome] ?? []) > 0,
   )
@@ -253,10 +256,17 @@ function planT2(params: AmountParams, market: NormalizedMarket): AmountResult {
 }
 
 function planT3(params: AmountParams, market: NormalizedMarket): AmountResult {
-  if (flattenProofs(market.proofsByCollection).length === 0) {
+  // Regular collateral adds the same amount to each outcome. It releases no
+  // collateral, adds input fees, and would hide a position that has no gain.
+  const positions = Object.fromEntries(
+    Object.entries(market.proofsByCollection).filter(
+      ([collection]) => collection !== COLLATERAL_COLLECTION,
+    ),
+  )
+  if (flattenProofs(positions).length === 0) {
     return noop(params.strategy, 'no-matching-inputs')
   }
-  return planCollateralExtraction(params, market, market.proofsByCollection)
+  return planCollateralExtraction(params, market, positions)
 }
 
 function planCollateralExtraction(

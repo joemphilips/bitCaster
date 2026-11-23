@@ -150,6 +150,78 @@ test('wallet.consolidateMarket executes T3 partial chain into intermediate and b
   })
 })
 
+test('wallet.consolidateMarket T3 spends only the market positions, never regular collateral', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([
+      proofRecord(10, 'A', 't3-set-a'),
+      proofRecord(10, 'B', 't3-set-b'),
+      proofRecord(10, 'C', 't3-set-c'),
+      satRecord(5, 'regular'),
+    ])
+
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond3.condition_id}-A`, type: 't3' },
+      },
+      depsForMarket(),
+    )
+
+    assert.equal(response.ok, true)
+    const result = response.result as {
+      status: string
+      collateralReturnedMsat: number
+      convertFeeMsat: number
+      spentInputs: { label: string }[]
+    }
+    assert.equal(result.status, 'consolidated')
+    // Three inputs at 1 ppk cost 1 msat. The set of 10 releases 9 msat.
+    assert.equal(result.convertFeeMsat, 1)
+    assert.equal(result.collateralReturnedMsat, 9)
+    assert.deepEqual(result.spentInputs.map(({ label }) => label).sort(), ['A', 'B', 'C'])
+    const state = await readState()
+    assertWalletProofs(state, {
+      sats: 14,
+      outcomes: { A: 0, B: 0, C: 0 },
+      spent: ['secret-t3-set-a', 'secret-t3-set-b', 'secret-t3-set-c'],
+    })
+    assert.equal(
+      state?.wallet.proofs.some(
+        (record) => record.proof.secret === 'secret-regular' && record.state === 'available',
+      ),
+      true,
+    )
+    assertNoProofInternals(response)
+  })
+})
+
+test('wallet.consolidateMarket T3 skips a lone position and keeps regular collateral', async () => {
+  await withDaemonHome(async () => {
+    await seedWallet([proofRecord(10, 'A', 't3-lone-a'), satRecord(5, 'regular')])
+    const before = await consolidationMoneyRows()
+
+    const response = await dispatch(
+      {
+        method: 'wallet.consolidateMarket',
+        params: { marketId: `${registrations.cond3.condition_id}-A`, type: 't3' },
+      },
+      {
+        ...depsForMarket(),
+        ctfConvert: async () => {
+          throw new Error('a skipped consolidation must not reach the mint')
+        },
+      },
+    )
+
+    assert.equal(response.ok, true)
+    const result = response.result as { status: string; reason: string }
+    assert.equal(result.status, 'skipped')
+    assert.equal(result.reason, 'insufficient-outcome-floor')
+    assert.deepEqual(await consolidationMoneyRows(), before)
+    assertNoProofInternals(response)
+  })
+})
+
 test('wallet.consolidateMarket refuses a condition whose mint record holds a result', async () => {
   await withDaemonHome(async () => {
     await seedWallet([proofRecord(2, 'B|C', 'not-a')])
