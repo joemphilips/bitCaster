@@ -357,3 +357,40 @@ test('an explicit condition retirement does not need the engine', async () => {
     await fixture.dispose()
   }
 })
+
+test('an explicit condition retirement without a verified result refuses with a code and saves nothing', async () => {
+  const fixture = await createFixture('pending')
+  try {
+    const deps = { ...fixture.walletDependencies, getCustodyFence: () => fixture.fence }
+    const retire = (acknowledge: boolean) =>
+      dispatch(
+        {
+          method: 'wallet.retireCondition',
+          params: { conditionId: fixture.conditionId, acknowledge },
+        },
+        deps,
+      )
+    // The mint has no result, and the relays hold no attestation.
+    for (const acknowledge of [false, true])
+      assert.deepEqual(await retire(acknowledge), {
+        ok: false,
+        code: 'condition-retirement-result-unavailable',
+        error: 'the condition has no verified result yet; try again later',
+      })
+    // An unreadable mint record refuses in the same way.
+    fixture.wallet.conditionInfo = undefined
+    assert.deepEqual(await retire(true), {
+      ok: false,
+      code: 'condition-retirement-result-unavailable',
+      error: 'the condition result could not be read from the mint; try again later',
+    })
+    assert.equal(fixture.wallet.redeemCalls, 0)
+    assert.equal(await inventoryRows(fixture.directory), 0)
+    assert.equal(
+      (await readState())?.wallet.proofs.filter((record) => record.state === 'available').length,
+      1,
+    )
+  } finally {
+    await fixture.dispose()
+  }
+})

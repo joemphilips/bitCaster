@@ -394,6 +394,11 @@ async function withRelayResult(
  * short page, at a page without a new event, at a valid attestation of the
  * registered event, after `ORACLE_ATTESTATION_RELAY_PAGES_MAX` pages, or at its
  * deadline. A failed or late page ends the read. The earlier pages stay.
+ *
+ * An inclusive `until` repeats a full page of events that share its second.
+ * Thus a page without a new event, whose oldest event has that second, moves
+ * `until` one second back once. If that page also brings no new event, the
+ * read stops.
  */
 async function readRelayAttestationEvents(
   relays: OracleAttestationRelays,
@@ -404,6 +409,7 @@ async function readRelayAttestationEvents(
   const events: unknown[] = []
   const ids = new Set<string>()
   let until: number | undefined
+  let movedBack = false
   try {
     for (let page = 0; page < ORACLE_ATTESTATION_RELAY_PAGES_MAX; page += 1) {
       const filter = oracleAttestationRelayFilter(registered, until)
@@ -416,21 +422,32 @@ async function readRelayAttestationEvents(
       // A relay that ignores the limit cannot crowd out the other relays.
       const answer = Array.isArray(received) ? received.slice(0, filter.limit) : []
       let fresh = 0
+      // The oldest new event, and the oldest event of the page with the repeated ones.
       let oldest: number | undefined
+      let pageOldest: number | undefined
       let attested = false
       for (const raw of answer) {
         const event = eventFields(raw)
-        if (typeof event.id !== 'string' || ids.has(event.id)) continue
+        if (typeof event.id !== 'string') continue
+        const createdAt = eventCreatedAt(event)
+        if (createdAt !== undefined) pageOldest = Math.min(pageOldest ?? Infinity, createdAt)
+        if (ids.has(event.id)) continue
         ids.add(event.id)
         fresh += 1
         events.push(raw)
-        const createdAt = event.created_at
-        if (Number.isSafeInteger(createdAt) && (createdAt as number) >= 0)
-          oldest = Math.min(oldest ?? Infinity, createdAt as number)
+        if (createdAt !== undefined) oldest = Math.min(oldest ?? Infinity, createdAt)
         attested ||= verifiedRelayAttestation(registered, raw, new Set()) !== null
       }
-      if (answer.length < filter.limit || fresh === 0 || attested || oldest === undefined) break
+      if (answer.length < filter.limit || attested) break
+      if (fresh === 0) {
+        if (movedBack || until === undefined || until === 0 || pageOldest !== until) break
+        until -= 1
+        movedBack = true
+        continue
+      }
+      if (oldest === undefined) break
       until = oldest
+      movedBack = false
     }
   } finally {
     deadline.dispose()
@@ -474,6 +491,14 @@ function untilAborted<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
 /** The fields of an untrusted relay event. A value that is not an object has none. */
 function eventFields(raw: unknown): Readonly<Record<string, unknown>> {
   return typeof raw === 'object' && raw !== null ? (raw as Record<string, unknown>) : {}
+}
+
+/** The `created_at` second of an untrusted relay event. An invalid value has none. */
+function eventCreatedAt(event: Readonly<Record<string, unknown>>): number | undefined {
+  const createdAt = event.created_at
+  return Number.isSafeInteger(createdAt) && (createdAt as number) >= 0
+    ? (createdAt as number)
+    : undefined
 }
 
 function base64ToHex(content: string): string {

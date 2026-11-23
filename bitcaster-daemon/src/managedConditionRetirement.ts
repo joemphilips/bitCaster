@@ -74,6 +74,19 @@ import {
 
 const RETIREMENT_PAGE_PROOF_MAX = 64
 
+/** The RPC code of a condition retirement without a verified result. Nothing is saved. */
+export const CONDITION_RETIREMENT_RESULT_UNAVAILABLE_CODE =
+  'condition-retirement-result-unavailable'
+
+/**
+ * The daemon cannot read a verified result of this condition. A retirement
+ * saves its verified result before the first redeem, so it cannot start
+ * without one. The refusal saves nothing. A later command reads the result again.
+ */
+export class ConditionRetirementResultUnavailableError extends Error {
+  readonly code = CONDITION_RETIREMENT_RESULT_UNAVAILABLE_CODE
+}
+
 export interface ConditionRetirementResult {
   readonly conditionId: string
   readonly error: string | null
@@ -273,14 +286,21 @@ export async function retireDaemonConditionInventory(input: {
   let verified: ReturnType<typeof verifyResolution> | null = null
   let currentResolution: () => Promise<ConditionResolution>
   if (current === null) {
-    const read = await readResolutionWithin(
-      input.resolution,
-      conditionId,
-      CONDITION_RESOLUTION_READ_TIMEOUT_MS,
-      () => true,
-    )
+    let read: ConditionResolution
+    try {
+      read = await readResolutionWithin(
+        input.resolution,
+        conditionId,
+        CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+        () => true,
+      )
+    } catch {
+      throw new ConditionRetirementResultUnavailableError(
+        'the condition result could not be read from the mint; try again later',
+      )
+    }
     if (read.state.status !== 'resolved')
-      throw new Error('condition resolution attestation is not available')
+      throw new ConditionRetirementResultUnavailableError(unavailableResultReason(read.state))
     verified = verifyResolution(binding, read.registeredAuthority, read.state)
     currentResolution = async () => read
   } else {
@@ -749,6 +769,22 @@ async function buildRetirementPreview(
 
 function proofMatchesOutcome(record: StoredProofRecord, outcome: string): boolean {
   return record.asset.kind === 'Outcome' && record.asset.outcomeSetId.split('|').includes(outcome)
+}
+
+/** Why a condition has no verified result with which a retirement can start. */
+function unavailableResultReason(
+  state: Exclude<ConditionResolution['state'], { status: 'resolved' }>,
+): string {
+  switch (state.status) {
+    case 'pending':
+      return 'the condition has no verified result yet; try again later'
+    case 'unverified':
+      return 'the mint reports a result without verified oracle evidence; try again later'
+    case 'refused':
+      return `the mint does not redeem this condition by an oracle result (${state.mintStatus})`
+    default:
+      return assertNever(state)
+  }
 }
 
 function verifyResolution(

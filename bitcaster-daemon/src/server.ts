@@ -206,6 +206,7 @@ import {
   recoverWalletProofConsolidations,
 } from './walletProofConsolidation.ts'
 import {
+  ConditionRetirementResultUnavailableError,
   resumeDaemonConditionRetirements,
   retireDaemonConditionInventory,
 } from './managedConditionRetirement.ts'
@@ -1188,18 +1189,25 @@ async function dispatchCommand(
       if (!deps.getCustodyFence) {
         return { ok: false, error: 'condition retirement requires custody authority' }
       }
-      return {
-        ok: true,
-        result: await retireDaemonConditionInventory({
-          conditionId: command.params.conditionId,
-          acknowledge: command.params.acknowledge,
-          intentKind: 'explicit-user-command',
-          profile,
-          secrets,
-          fence: deps.getCustodyFence(),
-          resolution: dispatchConditionResolution(profile, secrets, deps),
-          walletDependencies: deps,
-        }),
+      try {
+        return {
+          ok: true,
+          result: await retireDaemonConditionInventory({
+            conditionId: command.params.conditionId,
+            acknowledge: command.params.acknowledge,
+            intentKind: 'explicit-user-command',
+            profile,
+            secrets,
+            fence: deps.getCustodyFence(),
+            resolution: dispatchConditionResolution(profile, secrets, deps),
+            walletDependencies: deps,
+          }),
+        }
+      } catch (error) {
+        // No verified result. The retirement saved nothing, so the user can retry.
+        if (error instanceof ConditionRetirementResultUnavailableError)
+          return { ok: false, code: error.code, error: error.message }
+        throw error
       }
     }
     case 'wallet.recover': {

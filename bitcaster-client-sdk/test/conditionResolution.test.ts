@@ -419,8 +419,8 @@ test('the relay read pages back from the newest event, at most 8 pages of 16 eve
   const hidden = await read(121)
   assert.equal(hidden.state, 'pending')
   assert.equal(hidden.filters.length, 8)
-  // A relay that ignores `until` and `limit` repeats its page. A page without a new event
-  // ends its read.
+  // A relay that ignores `until` and `limit` repeats its page. The first repeated page moves
+  // `until` one second back. The second repeated page brings no new event and ends the read.
   let repeats = 0
   const flood = otherCtfAttestationEventsFixture(20, attestation.created_at)
   const repeated = await relayResolution(fixture.info, id, {
@@ -431,7 +431,40 @@ test('the relay read pages back from the newest event, at most 8 pages of 16 eve
     },
   })
   assert.equal(repeated.state.status, 'pending')
-  assert.equal(repeats, 2)
+  assert.equal(repeats, 3)
+})
+
+test('a full page of events in the second of its until moves the read one second back', async () => {
+  const fixture = condition()
+  const id = fixture.registration.condition_id
+  const attestation = signedCtfAttestationEventFixture({
+    eventId: 'mint-first-resolution',
+    outcome: 'YES',
+    signature: fixture.signature,
+  })
+  // More events than one page share one second. An inclusive `until` repeats them.
+  const sameSecond = Array.from({ length: 20 }, (_, index) =>
+    signedCtfAttestationEventFixture({
+      eventId: `same-second-${index}`,
+      outcome: 'YES',
+      signature: signFixtureOutcome('YES'),
+      createdAt: attestation.created_at + 1,
+    }),
+  )
+  const filters: OracleAttestationRelayFilter[] = []
+  const resolution = await relayResolution(fixture.info, id, {
+    urls: async () => [RELAY],
+    query: async (_url, filter) => {
+      filters.push(filter)
+      return nip01RelayAnswerFixture([attestation, ...sameSecond], filter)
+    },
+  })
+  assert.equal(resolution.state.status, 'resolved')
+  // The second page brings no new event, so the third page asks for the second before.
+  assert.deepEqual(
+    filters.map((filter) => filter.until),
+    [undefined, attestation.created_at + 1, attestation.created_at],
+  )
 })
 
 test('a relay that stalls ends its read at its deadline, and another relay still resolves', async (t) => {
