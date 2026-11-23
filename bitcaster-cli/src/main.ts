@@ -186,6 +186,10 @@ async function main(): Promise<void> {
     .addHelpText('after', '\nLong-running wallet operations are delegated to bitcaster-daemon.')
     .addHelpText('after', DRY_RUN_PROGRAM_HELP)
     .exitOverride()
+    // Commander 13 and later refuse excess command-arguments by default. Keep the
+    // Commander 12 default, so that the preAction checks see an unread `--dry-run`
+    // after "--". A command that sets allowExcessArguments(false) still refuses them.
+    .allowExcessArguments()
     .configureOutput({
       writeOut: (str) => process.stdout.write(str),
       writeErr: (str) => process.stdout.write(str),

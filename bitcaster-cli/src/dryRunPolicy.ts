@@ -255,7 +255,7 @@ function descendants(command: Command): Command[] {
 }
 
 function hasAction(command: Command): boolean {
-  // Commander 12 keeps the action in a private field. If a later release
+  // Commander keeps the action in a private field. If a later release
   // removes the field, every group counts as an action and needs a
   // declaration, so the CLI fails at startup instead of skipping a command.
   const handler = (command as unknown as { _actionHandler?: unknown })._actionHandler
@@ -263,7 +263,7 @@ function hasAction(command: Command): boolean {
 }
 
 function isExecutable(command: Command): boolean {
-  // `.command(name, description)` sets this private Commander 12 field. Such a
+  // `.command(name, description)` sets this private Commander field. Such a
   // subcommand runs as a separate process without the preAction hooks.
   return (command as unknown as { _executableHandler?: unknown })._executableHandler === true
 }

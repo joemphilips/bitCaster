@@ -9,7 +9,7 @@ Command.prototype.parseAsync = async function () {
     for (const child of command.commands) {
       commands.push({
         path: commandPath(child),
-        // Test-only read of Commander 12's private action field.
+        // Test-only read of Commander's private action field.
         hasAction: child._actionHandler !== null,
         mode: dryRunModeOf(child) ?? null,
       })
