@@ -94,6 +94,11 @@ test('a send that only released change could complete refuses before the mint', 
     const refused = await f.send(80, 'needs-released-change')
     assert.equal(refused.ok, false)
     assert.equal(refused.code, 'custody-repair-required')
+    // No recovery adds a wallet-only proof to custody, so the text gives no recovery advice.
+    assert.equal(
+      refused.error,
+      'custody does not record some available funds; this command cannot spend them',
+    )
     assert.equal(f.counts.swaps, swaps)
     assert.deepEqual(await f.walletSendOperations(), [])
     assert.deepEqual(await f.releasedChangeRows(), ['available:8', 'available:16'])

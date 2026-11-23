@@ -1297,14 +1297,14 @@ export function replanCtfRangeRefundProofOperationFromDatabase(
 
 /**
  * A command is short of funds only because custody does not hold some of the
- * available wallet proofs. A released daemon wrote some proofs only to the
- * wallet table. They count in the balance, but a command cannot spend them
- * until custody holds them.
+ * available wallet proofs. They count in the balance, but a command spends
+ * only custody proofs. No recovery adds a wallet-only proof to custody, so the
+ * text gives no recovery advice.
  */
 export class CustodyRepairRequiredError extends Error {
   readonly code = 'custody-repair-required'
   constructor() {
-    super('custody does not hold some available funds; run wallet recovery before you use them')
+    super('custody does not record some available funds; this command cannot spend them')
   }
 }
 
