@@ -295,6 +295,228 @@ test('recovers a CTF handoff without exposing the reserved send proof', async ()
   })
 })
 
+/** The saved rows of a legacy split. Proof bodies stay in the comparison only as opaque rows. */
+async function savedSplitFacts() {
+  return withDaemonStateSqliteTransaction(process.env.BITCASTER_DAEMON_HOME!, (database) =>
+    Object.fromEntries(
+      [
+        'target_wallet_proofs',
+        'target_keyset_counters',
+        'custody_keyset_counters',
+        'target_proof_operations',
+        'daemon_complete_set_recovery_roots',
+      ].map((table) => [
+        table,
+        database
+          .prepare(`SELECT * FROM ${table}`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    ),
+  )
+}
+
+function handoffRecoveryDeps(
+  fence: FencedStateMutation['fence'],
+  transport: FakeCtfTransport,
+  extra: Partial<Parameters<typeof recoverCompleteSetSplits>[0]['deps']> = {},
+): Parameters<typeof recoverCompleteSetSplits>[0]['deps'] {
+  return {
+    getCustodyFence: () => fence,
+    createCashuWallet: () => new RecoveryWallet(),
+    createCtfSplitTransport: () => transport,
+    createCtfResumeDependencies: () => ({
+      proofStateChecker: { checkProofsStates: async (proofs) => unspentStates(proofs) },
+    }),
+    resolveInputFeePpkByKeyset: async (_mintUrl, keysetIds) =>
+      Object.fromEntries(keysetIds.map((keysetId) => [keysetId, 1_000])),
+    ...extra,
+  }
+}
+
+test('a saved CTF handoff whose CTF preparation COMMIT reply is lost posts its split once', async () => {
+  await withProfile(async ({ mutation, fence }) => {
+    const root = rootFor('handoff-lost-commit')
+    const handoff = proof(HANDOFF_KEYSET, 101, 'handoff-lost-commit-proof')
+    await initializeRegularHandoff(
+      root,
+      proof(SOURCE_KEYSET, 101, 'handoff-lost-commit-source'),
+      handoff,
+      mutation,
+    )
+    const transport = new FakeCtfTransport()
+    let stage: 'regular' | 'ctf' | undefined
+    let injected = false
+    const result = await recoverCompleteSetSplits({
+      secrets: (await readSecrets())!,
+      deps: handoffRecoveryDeps(fence, transport, {
+        observeCompleteSetPrepared: async (observed) => {
+          stage = observed
+        },
+        injectCustodyFault: (phase) => {
+          if (!injected && phase === 'after-commit' && stage === 'ctf') {
+            injected = true
+            throw new Error('controlled CTF COMMIT reply loss')
+          }
+        },
+      }),
+    })
+    assert.equal(injected, true)
+    // The finisher reads the committed CTF operation and resumes it, so the split is posted once.
+    assert.deepEqual(result, { recovered: [root.rootOperationId], recoveredCount: 1, pending: [] })
+    assertExactHandoff(transport, handoff)
+    await assertCompletedAndFinalized(root, mutation)
+    const saved = await savedSplitFacts()
+    const again = await recoverCompleteSetSplits({
+      secrets: (await readSecrets())!,
+      deps: handoffRecoveryDeps(fence, transport),
+    })
+    assert.deepEqual(again, { recovered: [], recoveredCount: 0, pending: [] })
+    assert.equal(transport.posted.length, 1)
+    assert.deepEqual(await savedSplitFacts(), saved)
+  })
+})
+
+for (const conflicts of [1, 3])
+  test(`a saved CTF handoff with ${conflicts} CTF counter conflicts uses at most three drafts`, async () => {
+    await withProfile(async ({ mutation, fence }) => {
+      const root = rootFor(`handoff-conflicts-${conflicts}`)
+      const handoff = proof(HANDOFF_KEYSET, 101, `handoff-conflicts-${conflicts}-proof`)
+      await initializeRegularHandoff(
+        root,
+        proof(SOURCE_KEYSET, 101, `handoff-conflicts-${conflicts}-source`),
+        handoff,
+        mutation,
+      )
+      const transport = new FakeCtfTransport()
+      let drafts = 0
+      let fixed: string | undefined
+      let afterLastConflict: Awaited<ReturnType<typeof savedSplitFacts>> | undefined
+      const result = await recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: handoffRecoveryDeps(fence, transport, {
+          observeCompleteSetPrepared: async (stage, draft) => {
+            if (stage !== 'ctf') return
+            drafts += 1
+            // Each draft spends the same handoff for the same amount and outcome keysets.
+            const identity = JSON.stringify({
+              inputs: draft.inputs,
+              amount: draft.metadata!.amountSubunits,
+              keysets: draft.metadata!.outcomeCollectionKeysets,
+            })
+            fixed ??= identity
+            assert.equal(identity, fixed)
+            if (drafts > conflicts) return
+            // Another writer takes a counter of the draft, so its snapshot is stale.
+            await reserveDaemonKeysetCounter(OUTCOME_A_KEYSET, 1, mutation, COUNTER_BINDING)
+            afterLastConflict = await savedSplitFacts()
+          },
+        }),
+      })
+      assert.equal(drafts, conflicts === 1 ? 2 : 3)
+      if (conflicts === 1) {
+        assert.deepEqual(result, {
+          recovered: [root.rootOperationId],
+          recoveredCount: 1,
+          pending: [],
+        })
+        assertExactHandoff(transport, handoff)
+        await assertCompletedAndFinalized(root, mutation)
+        return
+      }
+      assert.equal(result.recoveredCount, 0)
+      assert.equal(result.pending.length, 1)
+      assert.match(result.pending[0]!.error, /counter snapshot changed/)
+      assert.equal(transport.posted.length, 0)
+      // A losing draft leaves no row. The handoff waits for the next recovery.
+      const saved = await savedSplitFacts()
+      assert.deepEqual(saved, afterLastConflict)
+      assert.equal(JSON.parse(saved.daemon_complete_set_recovery_roots![0]!).state, 'ctf-handoff')
+      const later = await recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: handoffRecoveryDeps(fence, transport),
+      })
+      assert.deepEqual(later, {
+        recovered: [root.rootOperationId],
+        recoveredCount: 1,
+        pending: [],
+      })
+      assertExactHandoff(transport, handoff)
+      await assertCompletedAndFinalized(root, mutation)
+    })
+  })
+
+for (const corruption of ['root', 'reservation', 'asset', 'operation'] as const)
+  test(`a saved CTF-prepared split with a corrupt ${corruption} binding stays pending without mint access`, async () => {
+    await withProfile(async ({ mutation, fence }) => {
+      const root = rootFor(`ctf-corrupt-${corruption}`)
+      await initializeRegularHandoff(
+        root,
+        proof(SOURCE_KEYSET, 101, `ctf-corrupt-${corruption}-source`),
+        proof(HANDOFF_KEYSET, 101, `ctf-corrupt-${corruption}-handoff`),
+        mutation,
+      )
+      // The finisher prepares the CTF stage, and then the post fails.
+      const interrupted = await recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: handoffRecoveryDeps(fence, new FakeCtfTransport({ failPostSplit: true })),
+      })
+      assert.match(interrupted.pending[0]?.error ?? '', /stop after prepared CTF split/)
+      assert.equal(
+        (await readProofOperationFenced(ctfOperationId(root), mutation))?.state,
+        'prepared',
+      )
+      const reservation = ctfReservation(root)
+      await withDaemonStateSqliteTransaction(process.env.BITCASTER_DAEMON_HOME!, (database) => {
+        if (corruption === 'root')
+          database
+            .prepare('UPDATE daemon_complete_set_recovery_roots SET condition_id = ?')
+            .run('f'.repeat(64))
+        else if (corruption === 'reservation')
+          database
+            .prepare('UPDATE target_wallet_proofs SET reserved_by = ? WHERE reserved_by = ?')
+            .run('foreign-reservation', reservation)
+        else if (corruption === 'asset')
+          database
+            .prepare("UPDATE target_wallet_proofs SET unit = 'sat' WHERE reserved_by = ?")
+            .run(reservation)
+        else
+          database
+            .prepare(
+              "UPDATE target_proof_operations SET kind = 'regular-split' WHERE operation_id = ?",
+            )
+            .run(ctfOperationId(root))
+      })
+      const before = await savedSplitFacts()
+      let access = 0
+      const recovery = recoverCompleteSetSplits({
+        secrets: (await readSecrets())!,
+        deps: {
+          getCustodyFence: () => fence,
+          createCashuWallet: () => {
+            access += 1
+            throw new Error('a corrupt saved split must not load a wallet')
+          },
+          createCtfSplitTransport: () => {
+            access += 1
+            throw new Error('a corrupt saved split must not reach the mint')
+          },
+        },
+      })
+      // The page reader refuses a root whose saved operation kind is foreign.
+      if (corruption === 'operation')
+        await assert.rejects(recovery, /recovery root operation authority is invalid/)
+      else {
+        const result = await recovery
+        assert.equal(result.recoveredCount, 0)
+        assert.equal(result.pending.length, 1)
+      }
+      assert.equal(access, 0)
+      assert.deepEqual(await savedSplitFacts(), before)
+    })
+  })
+
 test('complete-set recovery processes fresh bounded pages and keeps its sample bounded', async () => {
   const activeRoots = Array.from({ length: 65 }, (_, index) => ({
     root: { rootOperationId: `complete-set-root-${index}` },
