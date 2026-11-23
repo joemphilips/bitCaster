@@ -5,6 +5,10 @@ import type {
   OrderQuotesRefreshingProgress,
 } from '@bitcaster-market/client-sdk/engineClient'
 import { verifyCtfConditionRegistration } from '@bitcaster-market/client-sdk/ctfConditionRegistration'
+import {
+  readMintConditionResolution,
+  type ConditionResolution,
+} from '@bitcaster-market/client-sdk/conditionResolution'
 import { readAllocationBoundedJsonResponse } from '@bitcaster-market/client-sdk/boundedJsonResponse'
 import { isLoopbackHttpUrl } from '@bitcaster-market/client-sdk'
 import { syncNativeActivity, type NativeActivitySyncOptions } from './nativeActivitySync.ts'
@@ -63,7 +67,6 @@ import {
   type SettlementCapabilityResultResponse,
   type SubmitOrderRequest,
   type SubmitOrderResponse,
-  type ConditionAttestationResponse,
 } from '@bitcaster-market/client-sdk/engineClient'
 import type {
   DurableRecipientDeliveryStatus,
@@ -148,7 +151,12 @@ import type {
 } from './protocol.ts'
 import type { NativeWalletPaymentOps } from './nativeWalletPaymentOps.ts'
 import type { NativeWalletPaymentRecoveryScan } from './nativeWalletPaymentRecovery.ts'
-import { isMissingDaemonProfileError, profileDir, readProfile } from './profile.ts'
+import {
+  isMissingDaemonProfileError,
+  profileDir,
+  readProfile,
+  type DaemonProfile,
+} from './profile.ts'
 import { readDaemonConditionalKeysetExpiryWarnings } from './conditionalKeysetExpiryWarnings.ts'
 import { bearerToken, readRpcToken, rpcSocketPath, tokenMatches } from './rpcAuth.ts'
 import { readSecrets, readSelectedDaemonSigner, hasUnfinishedDaemonAccountWork } from './secrets.ts'
@@ -202,6 +210,11 @@ import {
   retireDaemonConditionInventory,
 } from './managedConditionRetirement.ts'
 import { claimDaemonPosition, recoverDaemonPositionClaims } from './nativePositionClaim.ts'
+import {
+  createDaemonConditionResolution,
+  daemonOracleRelayUrls,
+  type DaemonConditionResolution,
+} from './nativeConditionResolution.ts'
 import { previewDaemonPositionRemove, removeDaemonPosition } from './nativePositionRemove.ts'
 import { streamDaemonWatch, type DaemonWatchProvider } from './watchTransport.ts'
 import {
@@ -271,7 +284,6 @@ export interface EngineClientLike {
     submission: DurableRecipientDeliverySubmission,
   ): Promise<DurableRecipientDeliveryStatus>
   getMarket?(conditionId: string): Promise<unknown | null>
-  getConditionAttestation?(conditionId: string): Promise<ConditionAttestationResponse | null>
   /** Read-only recovery lookup of an `order-requested` record. It never creates an order. */
   lookupOrderByClientOrderId?(
     conditionId: string,
@@ -374,6 +386,8 @@ export interface DispatchDependencies extends WalletOpsDependencies {
   nativePaymentRequests?: NativePaymentRequestService
   watch?: DaemonWatchProvider
   createEngineClient?: (options: { baseUrl: string; nostrSecretKeyHex: string }) => EngineClientLike
+  /** Test seam for the engine-free condition result: the mint record, then the oracle relays. */
+  conditionResolution?: DaemonConditionResolution
   /** Test seam for the native portfolio privacy setting. */
   isAssetMonitoringEnabled?: () => boolean
   /** Test seam for the three existing native funding operations. */
@@ -1072,12 +1086,7 @@ async function dispatchCommand(
       if (!secrets) {
         return { ok: false, error: 'daemon secrets are not initialized' }
       }
-      const client = await createEngineClient(deps, {
-        baseUrl: profile.engineBaseUrl,
-        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-      })
       return consolidateMarket({
-        client,
         marketId: command.params.marketId,
         type: command.params.type,
         mintUrl: profile.mintUrl,
@@ -1148,12 +1157,6 @@ async function dispatchCommand(
       if (!secrets) return { ok: false, error: 'daemon secrets are not initialized' }
       if (!deps.getCustodyFence)
         return { ok: false, error: 'position claim requires custody authority' }
-      const client = await createEngineClient(deps, {
-        baseUrl: profile.engineBaseUrl,
-        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-      })
-      if (!client.getConditionAttestation)
-        return { ok: false, error: 'engine client does not support condition attestation' }
       try {
         const result = await claimDaemonPosition({
           ...command.params,
@@ -1161,7 +1164,7 @@ async function dispatchCommand(
           secrets,
           fence: deps.getCustodyFence(),
           walletDependencies: deps,
-          engine: { getConditionAttestation: (id) => client.getConditionAttestation!(id) },
+          resolution: dispatchConditionResolution(profile, secrets, deps),
         })
         if (result.legs.some((leg) => leg.state === 'pending')) deps.triggerCustodyRecovery?.()
         return { ok: true, result }
@@ -1181,13 +1184,6 @@ async function dispatchCommand(
       if (!deps.getCustodyFence) {
         return { ok: false, error: 'condition retirement requires custody authority' }
       }
-      const client = await createEngineClient(deps, {
-        baseUrl: profile.engineBaseUrl,
-        nostrSecretKeyHex: secrets.nostrSecretKeyHex,
-      })
-      if (!client.getConditionAttestation) {
-        return { ok: false, error: 'engine client does not support condition attestation' }
-      }
       return {
         ok: true,
         result: await retireDaemonConditionInventory({
@@ -1197,7 +1193,7 @@ async function dispatchCommand(
           profile,
           secrets,
           fence: deps.getCustodyFence(),
-          engine: { getConditionAttestation: (id) => client.getConditionAttestation!(id) },
+          resolution: dispatchConditionResolution(profile, secrets, deps),
           walletDependencies: deps,
         }),
       }
@@ -1268,6 +1264,7 @@ async function dispatchCommand(
         profile,
         secrets,
         fence: getCustodyFence(),
+        resolution: dispatchConditionResolution(profile, secrets, deps),
         walletDependencies: deps,
       })
       const retired = retirements
@@ -3440,7 +3437,6 @@ async function ensureDaemonParticipationScoreForNextMatch(input: {
 }
 
 async function consolidateMarket(input: {
-  client: EngineClientLike
   marketId: string
   type: CtfConsolidationStrategy
   mintUrl: string
@@ -3451,42 +3447,34 @@ async function consolidateMarket(input: {
     return { ok: false, error: 'daemon secrets are not initialized' }
   }
   const conditionId = conditionIdFromMarketId(input.marketId)
-  const market = await loadMarket(input.client, conditionId)
-  if (!market) {
+  // The mint record is the source of the registration and of the close state.
+  const conditionResponse = await (input.deps.fetchConsolidationCondition ?? globalThis.fetch)(
+    `${input.mintUrl.replace(/\/$/, '')}/v1/conditions/${encodeURIComponent(conditionId)}`,
+    { signal: AbortSignal.timeout(15_000) },
+  )
+  if (conditionResponse.status === 404) {
     return {
       ok: false,
       code: 'market-not-found',
       error: `market ${conditionId} was not found`,
     }
   }
-  const marketStatus = extractMarketStatus(market)
-  if (marketStatus !== 'pending') {
+  if (!conditionResponse.ok) throw new Error('mint condition registration is unavailable')
+  const condition = await readAllocationBoundedJsonResponse(conditionResponse, 2 * 1024 * 1024)
+  const registrationInput = {
+    condition,
+    mintUrl: input.mintUrl,
+    conditionId,
+    allowInsecureLoopbackHttp: isLoopbackHttpUrl(input.mintUrl),
+  }
+  const registration = verifyCtfConditionRegistration(registrationInput)
+  if (!mintConditionIsPending(readMintConditionResolution(registrationInput).state)) {
     return {
       ok: false,
       code: 'market-not-pending',
       error: `market ${conditionId} is not pending`,
     }
   }
-  const outcomes = extractMarketOutcomes(market)
-  if (outcomes.length < 2) {
-    return {
-      ok: false,
-      code: 'invalid-market',
-      error: `market ${conditionId} does not include at least two outcomes`,
-    }
-  }
-
-  const conditionResponse = await (input.deps.fetchConsolidationCondition ?? globalThis.fetch)(
-    `${input.mintUrl.replace(/\/$/, '')}/v1/conditions/${encodeURIComponent(conditionId)}`,
-    { signal: AbortSignal.timeout(15_000) },
-  )
-  if (!conditionResponse.ok) throw new Error('mint condition registration is unavailable')
-  const registration = verifyCtfConditionRegistration({
-    condition: await readAllocationBoundedJsonResponse(conditionResponse, 2 * 1024 * 1024),
-    mintUrl: input.mintUrl,
-    conditionId,
-    allowInsecureLoopbackHttp: isLoopbackHttpUrl(input.mintUrl),
-  })
 
   const proofsByCollection = await availableMarketProofs({
     mintUrl: input.mintUrl,
@@ -3510,9 +3498,8 @@ async function consolidateMarket(input: {
   const plan = planCtfConsolidationAmounts({
     conditionId,
     registration,
-    parentCollectionId: extractParentCollectionId(market),
-    outcomes,
-    marketStatus,
+    outcomes: [...registration.outcomes],
+    marketStatus: 'pending',
     strategy: input.type,
     proofsByCollection,
     inputFeePpkByKeyset,
@@ -3586,6 +3573,37 @@ async function availableMarketProofs(input: {
   return groups
 }
 
+/** The result of a condition from the mint, then the oracle relays. The engine is not read. */
+function dispatchConditionResolution(
+  profile: DaemonProfile,
+  secrets: NonNullable<Awaited<ReturnType<typeof readSecrets>>>,
+  deps: DispatchDependencies,
+): DaemonConditionResolution {
+  return (
+    deps.conditionResolution ??
+    createDaemonConditionResolution({
+      profile,
+      secrets,
+      walletDependencies: deps,
+      relayUrls: daemonOracleRelayUrls(() => activeNativeConfig().config.daemon.nostrRelays),
+    })
+  )
+}
+
+/** A consolidation needs a condition without a result. Each mint state is mapped. */
+function mintConditionIsPending(state: ConditionResolution['state']): boolean {
+  switch (state.status) {
+    case 'pending':
+      return true
+    case 'resolved':
+    case 'unverified':
+    case 'refused':
+      return false
+    default:
+      throw new Error(`unhandled mint condition state: ${JSON.stringify(state)}`)
+  }
+}
+
 async function loadMarket(client: EngineClientLike, conditionId: string): Promise<unknown | null> {
   if (client.getMarket) return client.getMarket(conditionId)
   return (
@@ -3597,35 +3615,6 @@ async function loadMarket(client: EngineClientLike, conditionId: string): Promis
       })
     ).markets[0] ?? null
   )
-}
-
-function extractMarketOutcomes(market: unknown): string[] {
-  return parseMarketOutcomes(market).map(({ label }) => label)
-}
-
-function extractMarketStatus(market: unknown): string | null {
-  if (!market || typeof market !== 'object') return null
-  const record = market as {
-    status?: unknown
-    state?: unknown
-    attestation?: { status?: unknown }
-  }
-  for (const value of [record.status, record.state, record.attestation?.status]) {
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return null
-}
-
-function extractParentCollectionId(market: unknown): string | undefined {
-  if (!market || typeof market !== 'object') return undefined
-  const record = market as {
-    parentCollectionId?: unknown
-    parent_collection_id?: unknown
-  }
-  for (const value of [record.parentCollectionId, record.parent_collection_id]) {
-    if (typeof value === 'string' && value.trim()) return value.trim()
-  }
-  return undefined
 }
 
 async function loadMarketUnit(

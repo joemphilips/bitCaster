@@ -8,8 +8,16 @@ import {
   bindRegisteredDlcConditionAuthority,
   type ConditionOracleResolutionContext,
 } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
+import type {
+  ConditionResolution,
+  RegisteredConditionAuthority,
+} from '@bitcaster-market/client-sdk/conditionResolution'
 import type { DurableCustodyMintKeysetAuthority } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
-import { resolveDaemonConditionOracleEvidence } from './nativeConditionOracleEvidence.ts'
+import {
+  CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+  verifiedConditionEvidence,
+  type DaemonConditionResolution,
+} from './nativeConditionResolution.ts'
 import { readNativePositionClaimInputKeyset } from './nativePositionClaim.ts'
 import { createHash, randomUUID } from 'node:crypto'
 import type { Proof } from '@cashu/cashu-ts'
@@ -31,7 +39,6 @@ import type {
   CtfProofOperationStore,
 } from '@bitcaster-market/client-sdk/ctfSplit'
 import { deriveDurableCustodyOperationId } from '@bitcaster-market/client-sdk/durableCustody'
-import type { ConditionAttestationResponse } from '@bitcaster-market/client-sdk/engineClient'
 import {
   amountToNumber,
   computeInputFeeSubunitsForProofs,
@@ -66,15 +73,6 @@ import {
 } from './walletOps.ts'
 
 const RETIREMENT_PAGE_PROOF_MAX = 64
-/** One engine read of the automatic scan cannot hold the scan longer than this. */
-export const CONDITION_ATTESTATION_READ_TIMEOUT_MS = 10_000
-
-export interface ManagedConditionRetirementEngine {
-  getConditionAttestation(
-    conditionId: string,
-    signal?: AbortSignal,
-  ): Promise<ConditionAttestationResponse | null>
-}
 
 export interface ConditionRetirementResult {
   readonly conditionId: string
@@ -84,58 +82,87 @@ export interface ConditionRetirementResult {
 export interface ResolvedConditionDiscovery {
   /** The conditions that the scan retired, or whose started retirement failed. */
   readonly results: ConditionRetirementResult[]
-  /** The closed conditions without a readable attestation. A later scan reads them again. */
+  /**
+   * The held conditions whose oracle result is due but not verified yet. The
+   * announced maturity has passed, the engine reported a close, or the mint
+   * reports a result without verifiable evidence. A later scan reads them again.
+   */
   readonly awaitingAttestation: string[]
   /**
    * The conditions that failed before a retirement started, for example
-   * because the engine did not answer. Nothing is unfinished, so they do not
+   * because the mint did not answer. Nothing is unfinished, so they do not
    * hold the funds commands. A later scan reads them again.
    */
   readonly discoveryFailures: ConditionRetirementResult[]
+  /** The earliest announced maturity of a held condition that is not due yet. */
+  readonly nextMaturityMs: number | null
 }
 
+/**
+ * Retire each held condition whose result the daemon can verify without the
+ * engine. The mint record comes first. Then, for a condition that is due,
+ * the oracle attestation on the relays. The engine close event is only a hint
+ * that a condition can be due before its announced maturity.
+ */
 export async function retireResolvedDaemonConditions(input: {
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly fence: CustodyScopeFence
-  readonly engine: ManagedConditionRetirementEngine
+  readonly resolution: DaemonConditionResolution
   readonly walletDependencies?: WalletOpsDependencies
-  readonly attestationReadTimeoutMs?: number
+  readonly resolutionReadTimeoutMs?: number
   /** The conditions that the engine reported closed. */
   readonly closedConditionIds?: ReadonlySet<string>
+  readonly nowMs?: number
 }): Promise<ResolvedConditionDiscovery> {
+  const nowMs = input.nowMs ?? Date.now()
   const results: ConditionRetirementResult[] = []
   const awaitingAttestation: string[] = []
   const discoveryFailures: ConditionRetirementResult[] = []
+  let nextMaturityMs: number | null = null
   for (const conditionId of await heldConditionIds(input.profile.mintUrl)) {
+    const due = (maturityEpoch: number) =>
+      input.closedConditionIds?.has(conditionId) === true || maturityEpoch * 1000 <= nowMs
     try {
-      const attestation = await readAttestationWithin(
-        input.engine,
+      const read = await readResolutionWithin(
+        input.resolution,
         conditionId,
-        input.attestationReadTimeoutMs ?? CONDITION_ATTESTATION_READ_TIMEOUT_MS,
+        input.resolutionReadTimeoutMs ?? CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+        due,
       )
-      if (attestation === null) {
-        // The engine can report the close before the attestation is readable.
-        if (input.closedConditionIds?.has(conditionId) === true) {
+      const state = read.state
+      switch (state.status) {
+        case 'resolved':
+          await retireDaemonConditionInventory({
+            ...input,
+            conditionId,
+            acknowledge: true,
+            intentKind: 'daemon-standing-policy',
+            resolution: { read: async () => read },
+          })
+          results.push({ conditionId, error: null })
+          break
+        case 'pending':
+          if (due(read.maturityEpoch)) awaitingAttestation.push(conditionId)
+          else nextMaturityMs = Math.min(nextMaturityMs ?? Infinity, read.maturityEpoch * 1000)
+          break
+        case 'unverified':
+          // The mint reports a result. Its evidence can become readable later.
           awaitingAttestation.push(conditionId)
-        }
-        continue
+          break
+        case 'refused':
+          // The mint does not redeem this condition by an oracle result. Nothing to retry.
+          break
+        default:
+          assertNever(state)
       }
-      await retireDaemonConditionInventory({
-        ...input,
-        conditionId,
-        acknowledge: true,
-        intentKind: 'daemon-standing-policy',
-        engine: { getConditionAttestation: async () => attestation },
-      })
-      results.push({ conditionId, error: null })
     } catch (error) {
       const failure = { conditionId, error: boundedErrorText(error) }
       if (await retirementStarted(input.fence, input.profile, conditionId)) results.push(failure)
       else discoveryFailures.push(failure)
     }
   }
-  return { results, awaitingAttestation, discoveryFailures }
+  return { results, awaitingAttestation, discoveryFailures, nextMaturityMs }
 }
 
 /** A retirement started when its inventory is `retiring`. Then its work is unfinished. */
@@ -150,18 +177,29 @@ async function retirementStarted(
   return inventory?.state.state === 'retiring'
 }
 
-async function readAttestationWithin(
-  engine: ManagedConditionRetirementEngine,
+async function readResolutionWithin(
+  resolution: DaemonConditionResolution,
   conditionId: string,
   timeoutMs: number,
-): Promise<ConditionAttestationResponse | null> {
+  readRelays: (maturityEpoch: number) => boolean,
+): Promise<ConditionResolution> {
   const controller = new AbortController()
   const timer = setTimeout(
-    () => controller.abort(new Error('condition attestation read timed out')),
+    () => controller.abort(new Error('condition resolution read timed out')),
     timeoutMs,
   )
   try {
-    return await engine.getConditionAttestation(conditionId, controller.signal)
+    const read = resolution.read(conditionId, { signal: controller.signal, readRelays })
+    // A reader that ignores the signal still cannot hold the scan.
+    return await Promise.race([
+      read,
+      new Promise<never>((_resolve, reject) => {
+        if (controller.signal.aborted) reject(controller.signal.reason)
+        controller.signal.addEventListener('abort', () => reject(controller.signal.reason), {
+          once: true,
+        })
+      }),
+    ])
   } finally {
     clearTimeout(timer)
   }
@@ -186,10 +224,15 @@ async function heldConditionIds(mintUrl: string): Promise<string[]> {
   return [...conditionIds].sort()
 }
 
+/**
+ * Finish the started retirements. Only the mint is read: the frozen
+ * inventory already holds the verified result and its witness.
+ */
 export async function resumeDaemonConditionRetirements(input: {
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly fence: CustodyScopeFence
+  readonly resolution: DaemonConditionResolution
   readonly walletDependencies?: WalletOpsDependencies
 }): Promise<Array<{ conditionId: string; error: string | null }>> {
   const bindings = await listRetiringManagedConditionBindings()
@@ -205,7 +248,6 @@ export async function resumeDaemonConditionRetirements(input: {
         conditionId: binding.conditionId,
         acknowledge: true,
         intentKind: 'explicit-user-command',
-        engine: { getConditionAttestation: async () => null },
       })
       results.push({ conditionId: binding.conditionId, error: null })
     } catch (error) {
@@ -222,17 +264,27 @@ export async function retireDaemonConditionInventory(input: {
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly fence: CustodyScopeFence
-  readonly engine: ManagedConditionRetirementEngine
+  readonly resolution: DaemonConditionResolution
   readonly walletDependencies?: WalletOpsDependencies
 }): Promise<WalletRetireConditionResult> {
   const conditionId = canonicalConditionId(input.conditionId)
   const binding = inventoryBinding(input.fence, input.profile, conditionId)
   const current = await loadManagedConditionInventory(binding)
-  let verified: ReturnType<typeof verifyAttestation> | null = null
+  let verified: ReturnType<typeof verifyResolution> | null = null
+  let registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
   if (current === null) {
-    const attestation = await input.engine.getConditionAttestation(conditionId)
-    if (attestation === null) throw new Error('condition resolution attestation is not available')
-    verified = verifyAttestation(binding, attestation)
+    const read = await readResolutionWithin(
+      input.resolution,
+      conditionId,
+      CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+      () => true,
+    )
+    if (read.state.status !== 'resolved')
+      throw new Error('condition resolution attestation is not available')
+    verified = verifyResolution(binding, read.registeredAuthority, read.state)
+    registeredAuthority = async () => read.registeredAuthority
+  } else {
+    registeredAuthority = once(() => readRegisteredAuthority(input.resolution, conditionId))
   }
   const resolvedOutcome =
     current === null
@@ -267,11 +319,11 @@ export async function retireDaemonConditionInventory(input: {
   if (persisted.state.state !== 'retiring') {
     throw new Error('managed condition retirement state is invalid')
   }
-  await resumePreparedRetirementOperations({ ...input, persisted })
+  await resumePreparedRetirementOperations({ ...input, persisted, registeredAuthority })
   while (true) {
     const page = await nextRetirementPage(conditionId, input.profile.mintUrl)
     if (page === null) break
-    await redeemRetirementPage({ ...input, persisted, page })
+    await redeemRetirementPage({ ...input, persisted, page, registeredAuthority })
   }
   await completeManagedConditionRetirement({
     fence: input.fence,
@@ -281,14 +333,42 @@ export async function retireDaemonConditionInventory(input: {
   return result(conditionId, 'retired', preview)
 }
 
+/**
+ * The registered announcements of a started retirement, read from the mint.
+ * An unreadable registration only removes the optional witness: the mint
+ * then uses its recorded result.
+ */
+async function readRegisteredAuthority(
+  resolution: DaemonConditionResolution,
+  conditionId: string,
+): Promise<RegisteredConditionAuthority | undefined> {
+  try {
+    return (
+      await readResolutionWithin(
+        resolution,
+        conditionId,
+        CONDITION_RESOLUTION_READ_TIMEOUT_MS,
+        () => false,
+      )
+    ).registeredAuthority
+  } catch {
+    return undefined
+  }
+}
+
+function once<T>(read: () => Promise<T>): () => Promise<T> {
+  let value: Promise<T> | undefined
+  return () => (value ??= read())
+}
+
 async function resumePreparedRetirementOperations(input: {
-  readonly engine?: ManagedConditionRetirementEngine
   readonly conditionId: string
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly fence: CustodyScopeFence
   readonly walletDependencies?: WalletOpsDependencies
   readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
+  readonly registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
 }): Promise<void> {
   const operations = Object.values((await ensureState()).proofOperations)
     .filter((operation) => operation.kind === 'ctf-redeem' && operation.state === 'prepared')
@@ -313,7 +393,6 @@ async function resumePreparedRetirementOperations(input: {
 }
 
 async function redeemRetirementPage(input: {
-  readonly engine?: ManagedConditionRetirementEngine
   readonly conditionId: string
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
@@ -321,6 +400,7 @@ async function redeemRetirementPage(input: {
   readonly walletDependencies?: WalletOpsDependencies
   readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
   readonly page: RetirementPage
+  readonly registeredAuthority: () => Promise<RegisteredConditionAuthority | undefined>
 }): Promise<void> {
   const resolution = retirementResolution(input.persisted)
   const operationId = retirementOperationId({
@@ -371,22 +451,10 @@ async function redeemRetirementPage(input: {
     | readonly DurableCustodyMintKeysetAuthority[]
     | undefined
   if (existing === null) {
-    const optional = await resolveDaemonConditionOracleEvidence({
-      profile: input.profile,
-      fence: input.fence,
-      conditionId: input.conditionId,
-      engine: input.engine ?? { getConditionAttestation: async () => null },
-      wallet,
-    })
-    if (optional.evidence.status === 'verified') {
-      const candidate = optional.evidence.context
-      const verified = verifyDlcConditionResolution(
-        candidate.registered,
-        candidate.registered,
-        candidate.evidence,
-      )
-      if (verified.evidenceFingerprint !== resolution.evidenceFingerprint)
-        throw new Error('retirement current evidence differs from frozen inventory resolution')
+    const registered = await input.registeredAuthority()
+    const candidate =
+      registered === undefined ? undefined : frozenRetirementContext(input, registered)
+    if (candidate !== undefined) {
       context = candidate
       inputKeysets = [
         await readNativePositionClaimInputKeyset(
@@ -431,6 +499,47 @@ async function redeemRetirementPage(input: {
       mutation: { fence: input.fence, observedAtMs: Date.now() },
     })
   }
+}
+
+/**
+ * The redemption context of a started retirement: its frozen witness, verified
+ * again against the current mint registration. A witness that does not verify
+ * is omitted, so the mint uses its recorded result. A changed authority stops
+ * the retirement.
+ */
+function frozenRetirementContext(
+  input: {
+    readonly conditionId: string
+    readonly profile: DaemonProfile
+    readonly fence: CustodyScopeFence
+    readonly persisted: NonNullable<Awaited<ReturnType<typeof loadManagedConditionInventory>>>
+  },
+  registered: RegisteredConditionAuthority,
+): ConditionOracleResolutionContext | undefined {
+  const resolution = retirementResolution(input.persisted)
+  const binding = inventoryBinding(input.fence, input.profile, input.conditionId)
+  let verified: ReturnType<typeof verifiedConditionEvidence>
+  try {
+    verified = verifiedConditionEvidence(
+      binding,
+      registered,
+      resolution.resolvedOutcome,
+      JSON.parse(input.persisted.oracleWitness),
+    )
+  } catch {
+    return undefined
+  }
+  const current = verifyDlcConditionResolution(
+    binding,
+    verified.context.registered,
+    verified.context.evidence,
+  )
+  if (
+    current.evidenceFingerprint !== resolution.evidenceFingerprint ||
+    current.authorityId !== resolution.authorityId
+  )
+    throw new Error('retirement current evidence differs from frozen inventory resolution')
+  return verified.context
 }
 
 function retirementOperationStore(input: {
@@ -631,30 +740,13 @@ function proofMatchesOutcome(record: StoredProofRecord, outcome: string): boolea
   return record.asset.kind === 'Outcome' && record.asset.outcomeSetId.split('|').includes(outcome)
 }
 
-export function verifyDaemonConditionAttestation(
-  fence: CustodyScopeFence,
-  profile: DaemonProfile,
-  conditionId: string,
-  response: ConditionAttestationResponse,
-): { resolution: ReturnType<typeof verifyDlcConditionResolution>; oracleWitness: string } {
-  return verifyAttestation(
-    inventoryBinding(fence, profile, canonicalConditionId(conditionId)),
-    response,
-  )
-}
-
-function verifyAttestation(
+function verifyResolution(
   binding: ManagedConditionInventoryBinding,
-  response: ConditionAttestationResponse,
+  registeredAuthority: RegisteredConditionAuthority,
+  state: Extract<ConditionResolution['state'], { status: 'resolved' }>,
 ): { resolution: ReturnType<typeof verifyDlcConditionResolution>; oracleWitness: string } {
-  if (canonicalConditionId(response.conditionId) !== binding.conditionId) {
-    throw new Error('condition attestation response is foreign')
-  }
-  const prepared = prepareDlcConditionResolutionEvidence(
-    response.attestedOutcome,
-    response.oracleWitness,
-  )
-  const registered = bindRegisteredDlcConditionAuthority(binding, response.registeredAuthority)
+  const prepared = prepareDlcConditionResolutionEvidence(state.attestedOutcome, state.oracleWitness)
+  const registered = bindRegisteredDlcConditionAuthority(binding, registeredAuthority)
   return {
     resolution: verifyDlcConditionResolution(binding, registered, prepared.evidence),
     oracleWitness: prepared.canonicalOracleWitness,
@@ -764,4 +856,8 @@ interface RetirementPreview {
   readonly grossAmountSubunits: number
   readonly retainedAmountSubunits: number
   readonly estimatedInputFeeSubunits: number
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unhandled condition resolution state: ${JSON.stringify(value)}`)
 }

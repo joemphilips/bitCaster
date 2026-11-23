@@ -1982,6 +1982,8 @@ function registerWalletCommand(program: Command): void {
     .addHelpText(
       'after',
       '\nRun without --acknowledge to preview the current action and fee.\n' +
+        'The result comes from the mint record, or else from the oracle attestation on the\n' +
+        'configured Nostr relays. The command verifies it and does not need the engine.\n' +
         'Example:\n  bitcaster-cli wallet retire-condition <condition-id>',
     )
     .action(async (conditionId: string, options: { acknowledge?: boolean }) => {
@@ -2000,7 +2002,9 @@ function registerWalletCommand(program: Command): void {
     )
     .addHelpText(
       'after',
-      '\nExample:\n  bitcaster-cli wallet claim <condition-id> Alpha\n  bitcaster-cli wallet operations --kind ctf-redeem',
+      '\nThe result comes from the mint record, or else from the oracle attestation on the\n' +
+        'configured Nostr relays. The command does not need the engine.\n' +
+        'Example:\n  bitcaster-cli wallet claim <condition-id> Alpha\n  bitcaster-cli wallet operations --kind ctf-redeem',
     )
     .action(async (conditionId: string, outcomeCollection: string) => {
       if (

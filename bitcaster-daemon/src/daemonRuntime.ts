@@ -101,6 +101,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
     await import('./managedConditionRetirement.ts')
   const { createConditionRetirementRetry } = await import('./conditionRetirementRetry.ts')
+  const { createDaemonConditionResolution, daemonOracleRelayUrls } =
+    await import('./nativeConditionResolution.ts')
   const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
   const { signNip98 } = await import('./nostrAuth.ts')
   const { ensureState, listLocalOrders } = await import('./state.ts')
@@ -144,8 +146,9 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   let assetMonitoringStarting = false
   let nativePaymentRequests: NativePaymentRequestService | undefined
   const liveViewLifetime = new AbortController()
-  // The conditions that the engine reported closed and whose attestation was
-  // not readable yet. The retry reads them again.
+  // The conditions that the engine reported closed. The close is only a hint
+  // that the oracle can be due before the announced maturity. The retry reads
+  // the mint and the relays again until a scan retires the condition.
   const closedConditionIds = new Set<string>()
   const retirementRetry = createConditionRetirementRetry({
     run: () => {
@@ -219,7 +222,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       if (shutdown !== undefined) void shutdown('custody lease loss', 1)
     },
   })
-  const retirementEngine = new BitcasterEngineClient({
+  const engineClient = new BitcasterEngineClient({
     baseUrl: profile.engineBaseUrl,
     authorization: signerEnabled
       ? ({ url, method, bodyText, payloadHash }) =>
@@ -234,22 +237,36 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   })
   const automaticRetirement =
     signerEnabled && nativeConfig.daemon.autoRetireResolvedConditionInventory
+  // The result of a held condition comes from the mint, then the oracle
+  // relays. The retirement does not read the engine.
+  const conditionResolution = createDaemonConditionResolution({
+    profile,
+    secrets,
+    walletDependencies: { getCustodyFence: currentFence },
+    relayUrls: daemonOracleRelayUrls(() => nativeConfig.daemon.nostrRelays),
+  })
   const resumeConditionRetirements = () =>
     resumeDaemonConditionRetirements({
       profile,
       secrets,
       fence: currentFence(),
+      resolution: conditionResolution,
       walletDependencies: { getCustodyFence: currentFence },
     })
   const runAutomaticRetirementScan = async (): Promise<ResolvedConditionDiscovery> => {
     const resumed = await resumeConditionRetirements()
     if (!automaticRetirement)
-      return { results: resumed, awaitingAttestation: [], discoveryFailures: [] }
+      return {
+        results: resumed,
+        awaitingAttestation: [],
+        discoveryFailures: [],
+        nextMaturityMs: null,
+      }
     const discovered = await retireResolvedDaemonConditions({
       profile,
       secrets,
       fence: currentFence(),
-      engine: retirementEngine,
+      resolution: conditionResolution,
       walletDependencies: { getCustodyFence: currentFence },
       closedConditionIds,
     })
@@ -257,6 +274,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       results: mergeRetirementResults(resumed, discovered.results),
       awaitingAttestation: discovered.awaitingAttestation,
       discoveryFailures: discovered.discoveryFailures,
+      nextMaturityMs: discovered.nextMaturityMs,
     }
   }
   // One retirement scan runs at a time, and only after the RPC server listens.
@@ -314,7 +332,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       process.stderr.write(`MarketHub event error: ${err.message}\n`)
     },
   })
-  marketWatch = createMarketWatch({ hub: marketHub, engine: retirementEngine })
+  marketWatch = createMarketWatch({ hub: marketHub, engine: engineClient })
   const likedMarketWatch = createLikedMarketWatch({
     marketWatch,
     assertCanWatch: () => {
@@ -332,7 +350,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         monitoringEnabled: signerEnabled && nativeConfig.daemon.assetMonitoringEnabled,
       }
     },
-    readPortfolio: (signal) => retirementEngine.getPortfolio({ walletId, pageSize: 200 }, signal),
+    readPortfolio: (signal) => engineClient.getPortfolio({ walletId, pageSize: 200 }, signal),
     subscribeToLocalChanges: (callback) =>
       subscribeToDaemonWalletHoldingsCommits(profileDir(), callback),
   })
@@ -542,8 +560,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     const initialNonRetirementRecovery = await recoverNonRetirementCustody()
     const nonRetirementRecovery = initialNonRetirementRecovery.recovery
     // Startup completes the unfinished retirements before the RPC server
-    // listens. The discovery of newly resolved conditions reads the engine, so
-    // it runs after the listen, as the first automatic wake.
+    // listens. The discovery of newly resolved conditions reads the mint and
+    // the relays, so it runs after the listen, as the first automatic wake.
     const retirementRecovery = await resumeConditionRetirements()
     const pendingRetirements = retirementRecovery
       .filter((entry) => entry.error !== null)
@@ -598,7 +616,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
           scopeId,
           walletId,
           engineBaseUrl: profile.engineBaseUrl,
-          remote: retirementEngine,
+          remote: engineClient,
           onAccepted: () => walletWatch?.refreshPortfolio(),
         })
         assetMonitoring.start()
@@ -706,16 +724,17 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     }
     // An order fill adds a holding without a receive. Each wake watches the
     // markets of the current holdings, so a close of that market wakes the scan.
-    const refreshManagedConditionMarkets = async () => {
+    // The watch is only an optional hint, so a slow engine does not delay the scan.
+    const refreshManagedConditionMarkets = () => {
       if (!automaticRetirement || !orderHubStarted) return
-      try {
-        await trackManagedConditionMarkets(marketHub, await ensureState())
-      } catch (error) {
-        process.stderr.write(`Condition market watch failed: ${boundedErrorText(error)}\n`)
-      }
+      void ensureState()
+        .then((state) => trackManagedConditionMarkets(marketHub, state))
+        .catch((error: unknown) => {
+          process.stderr.write(`Condition market watch failed: ${boundedErrorText(error)}\n`)
+        })
     }
     const runRetirementPass = async () => {
-      await refreshManagedConditionMarkets()
+      refreshManagedConditionMarkets()
       const generation = readiness.beginAutomaticRetirementScan()
       try {
         const scan = await runAutomaticRetirementScan()
@@ -734,6 +753,8 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         )
           retirementRetry.schedule()
         else retirementRetry.reset()
+        // A held condition that is not due yet wakes the scan at its announced maturity.
+        if (scan.nextMaturityMs !== null) retirementRetry.wakeAt(scan.nextMaturityMs)
         await refreshNativePaymentRequestReceiver()
         for (const entry of pending) {
           process.stderr.write(
@@ -742,7 +763,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         }
         for (const conditionId of scan.awaitingAttestation) {
           process.stderr.write(
-            `Condition ${conditionId} is closed; its attestation is not readable yet\n`,
+            `Condition ${conditionId} is due; its oracle attestation is not verified yet\n`,
           )
         }
         for (const entry of scan.discoveryFailures) {
@@ -828,8 +849,13 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       },
       onOutcomeProofsReceived: async (conditionId, outcomeSetId) => {
         if (!nativeConfig.daemon.autoRetireResolvedConditionInventory || !marketHub) return
+        // The market watch is only an optional hint. The scan does not wait for the engine.
+        void trackManagedConditionMarket(marketHub, conditionId, outcomeSetId).catch(
+          (error: unknown) => {
+            process.stderr.write(`Condition market watch failed: ${boundedErrorText(error)}\n`)
+          },
+        )
         try {
-          await trackManagedConditionMarket(marketHub, conditionId, outcomeSetId)
           await wakeManagedConditionRetirements()
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)

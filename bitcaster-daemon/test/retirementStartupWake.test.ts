@@ -80,13 +80,23 @@ test('a wake before the listen only records itself, and the first scan after the
         retireResolvedDaemonConditions: async () => {
           discoveryListening.push(listening)
           markDiscovered()
-          return { results: [], awaitingAttestation: [], discoveryFailures: [] }
+          return {
+            results: [],
+            awaitingAttestation: [],
+            discoveryFailures: [],
+            nextMaturityMs: null,
+          }
         },
       },
     })
     mock.module(new URL('../src/conditionRetirementRetry.ts', import.meta.url).href, {
       namedExports: {
-        createConditionRetirementRetry: () => ({ schedule() {}, reset() {}, stop() {} }),
+        createConditionRetirementRetry: () => ({
+          schedule() {},
+          wakeAt() {},
+          reset() {},
+          stop() {},
+        }),
       },
     })
     mock.module(new URL('../src/server.ts', import.meta.url).href, {
@@ -134,7 +144,7 @@ test('a wake before the listen only records itself, and the first scan after the
     assert.deepEqual(
       discoveryListening.filter((afterListen) => !afterListen),
       [],
-      'a retirement scan read the engine before the listen',
+      'a retirement scan read the mint before the listen',
     )
 
     signals.get('SIGTERM')!()

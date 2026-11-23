@@ -50,7 +50,6 @@ import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import { profileDir, type DaemonProfile } from './profile.ts'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import type { WalletClaimPositionParams, WalletClaimPositionResult } from './protocol.ts'
-import type { ManagedConditionRetirementEngine } from './managedConditionRetirement.ts'
 import {
   POSITION_CLAIM_PURPOSE,
   assertPreparedProofOperationDispatchFenced,
@@ -78,7 +77,10 @@ import {
   type ConditionOracleEvidenceSummary,
   type ConditionOracleResolutionContext,
 } from '@bitcaster-market/client-sdk/conditionOracleEvidence'
-import { resolveDaemonConditionOracleEvidence } from './nativeConditionOracleEvidence.ts'
+import {
+  resolveDaemonConditionOracleEvidence,
+  type DaemonConditionResolution,
+} from './nativeConditionResolution.ts'
 
 interface ClaimContext {
   readonly profile: DaemonProfile
@@ -90,7 +92,8 @@ interface ClaimContext {
 export async function claimDaemonPosition(
   input: ClaimContext &
     WalletClaimPositionParams & {
-      readonly engine: ManagedConditionRetirementEngine
+      /** The mint record, then the oracle relays. The engine is not read. */
+      readonly resolution: DaemonConditionResolution
     },
 ): Promise<WalletClaimPositionResult> {
   const position = canonicalPosition(input)
@@ -114,13 +117,6 @@ export async function claimDaemonPosition(
       authority = await resolveDaemonConditionOracleEvidence({
         ...input,
         conditionId: position.conditionId,
-        wallet: createWallet(
-          input.profile.mintUrl,
-          input.secrets,
-          input.walletDependencies ?? {},
-          'sat',
-          'msat',
-        ) as unknown as RedeemWallet,
       })
     }
     const proofs = records.map(({ proof }) => normalizeProof(proof))

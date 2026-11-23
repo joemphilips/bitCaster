@@ -28,8 +28,9 @@ test('a failed discovery does not hold funds, but an unfinished retirement does'
   let discovery: ResolvedConditionDiscovery = {
     results: [],
     awaitingAttestation: [],
-    // The engine is down: the read failed before a retirement started.
-    discoveryFailures: [{ conditionId: CONDITION, error: 'engine request failed (HTTP 503)' }],
+    // The mint is down: the read failed before a retirement started.
+    discoveryFailures: [{ conditionId: CONDITION, error: 'mint request failed (HTTP 503)' }],
+    nextMaturityMs: null,
   }
   const scheduled: Array<() => void> = []
   const nextSchedule = () => new Promise<void>((resolve) => scheduled.push(resolve))
@@ -85,6 +86,7 @@ test('a failed discovery does not hold funds, but an unfinished retirement does'
           schedule() {
             for (const resolve of scheduled.splice(0)) resolve()
           },
+          wakeAt() {},
           reset() {},
           stop() {},
         }),
@@ -151,6 +153,7 @@ test('a failed discovery does not hold funds, but an unfinished retirement does'
       results: [{ conditionId: CONDITION, error: 'mint request failed (HTTP 502)' }],
       awaitingAttestation: [],
       discoveryFailures: [],
+      nextMaturityMs: null,
     }
     const secondScan = nextSchedule()
     options.triggerSettlementRecovery!()

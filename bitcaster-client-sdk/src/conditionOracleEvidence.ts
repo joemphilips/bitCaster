@@ -240,8 +240,15 @@ export function createConditionOracleEvidenceResolver(
   }
 }
 
-function unverified(reason: 'missing' | 'unavailable' | 'invalid'): ConditionOracleEvidence {
+/** The evidence state of an outcome that the client did not verify. */
+export function unverifiedConditionOracleEvidence(
+  reason: 'missing' | 'unavailable' | 'invalid',
+): Extract<ConditionOracleEvidence, { status: 'unverified' }> {
   return { status: 'unverified', reason, warning: UNVERIFIED_CONDITION_OUTCOME_WARNING }
+}
+
+function unverified(reason: 'missing' | 'unavailable' | 'invalid'): ConditionOracleEvidence {
+  return unverifiedConditionOracleEvidence(reason)
 }
 
 export interface CtfVerifiedLosingAuthority {

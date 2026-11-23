@@ -44,6 +44,7 @@ import {
   readRetainedPositionClaimHistory,
   assertRetainedPositionClaimProof,
 } from '../src/nativePositionClaim.ts'
+import { resolvedResolution } from './support/conditionResolutionStub.ts'
 import {
   recoverAllDaemonWalletFromSeed,
   type AllKeysetSeedRecoveryTransport,
@@ -1017,29 +1018,28 @@ async function createFixture(
             })),
         }) as never,
     },
-    engine: {
-      getConditionAttestation: async () => ({
-        conditionId,
-        attestedOutcome: 'YES',
-        oracleWitness: {
-          oracle_sigs: [{ oracle_pubkey: publicKey, oracle_sig: signature, outcome: 'YES' }],
-        },
-        registeredAuthority: {
-          eventId: 'remove-fixture',
-          outcomes: ['YES', 'NO'],
-          threshold: 1,
-          oracles: [
-            {
-              oraclePublicKey: publicKey,
-              noncePoint: signature.slice(0, 64),
-              announcementIdentity: createHash('sha256')
-                .update(Buffer.from([1]))
-                .digest('hex'),
-            },
-          ],
-        },
-      }),
-    },
+    // Without a mint record the verified result comes from the oracle relays.
+    resolution: resolvedResolution({
+      conditionId,
+      attestedOutcome: 'YES',
+      oracleWitness: {
+        oracle_sigs: [{ oracle_pubkey: publicKey, oracle_sig: signature, outcome: 'YES' }],
+      },
+      registeredAuthority: {
+        eventId: 'remove-fixture',
+        outcomes: ['YES', 'NO'],
+        threshold: 1,
+        oracles: [
+          {
+            oraclePublicKey: publicKey,
+            noncePoint: signature.slice(0, 64),
+            announcementIdentity: createHash('sha256')
+              .update(Buffer.from([1]))
+              .digest('hex'),
+          },
+        ],
+      },
+    }),
   }
   const claim = await claimDaemonPosition(claimInput)
   if (imported) {

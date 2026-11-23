@@ -1,7 +1,3 @@
-import {
-  mintDenominationKeys,
-  mintDenominationPrivateKey,
-} from '../../bitcaster-client-sdk/test/support/mintDenominationKeys.ts'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
@@ -11,19 +7,10 @@ import { after, test } from 'node:test'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
-import { finalizeEvent } from 'nostr-tools/pure'
 import {
-  CheckStateEnum,
   HttpResponseError,
   MintOperationError,
-  deriveKeysetId,
   deriveConditionalKeysetId,
-  createBlindSignature,
-  createDLEQProof,
-  pointFromHex,
-  type OutputDataLike,
-  hashToCurve,
-  type MintKeys,
   type Proof,
 } from '@cashu/cashu-ts'
 import { deriveRootCtfOutcomeCollectionId } from '@bitcaster-market/client-sdk/durableCtfRangeOperation'
@@ -48,20 +35,26 @@ import {
 } from '../src/managedConditionRetirement.ts'
 import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 import { readProfile } from '../src/profile.ts'
-import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import {
+  CTF_KEYSET_ID,
+  FakeRetirementWallet,
+  REGULAR_KEYS,
+  REGULAR_KEYSET_ID,
+  outcomeKeyset,
+  proof,
+} from './support/retirementWallet.ts'
+import {
+  FAR_MATURITY_EPOCH,
+  pendingResolution,
+  resolvedResolution,
+  unavailableResolution,
+  type ConditionResultFixture,
+} from './support/conditionResolutionStub.ts'
 
 const roots: string[] = []
-const CTF_KEYSET_ID = canonicalTestKeysetId('managed-retirement:ctf')
 const REGULAR_KEY = bytesToHex(
   secp256k1.getPublicKey(Uint8Array.from([...new Uint8Array(31), 1]), true),
 )
-const REGULAR_ROOT = Uint8Array.from([...new Uint8Array(31), 1])
-const REGULAR_KEYS = mintDenominationKeys(REGULAR_ROOT, ['1', '2', '4'])
-const REGULAR_KEYSET_ID = deriveKeysetId(REGULAR_KEYS, {
-  unit: 'msat',
-  versionByte: 1,
-  input_fee_ppk: 0,
-})
 after(async () => Promise.all(roots.map((root) => rm(root, { recursive: true, force: true }))))
 
 async function createRetirementFixture(count = 65) {
@@ -94,10 +87,6 @@ async function createRetirementFixture(count = 65) {
     oraclePublicKeys: [oraclePublicKey],
   })
   const signature = signOutcome('YES', oraclePrivateKey)
-  const { created_at, ...signedEvent } = finalizeEvent(
-    { kind: 89, created_at: 1_900_000_000, tags: [['e', '44'.repeat(32)]], content: 'AQ==' },
-    oraclePrivateKey,
-  )
   const inputs = Array.from({ length: count }, (_, index) =>
     proof(CTF_KEYSET_ID, `conditional-input-${index.toString().padStart(3, '0')}`, 1),
   )
@@ -111,50 +100,34 @@ async function createRetirementFixture(count = 65) {
   const profile = await readProfile()
   assert.ok(profile)
   const wallet = new FakeRetirementWallet()
+  const result: ConditionResultFixture = {
+    conditionId,
+    attestedOutcome: 'YES',
+    oracleWitness: {
+      oracle_sigs: [{ oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: 'YES' }],
+    },
+    registeredAuthority: {
+      eventId,
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey,
+          noncePoint: signature.slice(0, 64),
+          announcementIdentity: createHash('sha256')
+            .update(Buffer.from([1]))
+            .digest('hex'),
+        },
+      ],
+    },
+  }
   const common = {
     conditionId,
     profile,
     secrets: { walletSeedHex: seed },
     fence,
     intentKind: 'explicit-user-command' as const,
-    engine: {
-      getConditionAttestation: async () => ({
-        conditionId,
-        attestedOutcome: 'YES',
-        attestationEvent: {
-          id: signedEvent.id,
-          pubkey: signedEvent.pubkey,
-          createdAt: created_at,
-          kind: 89 as const,
-          tags: signedEvent.tags,
-          content: signedEvent.content,
-          sig: signedEvent.sig,
-        },
-        oracleWitness: {
-          oracle_sigs: [
-            {
-              oracle_pubkey: oraclePublicKey,
-              oracle_sig: signature,
-              outcome: 'YES',
-            },
-          ],
-        },
-        registeredAuthority: {
-          eventId,
-          outcomes: ['YES', 'NO'],
-          threshold: 1,
-          oracles: [
-            {
-              oraclePublicKey,
-              noncePoint: signature.slice(0, 64),
-              announcementIdentity: createHash('sha256')
-                .update(Buffer.from([1]))
-                .digest('hex'),
-            },
-          ],
-        },
-      }),
-    },
+    resolution: resolvedResolution(result),
     walletDependencies: {
       createCashuWallet: () => wallet,
       resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
@@ -169,6 +142,7 @@ async function createRetirementFixture(count = 65) {
     signature,
     profile,
     wallet,
+    result,
     common,
     conditionId,
     dispose: async () => {
@@ -180,7 +154,7 @@ async function createRetirementFixture(count = 65) {
 }
 
 test('automatic retirement reads only the conditions that the wallet still holds', async () => {
-  const { directory, profile, fence, common, conditionId, dispose } =
+  const { directory, profile, fence, common, result, conditionId, dispose } =
     await createRetirementFixture(1)
   try {
     // One condition has only retained or retired proofs. It is history, not a holding.
@@ -208,26 +182,31 @@ test('automatic retirement reads only the conditions that the wallet still holds
       profile,
       secrets: common.secrets,
       fence,
-      engine: {
-        getConditionAttestation: async (id, signal) => {
-          requested.push({ conditionId: id, signal })
-          return null
+      resolution: {
+        read: async (id, options) => {
+          requested.push({ conditionId: id, signal: options.signal })
+          return pendingResolution(result).read(id, options)
         },
       },
       walletDependencies: common.walletDependencies,
     })
-    assert.deepEqual(results, { results: [], awaitingAttestation: [], discoveryFailures: [] })
+    assert.deepEqual(results, {
+      results: [],
+      awaitingAttestation: [],
+      discoveryFailures: [],
+      nextMaturityMs: FAR_MATURITY_EPOCH * 1000,
+    })
     assert.deepEqual(
       requested.map((entry) => entry.conditionId),
       [conditionId],
     )
-    assert.ok(requested[0]!.signal instanceof AbortSignal, 'the engine read has no time bound')
+    assert.ok(requested[0]!.signal instanceof AbortSignal, 'the resolution read has no time bound')
   } finally {
     await dispose()
   }
 })
 
-test('an engine read that does not answer in time is a discovery failure', async () => {
+test('a resolution read that does not answer in time is a discovery failure', async () => {
   const { profile, fence, common, conditionId, dispose } = await createRetirementFixture(1)
   try {
     const results = await retireResolvedDaemonConditions({
@@ -235,63 +214,65 @@ test('an engine read that does not answer in time is a discovery failure', async
       secrets: common.secrets,
       fence,
       // The time bound is the behavior under test, so this test uses a real 1 ms timer.
-      attestationReadTimeoutMs: 1,
-      engine: {
-        getConditionAttestation: (_id, signal) =>
-          new Promise((_resolve, reject) => {
-            signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })
-          }),
-      },
+      resolutionReadTimeoutMs: 1,
+      // This reader ignores the signal. The time bound still ends the read.
+      resolution: { read: () => new Promise(() => {}) },
       walletDependencies: common.walletDependencies,
     })
     assert.deepEqual(results, {
       results: [],
       awaitingAttestation: [],
-      discoveryFailures: [{ conditionId, error: 'condition attestation read timed out' }],
+      discoveryFailures: [{ conditionId, error: 'condition resolution read timed out' }],
+      nextMaturityMs: null,
     })
   } finally {
     await dispose()
   }
 })
 
-test('a closed condition without a readable attestation waits for a retry, then retires once', async () => {
-  const { profile, fence, common, conditionId, wallet, dispose } = await createRetirementFixture(1)
+test('an engine close before the announced maturity waits for a retry, then retires once', async () => {
+  const { profile, fence, common, result, conditionId, wallet, dispose } =
+    await createRetirementFixture(1)
   try {
-    const discover = (engine: typeof common.engine, closed: readonly string[]) =>
+    const discover = (resolution: typeof common.resolution, closed: readonly string[]) =>
       retireResolvedDaemonConditions({
         profile,
         secrets: common.secrets,
         fence,
-        engine,
+        resolution,
         walletDependencies: common.walletDependencies,
         closedConditionIds: new Set(closed),
       })
-    const unreadable = { getConditionAttestation: async () => null }
-    // An open condition has no attestation yet. That is no reason to read it again soon.
+    const unreadable = pendingResolution(result)
+    // Before its maturity the condition is not due. The scan only reports the maturity.
     assert.deepEqual(await discover(unreadable, []), {
       results: [],
       awaitingAttestation: [],
       discoveryFailures: [],
+      nextMaturityMs: FAR_MATURITY_EPOCH * 1000,
     })
-    // The close event can come before the engine can return the attestation.
+    // The engine close hint makes the condition due before the attestation is verifiable.
     assert.deepEqual(await discover(unreadable, [conditionId]), {
       results: [],
       awaitingAttestation: [conditionId],
       discoveryFailures: [],
+      nextMaturityMs: null,
     })
     assert.equal(wallet.redeemCalls, 0)
-    assert.deepEqual(await discover(common.engine, [conditionId]), {
+    assert.deepEqual(await discover(common.resolution, [conditionId]), {
       results: [{ conditionId, error: null }],
       awaitingAttestation: [],
       discoveryFailures: [],
+      nextMaturityMs: null,
     })
     const redeemed = wallet.redeemCalls
     assert.ok(redeemed > 0)
     // A later retry finds nothing held, so the claim does not happen again.
-    assert.deepEqual(await discover(common.engine, [conditionId]), {
+    assert.deepEqual(await discover(common.resolution, [conditionId]), {
       results: [],
       awaitingAttestation: [],
       discoveryFailures: [],
+      nextMaturityMs: null,
     })
     assert.equal(wallet.redeemCalls, redeemed)
   } finally {
@@ -307,7 +288,7 @@ test('a failure after the retirement starts stays an unfinished retirement', asy
       profile,
       secrets: common.secrets,
       fence,
-      engine: common.engine,
+      resolution: common.resolution,
       walletDependencies: common.walletDependencies,
     })
     // The redeem started, so the daemon must finish this retirement before it uses funds.
@@ -338,8 +319,8 @@ test('a retirement failure reports a mint answer only as fixed text', async () =
         profile,
         secrets: common.secrets,
         fence,
-        engine: {
-          getConditionAttestation: async () => {
+        resolution: {
+          read: async () => {
             throw failure
           },
         },
@@ -349,6 +330,7 @@ test('a retirement failure reports a mint answer only as fixed text', async () =
         results: [],
         awaitingAttestation: [],
         discoveryFailures: [{ conditionId, error: expected }],
+        nextMaturityMs: null,
       })
     }
   } finally {
@@ -365,9 +347,16 @@ test('daemon previews then atomically retires one verified condition inventory',
     signature,
     profile,
     wallet,
+    result,
     common,
     conditionId,
   } = await createRetirementFixture()
+  // The same oracle result, registered for another event of the same oracle.
+  const resultFor = (forCondition: string, forEvent: string): ConditionResultFixture => ({
+    ...result,
+    conditionId: forCondition,
+    registeredAuthority: { ...result.registeredAuthority, eventId: forEvent },
+  })
 
   assert.deepEqual(await retireDaemonConditionInventory({ ...common, acknowledge: false }), {
     conditionId,
@@ -449,16 +438,7 @@ test('daemon previews then atomically retires one verified condition inventory',
       ...common,
       conditionId: losingConditionId,
       acknowledge: true,
-      engine: {
-        getConditionAttestation: async () => ({
-          ...(await common.engine.getConditionAttestation())!,
-          conditionId: losingConditionId,
-          registeredAuthority: {
-            ...((await common.engine.getConditionAttestation())!.registeredAuthority as object),
-            eventId: losingEventId,
-          },
-        }),
-      },
+      resolution: resolvedResolution(resultFor(losingConditionId, losingEventId)),
       walletDependencies: {
         createCashuWallet: () => losingWallet,
         resolveInputFeePpkByKeyset: async () => ({ [winningId]: 0 }),
@@ -519,16 +499,7 @@ test('daemon previews then atomically retires one verified condition inventory',
         ...common,
         conditionId: badCondition,
         acknowledge: true,
-        engine: {
-          getConditionAttestation: async () => ({
-            ...(await common.engine.getConditionAttestation()),
-            conditionId: badCondition,
-            registeredAuthority: {
-              ...((await common.engine.getConditionAttestation()).registeredAuthority as object),
-              eventId: event,
-            },
-          }),
-        },
+        resolution: resolvedResolution(resultFor(badCondition, event)),
         walletDependencies: {
           createCashuWallet: () => badWallet,
           resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
@@ -567,18 +538,11 @@ test('daemon previews then atomically retires one verified condition inventory',
     baseAsset: 'sat',
     unit: 'msat',
   })
-  const legacyResponse = {
-    ...(await common.engine.getConditionAttestation()),
-    conditionId: legacyCondition,
-    registeredAuthority: {
-      ...((await common.engine.getConditionAttestation()).registeredAuthority as object),
-      eventId: legacyEvent,
-    },
-  }
+  const legacyResponse = resultFor(legacyCondition, legacyEvent)
   const legacyCommon = {
     ...common,
     conditionId: legacyCondition,
-    engine: { getConditionAttestation: async () => legacyResponse },
+    resolution: resolvedResolution(legacyResponse),
   }
   await assert.rejects(
     retireDaemonConditionInventory({
@@ -640,20 +604,13 @@ test('daemon previews then atomically retires one verified condition inventory',
       unit: 'msat',
     },
   )
-  const retryResponse = {
-    ...(await common.engine.getConditionAttestation())!,
-    conditionId: retryConditionId,
-    registeredAuthority: {
-      ...((await common.engine.getConditionAttestation())!.registeredAuthority as object),
-      eventId: retryEventId,
-    },
-  }
+  const retryResponse = resultFor(retryConditionId, retryEventId)
   await assert.rejects(
     retireDaemonConditionInventory({
       ...common,
       conditionId: retryConditionId,
       acknowledge: true,
-      engine: { getConditionAttestation: async () => retryResponse },
+      resolution: resolvedResolution(retryResponse),
       walletDependencies: {
         createCashuWallet: () => new FakeRetirementWallet(new Error('mint timeout')),
         resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
@@ -666,7 +623,9 @@ test('daemon previews then atomically retires one verified condition inventory',
     ...common,
     conditionId: retryConditionId,
     acknowledge: true,
-    engine: { getConditionAttestation: async () => null },
+    // A started retirement does not need the result again. Without the registration
+    // it omits the witness, and the mint uses its recorded result.
+    resolution: unavailableResolution,
     walletDependencies: {
       createCashuWallet: () => restartWallet,
       resolveInputFeePpkByKeyset: async () => ({ [CTF_KEYSET_ID]: 0 }),
@@ -714,16 +673,7 @@ test('daemon previews then atomically retires one verified condition inventory',
       ...common,
       conditionId: reservedConditionId,
       acknowledge: true,
-      engine: {
-        getConditionAttestation: async () => ({
-          ...retryResponse,
-          conditionId: reservedConditionId,
-          registeredAuthority: {
-            ...(retryResponse.registeredAuthority as object),
-            eventId: reservedEventId,
-          },
-        }),
-      },
+      resolution: resolvedResolution(resultFor(reservedConditionId, reservedEventId)),
     }),
     /pending proof reservations/,
   )
@@ -796,97 +746,6 @@ async function assertManagedRedeemCompletionIsTerminal(input: {
     ),
     /completed with a different result/,
   )
-}
-
-class FakeRetirementWallet {
-  requests: Array<Array<{ id: string; amount: string; B_: string }>> = []
-  redeemCalls = 0
-  error: unknown
-
-  constructor(error?: unknown) {
-    this.error = error
-  }
-  conditional?: MintKeys
-  conditionInfo?: unknown
-  alterResult?: (proofs: Proof[]) => Proof[]
-  readonly mint = {
-    getCtfCondition: async () => {
-      if (this.conditionInfo === undefined) throw new Error('condition info unavailable')
-      return this.conditionInfo
-    },
-    getKeySets: async () => ({ keysets: [regularKeyset(), this.conditional ?? outcomeKeyset()] }),
-    getKeys: async (keysetId?: string) => ({
-      keysets: [
-        keysetId === (this.conditional?.id ?? CTF_KEYSET_ID)
-          ? (this.conditional ?? outcomeKeyset())
-          : regularKeyset(),
-      ],
-    }),
-  }
-
-  async loadMint(): Promise<void> {}
-
-  async redeemOutcomeProofs(options: {
-    inputs: Proof[]
-    outputs: OutputDataLike[]
-  }): Promise<Proof[]> {
-    this.requests.push(
-      options.outputs.map(({ blindedMessage }) => ({
-        ...blindedMessage,
-        amount: String(blindedMessage.amount),
-      })),
-    )
-    this.redeemCalls += 1
-    if (this.error !== undefined) throw this.error
-    const result = options.outputs.map((output) => {
-      const privateKey = mintDenominationPrivateKey(
-        REGULAR_ROOT,
-        String(output.blindedMessage.amount),
-      )
-      const signature = createBlindSignature(
-        pointFromHex(output.blindedMessage.B_),
-        privateKey,
-        output.blindedMessage.id,
-      )
-      const dleq = createDLEQProof(pointFromHex(output.blindedMessage.B_), privateKey)
-      return output.toProof(
-        {
-          id: output.blindedMessage.id,
-          amount: output.blindedMessage.amount,
-          C_: signature.C_.toHex(true),
-          dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
-        },
-        regularKeyset(),
-      )
-    })
-    return this.alterResult?.(result) ?? result
-  }
-
-  async checkProofsStates(proofs: Array<Pick<Proof, 'secret'>>) {
-    return proofs.map(({ secret }) => ({
-      Y: hashToCurve(new TextEncoder().encode(secret)).toHex(true),
-      state: CheckStateEnum.UNSPENT,
-      witness: null,
-    }))
-  }
-}
-
-function proof(id: string, secret: string, amount: number): Proof {
-  return { id, secret, amount, C: hashToCurve(utf8ToBytes(secret)).toHex(true) } as Proof
-}
-
-function regularKeyset(): MintKeys {
-  return {
-    id: REGULAR_KEYSET_ID,
-    unit: 'msat',
-    active: true,
-    input_fee_ppk: 0,
-    keys: REGULAR_KEYS,
-  } as unknown as MintKeys
-}
-
-function outcomeKeyset(): MintKeys {
-  return { ...regularKeyset(), id: CTF_KEYSET_ID }
 }
 
 function signOutcome(outcome: string, privateKey: Uint8Array): string {

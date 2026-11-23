@@ -8,15 +8,30 @@ import { updateNativeConfig } from '../src/nativeConfig.ts'
 import { addAvailableProofs, writeState, emptyDaemonState } from '../src/state.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import type { DaemonServerOptions } from '../src/server.ts'
+import { signedCtfRegistrationFixture } from '../../bitcaster-client-sdk/test/support/ctfAnnouncementFixture.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
 
 const MINT = 'http://localhost:8085'
-const HELD = 'ab'.repeat(32)
+// The oracle is due at this announced maturity, far after the test runs.
+const MATURITY_EPOCH = 4_000_000_000
+const registrations = new Map(
+  ['held', 'bought'].map((event) => {
+    const registration = signedCtfRegistrationFixture(
+      ['YES', 'NO'],
+      `startup-${event}`,
+      undefined,
+      {
+        maturityEpoch: MATURITY_EPOCH,
+      },
+    )
+    return [registration.condition_id, registration] as const
+  }),
+)
+const [HELD, BOUGHT] = [...registrations.keys()] as [string, string]
 const HISTORY = 'cd'.repeat(32)
-const BOUGHT = 'ef'.repeat(32)
 const KEYSET_ID = canonicalTestKeysetId('retirement-startup-scan')
 
-test('the daemon listens before the automatic retirement reads the engine', async () => {
+test('the automatic retirement reads the mint after the listen, while the engine does not answer', async () => {
   const root = await mkdtemp(join(tmpdir(), 'bitcaster-retirement-startup-')),
     directory = join(root, 'profile')
   const previousArgv = process.argv,
@@ -24,14 +39,23 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
   process.env.BITCASTER_DAEMON_HOME = directory
   let options: DaemonServerOptions | undefined
   const managedMarkets: string[][] = []
-  const attestationReads: string[] = []
+  const watchWaiters: Array<() => void> = []
+  const watched = (marketId: string) =>
+    new Promise<void>((resolve) => {
+      const check = () =>
+        managedMarkets.at(-1)?.includes(marketId) === true ? resolve() : watchWaiters.push(check)
+      check()
+    })
+  const mintReads: string[] = []
+  const engineRequests: string[] = []
   const otherRequests: string[] = []
+  const wakes: number[] = []
   const exits: number[] = [],
     signals = new Map<string, () => void>()
-  let releaseEngine!: () => void
-  const engineReleased = new Promise<void>((resolve) => (releaseEngine = resolve))
-  let markEngineRead!: () => void
-  const engineRead = new Promise<void>((resolve) => (markEngineRead = resolve))
+  let releaseMint!: () => void
+  const mintReleased = new Promise<void>((resolve) => (releaseMint = resolve))
+  let markMintRead!: () => void
+  const mintRead = new Promise<void>((resolve) => (markMintRead = resolve))
   let markBoughtRead!: () => void
   const boughtRead = new Promise<void>((resolve) => (markBoughtRead = resolve))
   const hubOptions: Array<Record<string, unknown>> = []
@@ -86,10 +110,11 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
       database.close()
     }
     // The default turns the automatic retirement on. The realm setting keeps
-    // the backup writer off the network.
+    // the backup writer off the network. Without relays, a due condition reads
+    // only the mint.
     updateNativeConfig((config) => ({
       ...config,
-      daemon: { ...config.daemon, recoveryIndexRealm: 'disabled' },
+      daemon: { ...config.daemon, recoveryIndexRealm: 'disabled', nostrRelays: [] },
     }))
     class Hub {
       constructor(options: Record<string, unknown>) {
@@ -101,6 +126,7 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
       async trackMarket() {}
       async setManagedMarkets(marketIds: readonly string[]) {
         managedMarkets.push([...marketIds])
+        for (const check of watchWaiters.splice(0)) check()
       }
     }
     mock.module(new URL('../src/orderHubConnection.ts', import.meta.url).href, {
@@ -130,6 +156,9 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
               retrySchedules += 1
               for (const check of scheduleWaiters.splice(0)) check()
             },
+            wakeAt(atMs: number) {
+              wakes.push(atMs)
+            },
             reset() {},
             stop() {},
           }
@@ -150,21 +179,31 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
     })
     mock.method(globalThis, 'fetch', async (input: string | URL | Request) => {
       const url = new URL(input instanceof Request ? input.url : String(input))
-      const match = /^\/api\/v1\/conditions\/([0-9a-f]{64})\/attestation$/.exec(url.pathname)
-      if (match === null) {
+      if (url.origin === 'http://localhost:5000') {
+        // The engine does not answer. Nothing in the retirement may wait for it.
+        engineRequests.push(url.pathname)
+        return new Promise<Response>(() => {})
+      }
+      const match = /^\/v1\/conditions\/([0-9a-f]{64})$/.exec(url.pathname)
+      const registration = match === null ? undefined : registrations.get(match[1]!)
+      if (
+        url.origin !== MINT ||
+        registration === undefined ||
+        url.searchParams.get('include_oracle_sigs') !== 'true'
+      ) {
         otherRequests.push(url.pathname)
         throw new Error('unexpected startup request')
       }
-      attestationReads.push(match[1]!)
-      if (match[1] === BOUGHT) markBoughtRead()
+      mintReads.push(match![1]!)
       for (const waiter of readWaiters.splice(0)) {
-        if (waiter.conditionId === match[1]) waiter.resolve()
+        if (waiter.conditionId === match![1]) waiter.resolve()
         else readWaiters.push(waiter)
       }
-      markEngineRead()
-      // The barrier holds the engine read until the test has checked the listen.
-      await engineReleased
-      return new Response(null, { status: 404 })
+      if (match![1] === BOUGHT) markBoughtRead()
+      markMintRead()
+      // The barrier holds the first mint read until the test has checked the listen.
+      await mintReleased
+      return Response.json({ ...registration, registered_at: 1_800_000_000, keysets: {} })
     })
     const once = process.once
     mock.method(
@@ -189,14 +228,23 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
       'run',
     ]
     imported = import('../src/main.ts')
-    await bounded(engineRead, 'the automatic retirement did not read the engine')
-    assert.ok(options, 'the daemon must listen before the engine read ends')
+    await bounded(mintRead, 'the automatic retirement did not read the mint')
+    assert.ok(options, 'the daemon must listen before the mint read ends')
     // Discovery is new work, not the recovery of unfinished work, so it does not block funds.
     assert.equal(options.isCustodyReady!(), true)
-    releaseEngine()
+    releaseMint()
     await bounded(imported, 'daemon startup did not finish')
-    assert.deepEqual(attestationReads, [HELD])
+    assert.deepEqual(mintReads, [HELD])
     assert.deepEqual(managedMarkets.at(-1), [`${HELD}-YES`])
+    // The held condition is not due yet. The scan wakes again at its announced maturity.
+    await bounded(
+      new Promise<void>((resolve) => {
+        const check = () => (wakes.length > 0 ? resolve() : setImmediate(check))
+        check()
+      }),
+      'the scan did not arm the maturity wake',
+    )
+    assert.deepEqual(wakes, [MATURITY_EPOCH * 1000])
 
     // An order fill adds a position while the daemon runs. The next automatic
     // wake, here after a settlement recovery pass, watches its market too.
@@ -207,10 +255,12 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
     )
     options.triggerSettlementRecovery!()
     await bounded(boughtRead, 'the wake after a recovery pass did not read the bought condition')
-    assert.deepEqual(managedMarkets.at(-1), [`${HELD}-YES`, `${BOUGHT}-YES`])
+    // The market watch is only a hint. It does not hold the scan, so wait for it here.
+    await bounded(watched(`${BOUGHT}-YES`), 'the wake did not watch the bought market')
+    assert.deepEqual(managedMarkets.at(-1), [`${HELD}-YES`, `${BOUGHT}-YES`].sort())
 
-    // The engine reports the close before the attestation is readable. The
-    // scan does not skip the condition: it schedules a retry, which reads it again.
+    // The engine reports the close before the attestation is verifiable. The close
+    // is only a hint: the condition becomes due, and a retry reads the mint again.
     const marketHub = hubOptions.find((hub) => 'onMarketStatusChanged' in hub) as {
       onMarketStatusChanged: (status: unknown) => Promise<void>
     }
@@ -227,6 +277,11 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
     retryRun!()
     await bounded(retried, 'the retry did not read the closed condition again')
     assert.deepEqual(otherRequests, [])
+    // The retirement never asks the engine for an attestation.
+    assert.deepEqual(
+      engineRequests.filter((path) => path.includes('/attestation')),
+      [],
+    )
     signals.get('SIGTERM')!()
     await bounded(
       new Promise<void>((resolve) => {
@@ -237,7 +292,7 @@ test('the daemon listens before the automatic retirement reads the engine', asyn
     )
     assert.deepEqual(exits, [0])
   } finally {
-    releaseEngine()
+    releaseMint()
     await imported?.catch(() => undefined)
     process.argv = previousArgv
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME

@@ -7,6 +7,7 @@ import type { PersistedRegisteredDlcConditionAuthority } from './managedConditio
 const utf8 = new TextEncoder()
 const decoder = new TextDecoder('utf-8', { fatal: true })
 const MAX_ANNOUNCEMENT_BYTES = 16_384
+const MAX_ATTESTATION_BYTES = 8_192
 const MAX_ORACLES = 32
 
 export interface VerifiedCtfEnumAnnouncement {
@@ -16,6 +17,16 @@ export interface VerifiedCtfEnumAnnouncement {
   readonly noncePoint: string
   readonly announcementIdentity: string
   readonly descriptorHex: string
+  /** The announced event maturity in Unix seconds. The oracle attests after it. */
+  readonly eventMaturityEpoch: number
+}
+
+/** One enum DLC attestation. Decoding does not verify the signature. */
+export interface DecodedCtfEnumAttestation {
+  readonly eventId: string
+  readonly oraclePublicKey: string
+  readonly signature: string
+  readonly outcome: string
 }
 
 export interface VerifiedCtfConditionRegistration {
@@ -55,7 +66,7 @@ export function verifyCtfEnumAnnouncement(raw: unknown): VerifiedCtfEnumAnnounce
   // Validate curve points even though the nonce is not used by the announcement signature.
   schnorr.utils.lift_x(BigInt(`0x${bytesToHex(pubkey)}`))
   schnorr.utils.lift_x(BigInt(`0x${bytesToHex(nonce)}`))
-  event.uint(4)
+  const eventMaturityEpoch = event.uint(4)
   const descriptor = event.tlv(55302)
   const descriptorBytes = descriptor.remaining()
   const count = descriptor.uint(2)
@@ -75,6 +86,36 @@ export function verifyCtfEnumAnnouncement(raw: unknown): VerifiedCtfEnumAnnounce
     noncePoint: bytesToHex(nonce),
     announcementIdentity: bytesToHex(sha256(bytes)),
     descriptorHex: bytesToHex(descriptorBytes),
+    eventMaturityEpoch,
+  })
+}
+
+/**
+ * Decode the DLC `oracle_attestation` body of one enum outcome. A kind-89
+ * Nostr event carries this body, without the outer TLV header, as base64.
+ * The caller verifies the signature against the registered announcement.
+ */
+export function decodeCtfEnumAttestation(raw: unknown): DecodedCtfEnumAttestation {
+  if (
+    typeof raw !== 'string' ||
+    raw.length > MAX_ATTESTATION_BYTES * 2 ||
+    !/^(?:[0-9a-f]{2})+$/.test(raw)
+  )
+    throw new Error('CTF attestation encoding is invalid')
+  const body = new Reader(hexToBytes(raw))
+  const eventId = body.text(4096)
+  if (!eventId) throw new Error('CTF event id is empty')
+  const pubkey = body.take(32)
+  if (body.uint(2) !== 1) throw new Error('CTF enum attestation requires one signature')
+  const signature = body.take(64)
+  if (body.uint(2) !== 1) throw new Error('CTF enum attestation requires one outcome')
+  const outcome = body.text(191)
+  body.end()
+  return Object.freeze({
+    eventId,
+    oraclePublicKey: bytesToHex(pubkey),
+    signature: bytesToHex(signature),
+    outcome,
   })
 }
 

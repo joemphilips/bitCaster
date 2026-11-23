@@ -483,6 +483,10 @@
       "types": "./dist/conditionOracleEvidence.d.ts",
       "import": "./dist/conditionOracleEvidence.js"
     },
+    "./conditionResolution": {
+      "types": "./dist/conditionResolution.d.ts",
+      "import": "./dist/conditionResolution.js"
+    },
     "./oracleBackupAccess": {
       "types": "./dist/oracleBackupAccess.d.ts",
       "import": "./dist/oracleBackupAccess.js"

@@ -108,10 +108,16 @@ test('overlapping wakes run one retirement scan at a time and keep an unfinished
                 results: [{ conditionId: CONDITION, error: MINT_FAILURE }],
                 awaitingAttestation: [],
                 discoveryFailures: [],
+                nextMaturityMs: null,
               }
             }
             // The proofs of the condition are reserved, so a scan does not discover it again.
-            return { results: [], awaitingAttestation: [], discoveryFailures: [] }
+            return {
+              results: [],
+              awaitingAttestation: [],
+              discoveryFailures: [],
+              nextMaturityMs: null,
+            }
           } finally {
             running -= 1
           }
@@ -129,6 +135,7 @@ test('overlapping wakes run one retirement scan at a time and keep an unfinished
             resets += 1
             passDone()
           },
+          wakeAt() {},
           stop() {},
         }),
       },

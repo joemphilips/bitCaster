@@ -59,3 +59,58 @@ test('the retirement retry waits 30 seconds, doubles each time, and stops at 5 m
   assert.equal(timers.scheduled.length, 9)
   assert.equal(runs, 7)
 })
+
+test('a maturity wake runs the scan once at the earliest announced maturity', () => {
+  const timers = fakeTimers()
+  let runs = 0
+  const retry = createConditionRetirementRetry({
+    run: () => {
+      runs += 1
+    },
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    now: () => 1_000,
+  })
+  retry.wakeAt(61_000)
+  // A later maturity keeps the earlier wake.
+  retry.wakeAt(121_000)
+  assert.deepEqual(
+    timers.scheduled.map((timer) => timer.delayMs),
+    [60_000],
+  )
+  // An earlier maturity replaces the wake.
+  retry.wakeAt(31_000)
+  assert.equal(timers.scheduled[0]!.cleared, true)
+  assert.equal(timers.scheduled.at(-1)!.delayMs, 30_000)
+  // A clean scan resets only the retry backoff. The maturity wake stays.
+  retry.reset()
+  assert.equal(timers.scheduled.at(-1)!.cleared, false)
+  timers.fireLast()
+  assert.equal(runs, 1)
+
+  // The maturity wake and the retry backoff are separate timers.
+  retry.wakeAt(91_000)
+  retry.schedule()
+  assert.deepEqual(
+    timers.scheduled.slice(-2).map((timer) => timer.delayMs),
+    [90_000, 30_000],
+  )
+  retry.stop()
+  assert.equal(
+    timers.scheduled.slice(-2).every((timer) => timer.cleared),
+    true,
+  )
+  retry.wakeAt(2_000)
+  assert.equal(timers.scheduled.length, 4)
+
+  // A maturity beyond the timer range waits the longest timer. The scan then arms it again.
+  const far = createConditionRetirementRetry({
+    run: () => {},
+    setTimer: timers.setTimer,
+    clearTimer: timers.clearTimer,
+    now: () => 0,
+  })
+  far.wakeAt(40 * 24 * 60 * 60_000)
+  assert.equal(timers.scheduled.at(-1)!.delayMs, 2_147_483_647)
+  far.stop()
+})

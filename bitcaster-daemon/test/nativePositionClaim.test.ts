@@ -16,7 +16,6 @@ import { isDeepStrictEqual } from 'node:util'
 import { schnorr, secp256k1 } from '@noble/curves/secp256k1.js'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, concatBytes, utf8ToBytes } from '@noble/hashes/utils.js'
-import { finalizeEvent } from 'nostr-tools/pure'
 import {
   Amount,
   CheckStateEnum,
@@ -51,6 +50,13 @@ import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import { readProfile } from '../src/profile.ts'
 import { openDaemonStateSqlite } from '../src/stateSqlite.ts'
 import { dispatch } from '../src/server.ts'
+import { createDaemonConditionResolution } from '../src/nativeConditionResolution.ts'
+import {
+  pendingResolution,
+  resolvedResolution,
+  unavailableResolution,
+  type ConditionResultFixture,
+} from './support/conditionResolutionStub.ts'
 import {
   completePositionClaimRedeemFenced,
   failPositionClaimRedeemFenced,
@@ -425,9 +431,9 @@ test('claim RPC selects only the exact position and charges each historical keys
     const deps = {
       ...fixture.common.walletDependencies,
       getCustodyFence: () => fixture.common.fence,
+      conditionResolution: fixture.common.resolution,
       createEngineClient: () =>
         ({
-          ...fixture.common.engine,
           getAssetMonitoringAssets: async () => {
             monitoringCalls++
             throw new Error('monitoring forbidden')
@@ -535,8 +541,8 @@ test('claim entry recovers a lost response after restart with the exact witness,
         createCashuWallet: () => fixture.wallet,
         getCustodyFence: () => nextFence,
       },
-      engine: {
-        getConditionAttestation: async () => {
+      resolution: {
+        read: async () => {
           throw new Error('fresh witness forbidden')
         },
       },
@@ -588,8 +594,8 @@ test('uncertain and PENDING claims keep reservations and cannot fabricate termin
     const before = await readState()
     const second = await claimDaemonPosition({
       ...fixture.common,
-      engine: {
-        getConditionAttestation: async () => {
+      resolution: {
+        read: async () => {
           throw new Error('fresh witness forbidden')
         },
       },
@@ -641,7 +647,8 @@ test('a committed mint response lost in transit restores exact outputs once thro
       {
         ...fixture.common.walletDependencies,
         getCustodyFence: () => fixture.common.fence,
-        createEngineClient: () => fixture.common.engine as never,
+        conditionResolution: fixture.common.resolution,
+        createEngineClient: () => ({}) as never,
         restoreOutputGroups: async (mintUrl, outputs) => {
           assert.equal(mintUrl, MINT)
           assert.equal(digest(outputs), digest(original.outputs))
@@ -658,8 +665,8 @@ test('a committed mint response lost in transit restores exact outputs once thro
     const count = (await readState())!.wallet.proofs.length
     const repeated = await claimDaemonPosition({
       ...fixture.common,
-      engine: {
-        getConditionAttestation: async () => {
+      resolution: {
+        read: async () => {
           throw new Error('fresh witness forbidden')
         },
       },
@@ -703,8 +710,8 @@ for (const uncertainty of [
       let restores = 0
       const recovered = await claimDaemonPosition({
         ...fixture.common,
-        engine: {
-          getConditionAttestation: async () => {
+        resolution: {
+          read: async () => {
             throw new Error('fresh witness forbidden')
           },
         },
@@ -986,7 +993,8 @@ test('claim requires ready custody and redacts invalid requests before network I
     const invalid = await dispatch({ method: 'wallet.claimPosition', params: null } as never, {
       ...fixture.common.walletDependencies,
       getCustodyFence: () => fixture.common.fence,
-      createEngineClient: () => fixture.common.engine as never,
+      conditionResolution: fixture.common.resolution,
+      createEngineClient: () => ({}) as never,
     })
     assert.equal(invalid.code, 'position-claim-refused')
     assert.equal(fixture.wallet.requests.length, 0)
@@ -1013,10 +1021,6 @@ async function createFixture(seed = '11'.repeat(64), resolvedOutcome = 'YES') {
   })
   const eventId = 'position-claim-fixture'
   const oraclePublicKey = bytesToHex(schnorr.getPublicKey(PRIVATE_KEY))
-  const { created_at, ...signedEvent } = finalizeEvent(
-    { kind: 89, created_at: 1_900_000_000, tags: [['e', '44'.repeat(32)]], content: 'AQ==' },
-    PRIVATE_KEY,
-  )
   const tag = sha256(utf8ToBytes('DLC/oracle/attestation/v0'))
   const signature = bytesToHex(
     schnorr.sign(
@@ -1047,6 +1051,29 @@ async function createFixture(seed = '11'.repeat(64), resolvedOutcome = 'YES') {
 
   await writeState(emptyDaemonState())
   const profile = (await readProfile())!
+  const result: ConditionResultFixture = {
+    conditionId,
+    attestedOutcome: resolvedOutcome,
+    oracleWitness: {
+      oracle_sigs: [
+        { oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: resolvedOutcome },
+      ],
+    },
+    registeredAuthority: {
+      eventId,
+      outcomes: ['YES', 'NO'],
+      threshold: 1,
+      oracles: [
+        {
+          oraclePublicKey,
+          noncePoint: signature.slice(0, 64),
+          announcementIdentity: createHash('sha256')
+            .update(Buffer.from('AQ==', 'base64'))
+            .digest('hex'),
+        },
+      ],
+    },
+  }
   const common = {
     conditionId,
     outcomeCollection: 'YES',
@@ -1054,45 +1081,13 @@ async function createFixture(seed = '11'.repeat(64), resolvedOutcome = 'YES') {
     fence,
     secrets: { walletSeedHex: seed },
     walletDependencies: { createCashuWallet: () => wallet },
-    engine: {
-      getConditionAttestation: async () => ({
-        conditionId,
-        attestedOutcome: resolvedOutcome,
-        attestationEvent: {
-          id: signedEvent.id,
-          pubkey: signedEvent.pubkey,
-          createdAt: created_at,
-          kind: 89 as const,
-          tags: signedEvent.tags,
-          content: signedEvent.content,
-          sig: signedEvent.sig,
-        },
-        oracleWitness: {
-          oracle_sigs: [
-            { oracle_pubkey: oraclePublicKey, oracle_sig: signature, outcome: resolvedOutcome },
-          ],
-        },
-        registeredAuthority: {
-          eventId,
-          outcomes: ['YES', 'NO'],
-          threshold: 1,
-          oracles: [
-            {
-              oraclePublicKey,
-              noncePoint: signature.slice(0, 64),
-              announcementIdentity: createHash('sha256')
-                .update(Buffer.from('AQ==', 'base64'))
-                .digest('hex'),
-            },
-          ],
-        },
-      }),
-    },
+    resolution: resolvedResolution(result),
   }
   return {
     directory,
     wallet,
     conditionId,
+    result,
     common,
     regularMint: new RegularMintTransport(),
     add: async (
@@ -1477,18 +1472,24 @@ for (const evidence of [
       await fixture.add('refusal-input', CURRENT_ID)
       fixture.wallet.error = new MintOperationError(13015, 'mint refusal')
       const common = { ...fixture.common }
-      if (evidence === 'unavailable') fixture.wallet.evidenceError = new Error('evidence timeout')
-      if (evidence === 'missing-registration')
-        common.engine = { getConditionAttestation: async () => null } as never
+      // The mint condition read fails.
+      if (evidence === 'unavailable') common.resolution = unavailableResolution
+      // The mint has no verified result and the relays have no attestation.
+      if (evidence === 'missing-registration') common.resolution = pendingResolution(fixture.result)
+      // The mint reports a result whose signatures do not verify.
       if (evidence === 'invalid-registration')
-        (fixture.wallet.conditionInfo as { announcements: string[] }).announcements = ['02']
-      if (evidence === 'foreign-registration')
-        common.engine = {
-          getConditionAttestation: async () => ({
-            ...(await fixture.common.engine.getConditionAttestation()),
-            conditionId: 'ff'.repeat(32),
+        common.resolution = {
+          read: async (id, options) => ({
+            ...(await pendingResolution(fixture.result).read(id, options)),
+            state: { status: 'unverified', reportedOutcome: 'YES', reason: 'invalid' },
           }),
-        } as never
+        }
+      // The registered announcement belongs to another event.
+      if (evidence === 'foreign-registration')
+        common.resolution = resolvedResolution({
+          ...fixture.result,
+          registeredAuthority: { ...fixture.result.registeredAuthority, eventId: 'foreign-event' },
+        })
       const result = await claimDaemonPosition(common)
       assert.equal(result.legs[0]!.state, 'pending')
       assert.equal(
@@ -1558,9 +1559,6 @@ test('native real producer sat evidence stays unverified for msat Claim while va
   const info = JSON.parse(
     readFileSync(new URL('./fixtures/d4/condition-info.json', import.meta.url), 'utf8'),
   )
-  const registration = JSON.parse(
-    readFileSync(new URL('./fixtures/d4/registered-authority.json', import.meta.url), 'utf8'),
-  )
   assert.equal(
     createHash('sha256')
       .update(readFileSync(new URL('./fixtures/d4/condition-info.json', import.meta.url)))
@@ -1576,12 +1574,14 @@ test('native real producer sat evidence stays unverified for msat Claim while va
     const common = {
       ...fixture.common,
       conditionId: info.condition_id,
-      engine: {
-        getConditionAttestation: async () => ({
-          conditionId: info.condition_id,
-          registeredAuthority: registration,
-        }),
-      },
+      // The real resolution reads this mint record. Its sat registration does
+      // not bind an msat claim, so the evidence stays unverified.
+      resolution: createDaemonConditionResolution({
+        profile: fixture.common.profile,
+        secrets: fixture.common.secrets,
+        walletDependencies: fixture.common.walletDependencies,
+        relayUrls: async () => [],
+      }),
     }
     const result = await claimDaemonPosition(common as never)
     assert.equal(result.legs[0]!.state, 'completed')
