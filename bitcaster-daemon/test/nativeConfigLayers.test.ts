@@ -111,6 +111,42 @@ test('each higher layer replaces each lower layer: default, file, environment, o
   assert.deepEqual(parseNativeSettingEnvironment({ BITCASTER_DAEMON_PASSPHRASE: 'secret' }), {})
 })
 
+test('automatic retirement of resolved conditions is on by default, and each layer can turn it off', () => {
+  // The file that `daemon init` and `config set` write from the defaults.
+  assert.equal(defaultNativeConfig().daemon.autoRetireResolvedConditionInventory, true)
+  assert.deepEqual(
+    resolveNativeSettings({ file: null, environment: {}, options: {} })
+      .autoRetireResolvedConditionInventory,
+    { value: true, source: 'default' },
+  )
+  const optedOut = fileConfig({ autoRetireResolvedConditionInventory: false })
+  assert.deepEqual(
+    resolveNativeSettings({ file: optedOut, environment: {}, options: {} })
+      .autoRetireResolvedConditionInventory,
+    { value: false, source: 'file' },
+  )
+  const environment = parseNativeSettingEnvironment({
+    BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY: 'false',
+  })
+  assert.deepEqual(
+    resolveNativeSettings({ file: defaultNativeConfig(), environment, options: {} })
+      .autoRetireResolvedConditionInventory,
+    { value: false, source: 'environment' },
+  )
+  const options = parseNativeSettingOptions({ autoRetireResolvedConditionInventory: 'false' })
+  assert.deepEqual(
+    resolveNativeSettings({ file: null, environment: {}, options })
+      .autoRetireResolvedConditionInventory,
+    { value: false, source: 'option' },
+  )
+  // The daemon that the CLI starts receives the opt-out as a run option.
+  assert.equal(
+    applyNativeSettingOverrides(defaultNativeConfig(), options).daemon
+      .autoRetireResolvedConditionInventory,
+    false,
+  )
+})
+
 test('an invalid value refuses with the setting name and its layer', () => {
   assert.throws(
     () => parseNativeSettingEnvironment({ BITCASTER_ENGINE_URL: 'http://engine.example' }),

@@ -179,6 +179,118 @@ async function createRetirementFixture(count = 65) {
   }
 }
 
+test('automatic retirement reads only the conditions that the wallet still holds', async () => {
+  const { directory, profile, fence, common, conditionId, dispose } =
+    await createRetirementFixture(1)
+  try {
+    // One condition has only retained or retired proofs. It is history, not a holding.
+    const history = 'cd'.repeat(32)
+    await addAvailableProofs('https://mint.example', [proof(CTF_KEYSET_ID, 'history-proof', 1)], {
+      kind: 'Outcome',
+      conditionId: history,
+      outcomeSetId: 'YES',
+      baseAsset: 'sat',
+      unit: 'msat',
+    })
+    const database = await openDaemonStateSqlite(directory)
+    try {
+      database
+        .prepare(
+          `UPDATE target_wallet_proofs SET state = 'locked', reserved_by = 'retained:history'
+           WHERE condition_id = ?`,
+        )
+        .run(history)
+    } finally {
+      database.close()
+    }
+    const requested: Array<{ conditionId: string; signal: AbortSignal | undefined }> = []
+    const results = await retireResolvedDaemonConditions({
+      profile,
+      secrets: common.secrets,
+      fence,
+      engine: {
+        getConditionAttestation: async (id, signal) => {
+          requested.push({ conditionId: id, signal })
+          return null
+        },
+      },
+      walletDependencies: common.walletDependencies,
+    })
+    assert.deepEqual(results, { results: [], awaitingAttestation: [] })
+    assert.deepEqual(
+      requested.map((entry) => entry.conditionId),
+      [conditionId],
+    )
+    assert.ok(requested[0]!.signal instanceof AbortSignal, 'the engine read has no time bound')
+  } finally {
+    await dispose()
+  }
+})
+
+test('an engine read that does not answer in time leaves the condition pending', async () => {
+  const { profile, fence, common, conditionId, dispose } = await createRetirementFixture(1)
+  try {
+    const results = await retireResolvedDaemonConditions({
+      profile,
+      secrets: common.secrets,
+      fence,
+      // The time bound is the behavior under test, so this test uses a real 1 ms timer.
+      attestationReadTimeoutMs: 1,
+      engine: {
+        getConditionAttestation: (_id, signal) =>
+          new Promise((_resolve, reject) => {
+            signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })
+          }),
+      },
+      walletDependencies: common.walletDependencies,
+    })
+    assert.deepEqual(results, {
+      results: [{ conditionId, error: 'condition attestation read timed out' }],
+      awaitingAttestation: [],
+    })
+  } finally {
+    await dispose()
+  }
+})
+
+test('a closed condition without a readable attestation waits for a retry, then retires once', async () => {
+  const { profile, fence, common, conditionId, wallet, dispose } = await createRetirementFixture(1)
+  try {
+    const discover = (engine: typeof common.engine, closed: readonly string[]) =>
+      retireResolvedDaemonConditions({
+        profile,
+        secrets: common.secrets,
+        fence,
+        engine,
+        walletDependencies: common.walletDependencies,
+        closedConditionIds: new Set(closed),
+      })
+    const unreadable = { getConditionAttestation: async () => null }
+    // An open condition has no attestation yet. That is no reason to read it again soon.
+    assert.deepEqual(await discover(unreadable, []), { results: [], awaitingAttestation: [] })
+    // The close event can come before the engine can return the attestation.
+    assert.deepEqual(await discover(unreadable, [conditionId]), {
+      results: [],
+      awaitingAttestation: [conditionId],
+    })
+    assert.equal(wallet.redeemCalls, 0)
+    assert.deepEqual(await discover(common.engine, [conditionId]), {
+      results: [{ conditionId, error: null }],
+      awaitingAttestation: [],
+    })
+    const redeemed = wallet.redeemCalls
+    assert.ok(redeemed > 0)
+    // A later retry finds nothing held, so the claim does not happen again.
+    assert.deepEqual(await discover(common.engine, [conditionId]), {
+      results: [],
+      awaitingAttestation: [],
+    })
+    assert.equal(wallet.redeemCalls, redeemed)
+  } finally {
+    await dispose()
+  }
+})
+
 test('a retirement failure reports a mint answer only as fixed text', async () => {
   // A mint answer can quote long text, such as a blinded message or a proof Y point.
   const raw = `Token already spent: ${'02ab'.repeat(40)}`
@@ -202,7 +314,10 @@ test('a retirement failure reports a mint answer only as fixed text', async () =
         },
         walletDependencies: common.walletDependencies,
       })
-      assert.deepEqual(results, [{ conditionId, error: expected }])
+      assert.deepEqual(results, {
+        results: [{ conditionId, error: expected }],
+        awaitingAttestation: [],
+      })
     }
   } finally {
     await dispose()

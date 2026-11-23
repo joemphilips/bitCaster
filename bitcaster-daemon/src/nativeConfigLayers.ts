@@ -83,8 +83,8 @@ const TABLE: { readonly [K in NativeSettingKey]: NativeSettingRow<K> } = {
   },
   autoRetireResolvedConditionInventory: {
     valueName: '<true|false>',
-    description: 'Retire the inventory of resolved conditions automatically',
-    defaultValue: false,
+    description: 'Claim winning positions and retire resolved conditions automatically',
+    defaultValue: true,
     fromFile: (config) => config.daemon.autoRetireResolvedConditionInventory,
     parse: parseBoolean,
   },
@@ -136,7 +136,7 @@ export function nativeSettingOptionHelp(key: NativeSettingKey): {
   const row = TABLE[key]
   return {
     flags: `${nativeSettingOptionFlag(key)} ${row.valueName}`,
-    description: `${row.description}. Environment: ${nativeSettingEnvironmentVariable(key)}`,
+    description: `${row.description} (default: ${row.defaultValue}). Environment: ${nativeSettingEnvironmentVariable(key)}`,
   }
 }
 

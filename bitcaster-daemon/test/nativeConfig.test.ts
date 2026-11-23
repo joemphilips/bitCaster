@@ -160,7 +160,7 @@ test('strict native config rejects malformed, duplicate, missing, and unknown fi
   )
   assert.throws(
     () =>
-      parseNativeConfig(valid.replace('"autoRetireResolvedConditionInventory":false', '"x":false')),
+      parseNativeConfig(valid.replace('"autoRetireResolvedConditionInventory":true', '"x":true')),
     /missing or unknown keys/,
   )
 })

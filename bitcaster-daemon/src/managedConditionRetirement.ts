@@ -66,6 +66,8 @@ import {
 } from './walletOps.ts'
 
 const RETIREMENT_PAGE_PROOF_MAX = 64
+/** One engine read of the automatic scan cannot hold the scan longer than this. */
+export const CONDITION_ATTESTATION_READ_TIMEOUT_MS = 10_000
 
 export interface ManagedConditionRetirementEngine {
   getConditionAttestation(
@@ -74,25 +76,44 @@ export interface ManagedConditionRetirementEngine {
   ): Promise<ConditionAttestationResponse | null>
 }
 
+export interface ConditionRetirementResult {
+  readonly conditionId: string
+  readonly error: string | null
+}
+
+export interface ResolvedConditionDiscovery {
+  /** The conditions that the scan retired, or that failed. */
+  readonly results: ConditionRetirementResult[]
+  /** The closed conditions without a readable attestation. A later scan reads them again. */
+  readonly awaitingAttestation: string[]
+}
+
 export async function retireResolvedDaemonConditions(input: {
   readonly profile: DaemonProfile
   readonly secrets: WalletOpsSecrets
   readonly fence: CustodyScopeFence
   readonly engine: ManagedConditionRetirementEngine
   readonly walletDependencies?: WalletOpsDependencies
-}): Promise<Array<{ conditionId: string; error: string | null }>> {
-  const conditionIds = [
-    ...new Set(
-      (await ensureState()).wallet.proofs.flatMap((record) =>
-        record.asset.kind === 'Outcome' ? [record.asset.conditionId] : [],
-      ),
-    ),
-  ].sort()
-  const results: Array<{ conditionId: string; error: string | null }> = []
-  for (const conditionId of conditionIds) {
+  readonly attestationReadTimeoutMs?: number
+  /** The conditions that the engine reported closed. */
+  readonly closedConditionIds?: ReadonlySet<string>
+}): Promise<ResolvedConditionDiscovery> {
+  const results: ConditionRetirementResult[] = []
+  const awaitingAttestation: string[] = []
+  for (const conditionId of await heldConditionIds(input.profile.mintUrl)) {
     try {
-      const attestation = await input.engine.getConditionAttestation(conditionId)
-      if (attestation === null) continue
+      const attestation = await readAttestationWithin(
+        input.engine,
+        conditionId,
+        input.attestationReadTimeoutMs ?? CONDITION_ATTESTATION_READ_TIMEOUT_MS,
+      )
+      if (attestation === null) {
+        // The engine can report the close before the attestation is readable.
+        if (input.closedConditionIds?.has(conditionId) === true) {
+          awaitingAttestation.push(conditionId)
+        }
+        continue
+      }
       await retireDaemonConditionInventory({
         ...input,
         conditionId,
@@ -105,7 +126,43 @@ export async function retireResolvedDaemonConditions(input: {
       results.push({ conditionId, error: boundedErrorText(error) })
     }
   }
-  return results
+  return { results, awaitingAttestation }
+}
+
+async function readAttestationWithin(
+  engine: ManagedConditionRetirementEngine,
+  conditionId: string,
+  timeoutMs: number,
+): Promise<ConditionAttestationResponse | null> {
+  const controller = new AbortController()
+  const timer = setTimeout(
+    () => controller.abort(new Error('condition attestation read timed out')),
+    timeoutMs,
+  )
+  try {
+    return await engine.getConditionAttestation(conditionId, controller.signal)
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * The conditions of which the wallet holds an available outcome proof. A
+ * retirement redeems only these proofs. Retired, retained and locked rows are
+ * history, so the scan does not grow with them.
+ */
+async function heldConditionIds(mintUrl: string): Promise<string[]> {
+  const conditionIds = new Set<string>()
+  for (const record of (await ensureState()).wallet.proofs) {
+    if (
+      record.asset.kind === 'Outcome' &&
+      record.state === 'available' &&
+      record.mintUrl === mintUrl
+    ) {
+      conditionIds.add(record.asset.conditionId)
+    }
+  }
+  return [...conditionIds].sort()
 }
 
 export async function resumeDaemonConditionRetirements(input: {

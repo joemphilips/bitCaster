@@ -111,7 +111,7 @@ global option:
 | `engineUrl`                            | `BITCASTER_ENGINE_URL`                               | `--engine-url`                               | https or loopback http URL                                                    | `http://localhost:5000` |
 | `mintUrl`                              | `BITCASTER_MINT_URL`                                 | `--mint-url`                                 | https or loopback http URL                                                    | `http://localhost:8085` |
 | `assetMonitoringEnabled`               | `BITCASTER_ASSET_MONITORING_ENABLED`                 | `--asset-monitoring-enabled`                 | `true` or `false`                                                             | `false`                 |
-| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` or `false`                                                             | `false`                 |
+| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` or `false`                                                             | `true`                  |
 | `recoveryIndexRealm`                   | `BITCASTER_RECOVERY_INDEX_REALM`                     | `--recovery-index-realm`                     | `bitcaster-production`, `bitcaster-staging`, `bitcaster-local`, or `disabled` | `bitcaster-production`  |
 
 The CLI uses the value of the highest layer that sets it. The layers, from

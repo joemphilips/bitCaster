@@ -108,7 +108,7 @@ CLI の各設定には、`config.json` のキー、環境変数、グローバ�
 | `engineUrl`                            | `BITCASTER_ENGINE_URL`                               | `--engine-url`                               | https またはループバックの http の URL                                            | `http://localhost:5000` |
 | `mintUrl`                              | `BITCASTER_MINT_URL`                                 | `--mint-url`                                 | https またはループバックの http の URL                                            | `http://localhost:8085` |
 | `assetMonitoringEnabled`               | `BITCASTER_ASSET_MONITORING_ENABLED`                 | `--asset-monitoring-enabled`                 | `true` または `false`                                                             | `false`                 |
-| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` または `false`                                                             | `false`                 |
+| `autoRetireResolvedConditionInventory` | `BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY` | `--auto-retire-resolved-condition-inventory` | `true` または `false`                                                             | `true`                  |
 | `recoveryIndexRealm`                   | `BITCASTER_RECOVERY_INDEX_REALM`                     | `--recovery-index-realm`                     | `bitcaster-production`、`bitcaster-staging`、`bitcaster-local`、または `disabled` | `bitcaster-production`  |
 
 CLI は、値を設定している最も上の層の値を使います。層は、下から順に、組み込みの既定値、

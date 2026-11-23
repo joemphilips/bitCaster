@@ -198,6 +198,38 @@ test('the engine URL trust check applies to a URL from the environment and from 
   }
 })
 
+test('a new config file turns automatic retirement on, and config set turns it off', async () => {
+  const home = await mkdtemp(join(tmpdir(), 'bitcaster-cli-layers-new-'))
+  try {
+    // A first `config set` writes the file from the built-in defaults.
+    const created = await runCli(home, ['config', 'set', '--mint-url', 'https://mint.example'])
+    assert.equal(created.code, 0, created.stderr)
+    assert.deepEqual(
+      await getJson(home, ['config', 'get', 'autoRetireResolvedConditionInventory']),
+      { value: true, source: 'file' },
+    )
+    const optedOut = await runCli(home, [
+      'config',
+      'set',
+      '--auto-retire-resolved-condition-inventory',
+      'false',
+    ])
+    assert.equal(optedOut.code, 0, optedOut.stderr)
+    assert.deepEqual(
+      await getJson(home, ['config', 'get', 'autoRetireResolvedConditionInventory']),
+      { value: false, source: 'file' },
+    )
+    assert.deepEqual(
+      await getJson(home, ['config', 'get', 'autoRetireResolvedConditionInventory'], {
+        BITCASTER_AUTO_RETIRE_RESOLVED_CONDITION_INVENTORY: 'true',
+      }),
+      { value: true, source: 'environment' },
+    )
+  } finally {
+    await rm(home, { recursive: true, force: true })
+  }
+})
+
 test('config set writes only the file, and the release 6 option names still work', async () => {
   const home = await profile({ engineUrl: 'https://file.example' })
   const configPath = join(home, 'config.json')

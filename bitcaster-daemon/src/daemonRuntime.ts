@@ -13,6 +13,7 @@ import type { CtfRangeRecoveryLoop } from './ctfRangeRecoveryLoop.ts'
 import type { NonRetirementCustodyRecoveryLoop } from './startupRecovery.ts'
 import type { NativeWalletPaymentApproval } from './nativeWalletPaymentOps.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
+import type { ResolvedConditionDiscovery } from './managedConditionRetirement.ts'
 import {
   assertDaemonEngineUrlTrusted,
   freezeNativeConfigAtStartup,
@@ -99,6 +100,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   const { createCtfRangeRecoveryLoop } = await import('./ctfRangeRecoveryLoop.ts')
   const { resumeDaemonConditionRetirements, retireResolvedDaemonConditions } =
     await import('./managedConditionRetirement.ts')
+  const { createConditionRetirementRetry } = await import('./conditionRetirementRetry.ts')
   const { BitcasterEngineClient } = await import('@bitcaster-market/client-sdk/engineClient')
   const { signNip98 } = await import('./nostrAuth.ts')
   const { ensureState, listLocalOrders } = await import('./state.ts')
@@ -142,7 +144,16 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   let assetMonitoringStarting = false
   let nativePaymentRequests: NativePaymentRequestService | undefined
   const liveViewLifetime = new AbortController()
-  let retirementRetryTimer: NodeJS.Timeout | undefined
+  // The conditions that the engine reported closed and whose attestation was
+  // not readable yet. The retry reads them again.
+  const closedConditionIds = new Set<string>()
+  const retirementRetry = createConditionRetirementRetry({
+    run: () => {
+      void wakeManagedConditionRetirements().catch((error: unknown) => {
+        process.stderr.write(`Condition retirement retry failed: ${boundedErrorText(error)}\n`)
+      })
+    },
+  })
   let leaseFailure: Error | undefined
   let shutdown: ((reason: string, exitCode?: number) => Promise<void>) | undefined
   const currentFence = () => {
@@ -190,7 +201,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     await nativePaymentRequests?.stop().catch(() => {
       process.stderr.write('native payment request shutdown failed\n')
     })
-    if (retirementRetryTimer !== undefined) clearTimeout(retirementRetryTimer)
+    retirementRetry.stop()
     try {
       await releaseCustodyScopeLease(profileDir(), fence, Date.now())
     } finally {
@@ -221,25 +232,39 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
           )
       : undefined,
   })
-  const runAutomaticRetirementScan = async () => {
-    const resumed = await resumeDaemonConditionRetirements({
+  const automaticRetirement =
+    signerEnabled && nativeConfig.daemon.autoRetireResolvedConditionInventory
+  const resumeConditionRetirements = () =>
+    resumeDaemonConditionRetirements({
       profile,
       secrets,
       fence: currentFence(),
       walletDependencies: { getCustodyFence: currentFence },
     })
-    if (!signerEnabled || !nativeConfig.daemon.autoRetireResolvedConditionInventory) return resumed
+  const runAutomaticRetirementScan = async (): Promise<ResolvedConditionDiscovery> => {
+    const resumed = await resumeConditionRetirements()
+    if (!automaticRetirement) return { results: resumed, awaitingAttestation: [] }
     const discovered = await retireResolvedDaemonConditions({
       profile,
       secrets,
       fence: currentFence(),
       engine: retirementEngine,
       walletDependencies: { getCustodyFence: currentFence },
+      closedConditionIds,
     })
-    return mergeRetirementResults(resumed, discovered)
+    return {
+      results: mergeRetirementResults(resumed, discovered.results),
+      awaitingAttestation: discovered.awaitingAttestation,
+    }
   }
+  // One retirement scan runs at a time, and only after the RPC server listens.
+  // Until then, a wake, for example from a startup range recovery pass, only
+  // records itself. The first scan after the listen serves it.
+  let retirementScanOpen = false
+  let retirementScanRunning = false
+  let retirementScanRequested = false
   let wakeManagedConditionRetirements = async () => {
-    await runAutomaticRetirementScan()
+    retirementScanRequested = true
   }
   const orderHub = new SignalROrderLifecycleConnection({
     observeOrderTimeline,
@@ -267,6 +292,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       if (status.state !== 'closed' || !nativeConfig.daemon.autoRetireResolvedConditionInventory) {
         return
       }
+      closedConditionIds.add(status.conditionId)
       await wakeManagedConditionRetirements()
     },
     onReconnected: async () => {
@@ -513,7 +539,10 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     }
     const initialNonRetirementRecovery = await recoverNonRetirementCustody()
     const nonRetirementRecovery = initialNonRetirementRecovery.recovery
-    const retirementRecovery = await runAutomaticRetirementScan()
+    // Startup completes the unfinished retirements before the RPC server
+    // listens. The discovery of newly resolved conditions reads the engine, so
+    // it runs after the listen, as the first automatic wake.
+    const retirementRecovery = await resumeConditionRetirements()
     const pendingRetirements = retirementRecovery
       .filter((entry) => entry.error !== null)
       .map((entry) => ({
@@ -592,7 +621,7 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
           await orderHub.trackOrder(order.marketId, order.orderId)
         }
         await orderHub.start()
-        if (nativeConfig.daemon.autoRetireResolvedConditionInventory && marketHub) {
+        if (automaticRetirement && marketHub) {
           await trackManagedConditionMarkets(marketHub, state)
           await marketHub.start()
         }
@@ -673,47 +702,74 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
     ) {
       nonRetirementRecoveryLoop.trigger()
     }
-    const scheduleRetirementRetry = () => {
-      if (retirementRetryTimer !== undefined) return
-      retirementRetryTimer = setTimeout(() => {
-        retirementRetryTimer = undefined
-        void wakeManagedConditionRetirements().catch((error: unknown) => {
-          const message = error instanceof Error ? error.message : String(error)
-          process.stderr.write(`Condition retirement retry failed: ${message}\n`)
-        })
-      }, 30_000)
-      retirementRetryTimer.unref()
+    // An order fill adds a holding without a receive. Each wake watches the
+    // markets of the current holdings, so a close of that market wakes the scan.
+    const refreshManagedConditionMarkets = async () => {
+      if (!automaticRetirement || !orderHubStarted) return
+      try {
+        await trackManagedConditionMarkets(marketHub, await ensureState())
+      } catch (error) {
+        process.stderr.write(`Condition market watch failed: ${boundedErrorText(error)}\n`)
+      }
     }
-    wakeManagedConditionRetirements = async () => {
+    const runRetirementPass = async () => {
+      await refreshManagedConditionMarkets()
       const generation = readiness.beginAutomaticRetirementScan()
       try {
-        const retirements = await runAutomaticRetirementScan()
-        const pending = retirements.filter((entry) => entry.error !== null)
-        if (!readiness.completeAutomaticRetirementScan(generation, pending.length > 0)) return
+        const scan = await runAutomaticRetirementScan()
+        // A closed condition stays known until a scan retires it. A failed read keeps it.
+        for (const entry of scan.results) {
+          if (entry.error === null) closedConditionIds.delete(entry.conditionId)
+        }
+        const pending = scan.results.filter((entry) => entry.error !== null)
+        readiness.completeAutomaticRetirementScan(generation, pending.length > 0)
+        if (pending.length > 0 || scan.awaitingAttestation.length > 0) retirementRetry.schedule()
+        else retirementRetry.reset()
         await refreshNativePaymentRequestReceiver()
-        if (pending.length > 0) {
-          for (const entry of pending) {
-            process.stderr.write(
-              `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
-            )
-          }
-          scheduleRetirementRetry()
-          return
+        for (const entry of pending) {
+          process.stderr.write(
+            `Condition retirement ${entry.conditionId} remains pending: ${entry.error}\n`,
+          )
         }
-        if (retirementRetryTimer !== undefined) {
-          clearTimeout(retirementRetryTimer)
-          retirementRetryTimer = undefined
+        for (const conditionId of scan.awaitingAttestation) {
+          process.stderr.write(
+            `Condition ${conditionId} is closed; its attestation is not readable yet\n`,
+          )
         }
-        if (readiness.isReady()) markCustodyReady()
+        if (pending.length === 0 && readiness.isReady()) markCustodyReady()
       } catch (error) {
-        if (readiness.completeAutomaticRetirementScan(generation, true)) {
-          await refreshNativePaymentRequestReceiver()
-          scheduleRetirementRetry()
-        }
+        // A pass that throws keeps the funds commands held and gets a retry.
+        readiness.completeAutomaticRetirementScan(generation, true)
+        retirementRetry.schedule()
+        await refreshNativePaymentRequestReceiver()
         throw error
       }
     }
-    if (pendingRetirements.length > 0) scheduleRetirementRetry()
+    // Two scans could otherwise submit one page twice, and the result of a
+    // slow failed pass could be lost. A wake during a scan returns at once and
+    // makes the scan run one more pass. The wake reports only the error of the
+    // last pass, because a later clean pass supersedes an earlier failure.
+    wakeManagedConditionRetirements = async () => {
+      retirementScanRequested = true
+      if (!retirementScanOpen || retirementScanRunning) return
+      retirementScanRunning = true
+      let failure: unknown
+      try {
+        while (retirementScanRequested) {
+          retirementScanRequested = false
+          try {
+            await runRetirementPass()
+            failure = undefined
+          } catch (error) {
+            failure = error
+          }
+        }
+      } finally {
+        retirementScanRunning = false
+      }
+      if (failure !== undefined) throw failure
+    }
+    if (pendingRetirements.length > 0) retirementRetry.schedule()
     currentFence()
     const server = await startDaemonServer({
       observeOrderTimeline,
@@ -792,6 +848,12 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         `bitcaster-daemon order lifecycle start failed; RPC will remain available: ${message}\n`,
       )
     })
+    retirementScanOpen = true
+    if (automaticRetirement || retirementScanRequested) {
+      void wakeManagedConditionRetirements().catch((error: unknown) => {
+        process.stderr.write(`Condition retirement scan failed: ${boundedErrorText(error)}\n`)
+      })
+    }
     if (readiness.isReady()) markCustodyReady()
     await refreshNativePaymentRequestReceiver()
   } catch (err) {
@@ -814,11 +876,13 @@ function mergeRetirementResults(
     .sort((left, right) => left.conditionId.localeCompare(right.conditionId))
 }
 
+/** Watch the markets of the available outcome proofs, the proofs that a retirement redeems. */
 async function trackManagedConditionMarkets(
   hub: { setManagedMarkets(marketIds: readonly string[]): Promise<void> },
   state: {
     readonly wallet: {
       readonly proofs: ReadonlyArray<{
+        readonly state: 'available' | 'reserved' | 'locked'
         readonly asset:
           | { readonly kind: 'sats' }
           | {
@@ -832,7 +896,7 @@ async function trackManagedConditionMarkets(
 ): Promise<void> {
   const marketIds = new Set<string>()
   for (const proof of state.wallet.proofs) {
-    if (proof.asset.kind !== 'Outcome') continue
+    if (proof.asset.kind !== 'Outcome' || proof.state !== 'available') continue
     for (const outcome of proof.asset.outcomeSetId.split('|')) {
       if (outcome.length > 0) marketIds.add(`${proof.asset.conditionId}-${outcome}`)
     }

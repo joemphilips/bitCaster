@@ -124,7 +124,9 @@ export function defaultNativeConfig(): NativeConfig {
       engineUrl: DEFAULT_ENGINE_URL,
       mintUrl: DEFAULT_MINT_URL,
       mintUrls: [DEFAULT_MINT_URL],
-      autoRetireResolvedConditionInventory: false,
+      // The daemon claims a winning position and retires a resolved condition
+      // without a command. A user turns it off with the setting.
+      autoRetireResolvedConditionInventory: true,
       assetMonitoringEnabled: false,
       nostrRelays: [...DEFAULT_PUBLIC_NOSTR_RELAYS],
     },
