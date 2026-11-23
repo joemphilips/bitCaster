@@ -29,13 +29,14 @@ import {
 import { DaemonDurableWalletReceiveCoordinator } from '../src/durableWalletReceiveCoordinator.ts'
 import { readSecrets } from '../src/secrets.ts'
 import { dispatch } from '../src/server.ts'
-import { addAvailableProofs } from '../src/state.ts'
+import { addAvailableProofs, getProofOperation } from '../src/state.ts'
 import { withDaemonStateSqliteTransaction } from '../src/stateSqlite.ts'
 import { readDaemonWalletBalance } from '../src/walletBalance.ts'
 import {
   deserializeOutputGroups,
   prepareRegularWalletReceive,
   recoverPreparedWalletSends,
+  resumeCtfConsolidationOperation,
   sendWalletToken,
 } from '../src/walletOps.ts'
 import { serviceFixture, MINT, SEED } from './nativePaymentRequestServiceFixture.ts'
@@ -481,6 +482,32 @@ test('recovery does not admit again a split output that a later send spent', asy
     assert.deepEqual(await recoverPreparedWalletSends(f.deps), { recovered: [], pending: [] })
     assert.deepEqual(await readDaemonWalletBalance(f.directory), balance)
     assert.deepEqual(await custodyFacts(f.directory), facts)
+  } finally {
+    await f.close()
+  }
+})
+
+test('recovery from a stale prepared read does not bring back a split output that a later send spent', async () => {
+  const f = await fixture()
+  try {
+    f.convert.loseAnswer = true
+    await assert.rejects(f.split(), /CTF consolidation mint result is uncertain/)
+    f.convert.loseAnswer = false
+    // A recovery pass reads the prepared operation, and then the split finishes first.
+    const stale = await getProofOperation(completeSetConvertOperationId('split-root'))
+    assert.equal(stale?.state, 'prepared')
+    f.control.state = CheckStateEnum.SPENT
+    await f.split()
+    f.control.state = CheckStateEnum.UNSPENT
+    // The change is the only regular fund, so the send spends it.
+    await f.send(20, 'spend-change')
+    const balance = await readDaemonWalletBalance(f.directory)
+    const facts = await custodyFacts(f.directory)
+    // The recovery pass continues with the operation that it read before.
+    await resumeCtfConsolidationOperation(stale!, f.deps)
+    assert.equal(f.convert.requests.length, 1)
+    assert.deepEqual(await custodyFacts(f.directory), facts)
+    assert.deepEqual(await readDaemonWalletBalance(f.directory), balance)
   } finally {
     await f.close()
   }

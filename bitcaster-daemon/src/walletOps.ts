@@ -127,9 +127,6 @@ import {
   ensureState,
   readDaemonKeysetCounters,
   readAvailableWalletProofAmountSamplesForReceive,
-  readDaemonStateFromDatabase,
-  writeDaemonStateToDatabase,
-  emptyDaemonState,
   reserveDaemonKeysetCounter,
   type FencedStateMutation,
   type ProofOperationRecord,
@@ -1825,9 +1822,6 @@ async function executePreparedCtfConsolidationPlan(
     {
       operationId,
       custodyOperationId: binding.record.operation.operationId,
-      mintUrl: input.mintUrl,
-      conditionId: input.conditionId,
-      inputsByCollection: input.plan.request.inputs,
       inputAssets: binding.inputAssets,
       resultProofs,
       outputsByCollection: input.outputsByCollection,
@@ -1853,9 +1847,6 @@ async function finalizeCtfConsolidationResult(
   input: {
     readonly operationId: string
     readonly custodyOperationId: string
-    readonly mintUrl: string
-    readonly conditionId: string
-    readonly inputsByCollection: Record<string, Proof[]>
     readonly inputAssets: readonly StoredProofAsset[]
     readonly resultProofs: Record<string, Proof[]>
     readonly outputsByCollection: Record<string, OutputData[]>
@@ -1912,6 +1903,8 @@ async function finalizeCtfConsolidationResult(
       }
       const staged = transaction.getOperation(input.custodyOperationId)
       if (staged === null) throw new Error('CTF consolidation custody result staging failed')
+      // The target projection admits again only the outputs that custody holds as
+      // available, so a later spend of an output is not undone.
       if (staged.operation.result.state === 'applied') {
         completeCtfConsolidationTargetFromDatabase(database, {
           operationId: input.operationId,
@@ -1920,19 +1913,6 @@ async function finalizeCtfConsolidationResult(
           successorAssets: input.successorAssets,
           nowMs: observedAtMs,
         })
-        const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
-        replaceConsolidatedWalletProofs(
-          state,
-          {
-            mintUrl: input.mintUrl,
-            conditionId: input.conditionId,
-            inputsByCollection: input.inputsByCollection,
-            resultProofs: input.resultProofs,
-            outputsByCollection: input.outputsByCollection,
-          },
-          observedAtMs,
-        )
-        writeDaemonStateToDatabase(database, state)
         return
       }
       prepared =
@@ -2002,26 +1982,9 @@ async function finalizeCtfConsolidationResult(
         successorAssets: input.successorAssets,
         nowMs: observedAtMs,
       })
-      persistConsolidatedWalletProjection(database, input, observedAtMs)
     },
     deps.injectCustodyFault === undefined ? {} : { injectFault: deps.injectCustodyFault },
   )
-}
-
-function persistConsolidatedWalletProjection(
-  database: Parameters<typeof readDaemonStateFromDatabase>[0],
-  input: {
-    readonly mintUrl: string
-    readonly conditionId: string
-    readonly inputsByCollection: Record<string, Proof[]>
-    readonly resultProofs: Record<string, Proof[]>
-    readonly outputsByCollection: Record<string, OutputData[]>
-  },
-  nowMs: number,
-): void {
-  const state = readDaemonStateFromDatabase(database) ?? emptyDaemonState()
-  replaceConsolidatedWalletProofs(state, input, nowMs)
-  writeDaemonStateToDatabase(database, state)
 }
 
 function requiredCustodyAuthorityArtifact(
@@ -2250,45 +2213,6 @@ function assertConsolidatedResultMatchesOutputPlan(
         throw new Error('CTF consolidation result proof differs from the output plan')
       }
     })
-  }
-}
-
-function replaceConsolidatedWalletProofs(
-  state: ReturnType<typeof emptyDaemonState>,
-  input: {
-    mintUrl: string
-    conditionId: string
-    inputsByCollection: Record<string, Proof[]>
-    resultProofs: Record<string, Proof[]>
-    outputsByCollection: Record<string, OutputData[]>
-  },
-  nowMs: number,
-): void {
-  const spentSecrets = new Set(
-    flattenProofGroups(input.inputsByCollection).map((proof) => proof.secret),
-  )
-  state.wallet.proofs = state.wallet.proofs.filter(
-    (record) => record.mintUrl !== input.mintUrl || !spentSecrets.has(record.proof.secret),
-  )
-  const existingSecrets = new Set(
-    state.wallet.proofs
-      .filter((record) => record.mintUrl === input.mintUrl)
-      .map((record) => record.proof.secret),
-  )
-  for (const [collection, proofs] of Object.entries(input.resultProofs)) {
-    const asset = consolidatedAsset(input.conditionId, collection)
-    for (const proof of proofs) {
-      if (existingSecrets.has(proof.secret)) continue
-      existingSecrets.add(proof.secret)
-      state.wallet.proofs.push({
-        proof: normalizeProof(proof),
-        mintUrl: input.mintUrl,
-        state: 'available',
-        asset,
-        createdAt: new Date(nowMs).toISOString(),
-        updatedAt: new Date(nowMs).toISOString(),
-      })
-    }
   }
 }
 
@@ -2630,9 +2554,6 @@ export async function resumeCtfConsolidationOperation(
       {
         operationId: entry.operationId,
         custodyOperationId: binding.record.operation.operationId,
-        mintUrl: entry.mintUrl,
-        conditionId,
-        inputsByCollection,
         inputAssets: binding.inputAssets,
         resultProofs: persistedResult,
         outputsByCollection,
@@ -2664,9 +2585,6 @@ export async function resumeCtfConsolidationOperation(
         {
           operationId: entry.operationId,
           custodyOperationId: binding.record.operation.operationId,
-          mintUrl: entry.mintUrl,
-          conditionId,
-          inputsByCollection,
           inputAssets: binding.inputAssets,
           resultProofs: restored,
           outputsByCollection,
@@ -2750,9 +2668,6 @@ export async function resumeCtfConsolidationOperation(
             {
               operationId: entry.operationId,
               custodyOperationId: binding.record.operation.operationId,
-              mintUrl: entry.mintUrl,
-              conditionId,
-              inputsByCollection,
               inputAssets: binding.inputAssets,
               resultProofs: restored,
               outputsByCollection,
@@ -2783,9 +2698,6 @@ export async function resumeCtfConsolidationOperation(
     {
       operationId: entry.operationId,
       custodyOperationId: binding.record.operation.operationId,
-      mintUrl: entry.mintUrl,
-      conditionId,
-      inputsByCollection,
       inputAssets: binding.inputAssets,
       resultProofs,
       outputsByCollection,
