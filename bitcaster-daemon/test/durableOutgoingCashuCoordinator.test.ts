@@ -71,6 +71,7 @@ import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { claimCustodyScopeLease } from '../src/profileFencing.ts'
 import {
   addAvailableProofs,
+  CustodyRepairRequiredError,
   advanceDaemonKeysetCounter,
   getProofOperation,
   readState,
@@ -2951,6 +2952,102 @@ test('market funding stores the head with its custody operation and rejects a st
   }
 })
 
+test('market funding that only funds outside custody could pay refuses before any effect', async () => {
+  const fixture = await createFixture({ scoreFundsOutsideCustody: true })
+  try {
+    const metadata = createMarketFundingDeliveryMetadata({
+      ...FUNDING_PRODUCT,
+      deliveryId: '11111111-1111-4111-8111-111111111111',
+      requestedAmount: '8000',
+    })
+    let mintCalls = 0
+    const wallet = fixture.scoreWallet(async () => {
+      mintCalls += 1
+      throw new Error('a refused funding must not swap')
+    })
+    const proofRowsBefore = await fixture.count('target_wallet_proofs')
+    // Custody holds 8 msat. The 16000 msat outside custody could pay the 8000 msat funding.
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeMarketFundingTransfer({
+          transferId: metadata.deliveryId,
+          amountMsat: 8_000,
+          mintUrl: MINT_URL,
+          wallet,
+          deliveryIntent: marketFundingDeliveryIntent({
+            accountSubject: metadata.accountSubject,
+            productBindingSha256: metadata.productBindingSha256,
+            tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+          }),
+          product: FUNDING_PRODUCT,
+          expectedPreviousTransferId: null,
+          outcomeCount: 8,
+          maxWalletDebitMsat: 8_000,
+          requireCredited: async () => {
+            throw new Error('initial funding has no predecessor')
+          },
+        }),
+      (error: unknown) =>
+        error instanceof CustodyRepairRequiredError && error.code === 'custody-repair-required',
+    )
+    assert.equal(mintCalls, 0)
+    assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 0)
+    assert.equal(await fixture.count('custody_active_work'), 0)
+    assert.equal(await fixture.count('custody_operations'), 0)
+    assert.equal(await fixture.count('target_proof_operations'), 0)
+    assert.equal(await fixture.count('target_wallet_proofs'), proofRowsBefore)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('Score delivery that only funds outside custody could pay refuses before any effect', async () => {
+  const fixture = await createFixture({ scoreFundsOutsideCustody: true })
+  try {
+    const deliveryId = '66666666-6666-4666-8666-666666666666'
+    const metadata = createParticipationScoreDeliveryMetadata({
+      deliveryId,
+      accountSubject: 'subject-1',
+      mintUrl: MINT_URL,
+      requestedAmount: '8000',
+    })
+    let mintCalls = 0
+    const wallet = fixture.scoreWallet(async () => {
+      mintCalls += 1
+      throw new Error('a refused Score delivery must not swap')
+    })
+    const proofRowsBefore = await fixture.count('target_wallet_proofs')
+    await assert.rejects(
+      () =>
+        fixture.coordinator.executeParticipationScore({
+          transferId: deliveryId,
+          amountMsat: 8_000,
+          purchasedTotalEpoch: 3,
+          accountSubject: 'subject-1',
+          mintUrl: MINT_URL,
+          wallet,
+          deliveryIntent: participationScoreDeliveryIntent({
+            accountSubject: metadata.accountSubject,
+            productBindingSha256: metadata.productBindingSha256,
+            tokenBytesLimit: deriveDurableRecipientTokenAllowance(metadata),
+          }),
+          maxWalletDebitMsat: 8_000,
+        }),
+      (error: unknown) =>
+        error instanceof CustodyRepairRequiredError && error.code === 'custody-repair-required',
+    )
+    assert.equal(mintCalls, 0)
+    assert.equal(await fixture.count('daemon_outgoing_cashu_transfers'), 0)
+    assert.equal(await fixture.count('daemon_participation_score_delivery_pointers'), 0)
+    assert.equal(await fixture.count('custody_active_work'), 0)
+    assert.equal(await fixture.count('custody_operations'), 0)
+    assert.equal(await fixture.count('target_proof_operations'), 0)
+    assert.equal(await fixture.count('target_wallet_proofs'), proofRowsBefore)
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('native funding exact begin retry needs no new debit consent or mint swap', async () => {
   const fixture = await createFixture({ scoreFunds: true })
   try {
@@ -3217,6 +3314,8 @@ async function createFixture(
       outputs: Record<string, unknown[]>,
     ) => Promise<Record<string, Proof[]>>
     readonly scoreFunds?: boolean
+    /** The Score funds are only in the wallet table, as a released daemon left some proofs. */
+    readonly scoreFundsOutsideCustody?: boolean
   } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-outgoing-'))
@@ -3289,7 +3388,7 @@ async function createFixture(
     ),
   ])
   await addAvailableProofs(MINT_URL, [inputProof], { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
-  if (options.scoreFunds) {
+  if (options.scoreFunds || options.scoreFundsOutsideCustody) {
     await addAvailableProofs(MINT_URL, scoreInputProofs, {
       kind: 'sats',
       baseAsset: 'sat',
