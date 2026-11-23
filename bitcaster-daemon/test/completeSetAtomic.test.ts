@@ -14,6 +14,7 @@ import {
 import { bytesToHex } from '@noble/curves/utils.js'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { DatabaseSync } from 'node:sqlite'
 import test from 'node:test'
 import { COLLATERAL_COLLECTION } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
@@ -683,6 +684,34 @@ test('recovery skips a completed split without a read of its custody artifacts',
     // A completed split is final when custody shows its result as applied. Its saved
     // request, output plan and private material stay unread.
     assert.equal(artifactReads, 0)
+  } finally {
+    await f.close()
+  }
+})
+
+test('one fenced read checks every finished split of a recovery pass', async () => {
+  const f = await fixture({
+    tokens: [
+      [128, 1],
+      [128, 1],
+      [128, 1],
+    ],
+  })
+  try {
+    for (const id of ['first', 'second', 'third']) await f.split(100, id)
+    const prepare = DatabaseSync.prototype.prepare
+    let fenceReads = 0
+    DatabaseSync.prototype.prepare = function (this: DatabaseSync, sql: string) {
+      if (sql.includes('FROM custody_scope_state WHERE scope_id = ?')) fenceReads += 1
+      return prepare.call(this, sql)
+    } as typeof prepare
+    try {
+      assert.deepEqual(await recoverPreparedWalletSends(f.deps), { recovered: [], pending: [] })
+    } finally {
+      DatabaseSync.prototype.prepare = prepare
+    }
+    // The cost of a pass does not grow with the count of finished splits.
+    assert.equal(fenceReads, 1)
   } finally {
     await f.close()
   }
