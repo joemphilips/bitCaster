@@ -199,11 +199,6 @@ import { validateWalletActivityParams, validateWalletActivitySyncParams } from '
 import { deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk/durableCustody'
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
-  consolidateWalletProofs,
-  ProofConsolidationUnavailableError,
-  recoverWalletProofConsolidations,
-} from './walletProofConsolidation.ts'
-import {
   ConditionRetirementResultUnavailableError,
   resumeDaemonConditionRetirements,
   retireDaemonConditionInventory,
@@ -1140,34 +1135,6 @@ async function dispatchCommand(
         throw error
       }
     }
-    case 'wallet.consolidateProofs': {
-      const profile = await readProfile()
-      if (!profile) {
-        return { ok: false, error: 'daemon profile is not initialized' }
-      }
-      const secrets = await readSecrets()
-      if (!secrets) {
-        return { ok: false, error: 'daemon secrets are not initialized' }
-      }
-      if (!deps.getCustodyFence) {
-        return { ok: false, error: 'wallet proof consolidation requires custody authority' }
-      }
-      const getCustodyFence = deps.getCustodyFence
-      try {
-        return {
-          ok: true,
-          result: await consolidateWalletProofs({
-            secrets,
-            mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
-            dependencies: deps,
-          }),
-        }
-      } catch (error) {
-        if (error instanceof ProofConsolidationUnavailableError)
-          return { ok: false, code: error.code, error: error.message }
-        throw error
-      }
-    }
     case 'wallet.removePreview':
     case 'wallet.removePosition': {
       const profile = await readProfile()
@@ -1309,11 +1276,6 @@ async function dispatchCommand(
           : undefined,
       )
       const outgoingStatus = outgoingCashuRecoveryStatus(outgoing)
-      const consolidation = await recoverWalletProofConsolidations({
-        secrets,
-        mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
-        dependencies: deps,
-      })
       const positionClaims = await recoverDaemonPositionClaims({
         profile,
         secrets,
@@ -1337,7 +1299,6 @@ async function dispatchCommand(
         receives,
         imports,
         outgoing,
-        consolidation,
         positionClaims,
         ...(invoiceRecovery === undefined ? [] : [invoiceRecovery.recovery]),
         ...(paymentRecovery === undefined ? [] : [paymentRecovery.recovery]),
@@ -1366,7 +1327,6 @@ async function dispatchCommand(
           imports.pendingCount > 0 ||
           imports.hasMore ||
           outgoingStatus.blockingPending ||
-          consolidation.pending.length > 0 ||
           positionClaims.pending.length > 0 ||
           (invoiceRecovery?.blockingPending ?? false) ||
           (paymentRecovery?.blockingPending ?? false),
@@ -1379,7 +1339,6 @@ async function dispatchCommand(
           imports.pendingCount > 0 ||
           imports.hasMore ||
           outgoingStatus.retryPending ||
-          consolidation.pending.length > 0 ||
           positionClaims.pending.length > 0 ||
           (invoiceRecovery?.retryPending ?? false) ||
           (paymentRecovery?.retryPending ?? false),
@@ -2490,7 +2449,6 @@ function requiresReadyCustody(method: DaemonCommand['method']): boolean {
     method === 'wallet.invoice.replace' ||
     method === 'wallet.splitCompleteSet' ||
     method === 'wallet.consolidateMarket' ||
-    method === 'wallet.consolidateProofs' ||
     method === 'wallet.retireCondition' ||
     method === 'wallet.claimPosition' ||
     method === 'wallet.removePreview' ||
@@ -3811,7 +3769,6 @@ function requiresApplicationSigner(method: DaemonCommand['method']): boolean {
     case 'wallet.reclaim':
     case 'wallet.splitCompleteSet':
     case 'wallet.consolidateMarket':
-    case 'wallet.consolidateProofs':
     case 'wallet.retireCondition':
     case 'wallet.claimPosition':
     case 'wallet.removePreview':

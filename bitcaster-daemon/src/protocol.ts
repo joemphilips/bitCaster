@@ -294,7 +294,6 @@ export type DaemonCommand =
   | { method: 'wallet.reclaim'; params: { transferId: string } }
   | { method: 'wallet.splitCompleteSet'; params: WalletSplitCompleteSetParams }
   | { method: 'wallet.consolidateMarket'; params: WalletConsolidateMarketParams }
-  | { method: 'wallet.consolidateProofs'; params?: undefined }
   | { method: 'wallet.retireCondition'; params: WalletRetireConditionParams }
   | { method: 'wallet.claimPosition'; params: WalletClaimPositionParams }
   | { method: 'wallet.removePreview'; params: WalletClaimPositionParams }

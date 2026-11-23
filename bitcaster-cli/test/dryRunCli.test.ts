@@ -409,10 +409,6 @@ const SUPPORTED: Record<string, { args: Args; method: string }> = {
     args: () => ['wallet', 'split', CONDITION, '1'],
     method: 'wallet.splitCompleteSet',
   },
-  'wallet consolidate-proofs': {
-    args: () => ['wallet', 'consolidate-proofs'],
-    method: 'wallet.consolidateProofs',
-  },
   'wallet consolidate': {
     args: () => ['wallet', 'consolidate', MARKET],
     method: 'wallet.consolidateMarket',

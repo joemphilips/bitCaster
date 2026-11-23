@@ -383,10 +383,6 @@
       "types": "./dist/ctfRangeCollateralSourceOperation.d.ts",
       "import": "./dist/ctfRangeCollateralSourceOperation.js"
     },
-    "./proofConsolidationOperation": {
-      "types": "./dist/proofConsolidationOperation.d.ts",
-      "import": "./dist/proofConsolidationOperation.js"
-    },
     "./ctfRangeSourceRecovery": {
       "types": "./dist/ctfRangeSourceRecovery.d.ts",
       "import": "./dist/ctfRangeSourceRecovery.js"

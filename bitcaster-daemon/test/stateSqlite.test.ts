@@ -33,11 +33,9 @@ import {
   AVAILABLE_WALLET_PROOF_AMOUNT_SAMPLES_FOR_RECEIVE_SQL,
   emptyDaemonState,
   ensureState,
-  markProofOperationCompletedFenced,
   prepareProofOperationWithExactReservation,
   readSpendableWalletProofsFenced,
   readAvailableWalletProofAmountSamplesForReceive,
-  readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   readDaemonKeysetCounters,
   readDaemonCounterSnapshots,
@@ -63,8 +61,6 @@ const CONCURRENT_KEYSET_ID = `01${'77'.repeat(32)}`
 const SHARED_KEYSET_ID = `01${'88'.repeat(32)}`
 const LAST_USABLE_KEYSET_ID = `01${'99'.repeat(32)}`
 const PAGE_KEYSET_ID = `01${'aa'.repeat(32)}`
-const REGULAR_KEYSET_ID = `01${'bb'.repeat(32)}`
-const CONDITIONAL_KEYSET_ID = `01${'cc'.repeat(32)}`
 
 test('target-v1 state round-trips through retained typed SQLite rows and artifacts', async () => {
   await withProfile(async (home) => {
@@ -1073,20 +1069,6 @@ test('wallet proof selection pages and exact reservation stay row-scoped', async
       persisted?.wallet.proofs.filter(({ state: proofState }) => proofState === 'reserved').length,
       2,
     )
-    await claimCustodyScopeLease(home, {
-      scopeId: fence.scopeId,
-      incarnationId: 'state-row-scoped-successor',
-      observedAtMs: fence.leaseExpiresAtMs,
-    })
-    await assert.rejects(
-      markProofOperationCompletedFenced(
-        'page-reservation',
-        { send: [] },
-        { fence, observedAtMs: observedAtMs + 1 },
-      ),
-      /stale or expired authority/,
-    )
-    assert.equal((await readState())?.proofOperations['page-reservation']?.state, 'prepared')
   })
 })
 
@@ -1122,61 +1104,6 @@ test('available wallet proof reads require the exact base asset', async () => {
 
     // The reader does not see the row, so it is neither spendable nor outside custody.
     assert.deepEqual(spendable, { proofs: [], custodyRepairAmount: 0 })
-  })
-})
-
-test('available proof groups page without loading proof bodies', async () => {
-  await withProfile(async () => {
-    const state = emptyDaemonState()
-    for (let index = 0; index < 10_000; index += 1) {
-      state.wallet.proofs.push({
-        proof: {
-          id: REGULAR_KEYSET_ID,
-          amount: 1,
-          secret: `regular-secret-${index}`,
-          C: `regular-signature-${index}`,
-        },
-        mintUrl: 'http://localhost:8086',
-        state: 'available',
-        asset: { kind: 'sats', baseAsset: 'sat', unit: 'sat' },
-        createdAt: '2026-01-01T00:00:00.000Z',
-        updatedAt: '2026-01-01T00:00:00.000Z',
-      })
-    }
-    state.wallet.proofs.push({
-      proof: {
-        id: CONDITIONAL_KEYSET_ID,
-        amount: 4,
-        secret: 'conditional-secret',
-        C: 'conditional-signature',
-      },
-      mintUrl: 'http://localhost:8086',
-      state: 'available',
-      asset: {
-        kind: 'Outcome',
-        conditionId: 'condition-1',
-        outcomeSetId: 'YES',
-        baseAsset: 'sat',
-        unit: 'msat',
-      },
-      createdAt: '2026-01-01T00:00:00.000Z',
-      updatedAt: '2026-01-01T00:00:00.000Z',
-    })
-    await writeState(state)
-
-    const first = await readAvailableWalletProofGroupPage({ limit: 1 })
-    assert.equal(first.groups.length, 1)
-    assert.ok(first.nextCursor)
-    const second = await readAvailableWalletProofGroupPage({
-      limit: 1,
-      after: first.nextCursor ?? undefined,
-    })
-    assert.equal(second.groups.length, 1)
-    assert.equal(second.nextCursor, null)
-    assert.deepEqual(
-      [...first.groups, ...second.groups].map(({ proofCount }) => proofCount).sort((a, b) => a - b),
-      [1, 10_000],
-    )
   })
 })
 

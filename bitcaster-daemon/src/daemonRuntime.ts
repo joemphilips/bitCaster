@@ -87,7 +87,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
   const { readPublicMintInfo } = await import('@bitcaster-market/client-sdk/mintMetadata')
   const { createNativeWalletPaymentRecoveryPager } =
     await import('./nativeWalletPaymentRecovery.ts')
-  const { recoverWalletProofConsolidations } = await import('./walletProofConsolidation.ts')
   const { recoverDaemonPositionClaims } = await import('./nativePositionClaim.ts')
   const {
     composeStartupCustodyRecovery,
@@ -451,10 +450,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       })
     rangeRecoveryLoop?.accept(initialRangeRecovery)
     const recoverNonRetirementCustody = async () => {
-      const consolidationRecovery = await recoverWalletProofConsolidations({
-        secrets,
-        mutation: () => ({ fence: currentFence(), observedAtMs: Date.now() }),
-      })
       const walletRecovery = await recoverPreparedWalletSends({
         getCustodyFence: currentFence,
       })
@@ -486,7 +481,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
       const paymentRecoveryPage = await nativeWalletPaymentOps.recoverPage()
       const accountRecoveryPending = !signerEnabled && (await hasUnfinishedDaemonAccountWork())
       const recovery = composeStartupCustodyRecovery([
-        consolidationRecovery,
         walletRecovery,
         receiveRecovery,
         importRecovery,
@@ -517,7 +511,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         paymentRecoveryPage.hasMore
       const blockingPending =
         accountRecoveryPending ||
-        consolidationRecovery.pending.length > 0 ||
         walletRecovery.pending.length > 0 ||
         receiveRecovery.pending.length > 0 ||
         receiveRecovery.pendingCount > 0 ||
@@ -535,7 +528,6 @@ export async function runDaemonRuntime(options: DaemonRuntimeOptions = {}): Prom
         invoiceHasMore: invoiceRecovery.hasMore,
         paymentHasMore: paymentRecoveryPage.hasMore,
         pending:
-          consolidationRecovery.pending.length > 0 ||
           walletRecovery.pending.length > 0 ||
           receiveRecovery.pending.length > 0 ||
           receiveRecovery.pendingCount > 0 ||
