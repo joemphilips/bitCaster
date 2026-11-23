@@ -204,6 +204,7 @@ import { deriveDurableCustodyWalletId } from '@bitcaster-market/client-sdk/durab
 import type { CustodyScopeFence } from './profileFencing.ts'
 import {
   consolidateWalletProofs,
+  ProofConsolidationUnavailableError,
   recoverWalletProofConsolidations,
 } from './walletProofConsolidation.ts'
 import {
@@ -1156,13 +1157,19 @@ async function dispatchCommand(
         return { ok: false, error: 'wallet proof consolidation requires custody authority' }
       }
       const getCustodyFence = deps.getCustodyFence
-      return {
-        ok: true,
-        result: await consolidateWalletProofs({
-          secrets,
-          mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
-          dependencies: deps,
-        }),
+      try {
+        return {
+          ok: true,
+          result: await consolidateWalletProofs({
+            secrets,
+            mutation: () => ({ fence: getCustodyFence(), observedAtMs: Date.now() }),
+            dependencies: deps,
+          }),
+        }
+      } catch (error) {
+        if (error instanceof ProofConsolidationUnavailableError)
+          return { ok: false, code: error.code, error: error.message }
+        throw error
       }
     }
     case 'wallet.removePreview':

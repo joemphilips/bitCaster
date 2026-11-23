@@ -1961,7 +1961,9 @@ function registerWalletCommand(program: Command): void {
   registerWalletSplitCommand(wallet, 'split')
   wallet
     .command('consolidate-proofs')
-    .description('Consolidate available Cashu proofs through durable bounded mint operations.')
+    .description(
+      'Consolidate available Cashu proofs that custody does not hold, through durable bounded mint operations.',
+    )
     .addHelpText('after', '\nExample:\n  bitcaster-cli wallet consolidate-proofs')
     .action(async () => {
       if (globalDryRun) {

@@ -49,6 +49,7 @@ import {
   commitDaemonCounterTranscript,
   DaemonCounterSnapshotConflictError,
   assertExactProofReservationFromDatabase,
+  hasCustodyRowForWalletProofsFromDatabase,
   readAvailableWalletProofGroupPage,
   readAvailableWalletProofPage,
   getProofOperation,
@@ -117,6 +118,18 @@ export interface WalletProofConsolidationInput {
     readonly observeConsolidationPrepared?: (
       draft: Readonly<DurableCustodyProofOperationInput>,
     ) => Promise<void>
+  }
+}
+
+/**
+ * A round would spend a proof that custody holds. This command writes its
+ * result only to the wallet table, so custody would keep the spent proof as
+ * unspent. The round refuses before any effect.
+ */
+export class ProofConsolidationUnavailableError extends Error {
+  readonly code = 'proof-consolidation-unavailable'
+  constructor() {
+    super('proof consolidation does not yet record its result in custody')
   }
 }
 
@@ -215,6 +228,8 @@ async function drainWalletProofGroup(
     try {
       outcome = await consolidateOneRound(roundInput)
     } catch (error) {
+      // The refused round has no effect. Earlier rounds of this command stay done.
+      if (error instanceof ProofConsolidationUnavailableError) throw error
       const operationId = manualRoundOperationId(roundInput)
       scan.failure = {
         operationId: (await getProofOperation(operationId)) === null ? null : operationId,
@@ -375,6 +390,8 @@ async function prepareManualRound(
   })
   const proofs = page.proofs.map(({ proof }) => toProof(proof))
   if (proofs.length < 2) return { kind: 'not-needed' }
+  // Each candidate is checked before any mint request, so the plan cannot choose a custody proof.
+  if (await hasCustodyHeldProof(input, proofs)) throw new ProofConsolidationUnavailableError()
   const wallet = await walletFor(
     input.group,
     input.secrets,
@@ -456,6 +473,15 @@ async function executeManualRound(
             validateSavedManualRound(database, input, current)
             return { entry: current, recover: true }
           }
+          // Custody can admit an input after the plan read. Check again before the first write.
+          if (
+            hasCustodyRowForWalletProofsFromDatabase(database, {
+              mintUrl: input.group.mintUrl,
+              unit: input.group.asset.unit,
+              proofs: prepared.exactInputs,
+            })
+          )
+            throw new ProofConsolidationUnavailableError()
           commitDaemonCounterTranscript(
             database,
             commitMutation.fence.scopeId,
@@ -487,6 +513,21 @@ async function executeManualRound(
     return manualRoundOutcome(input.group, prepared, operationId, proofs.length)
   }
   throw new Error('manual consolidation preparation attempts exhausted')
+}
+
+function hasCustodyHeldProof(input: ConsolidateRoundInput, proofs: readonly Proof[]) {
+  const mutation = input.mutation()
+  return withDurableCustodyFencedRead(
+    createDaemonStateSqliteSession(profileDir()),
+    mutation.fence,
+    mutation.observedAtMs,
+    (database) =>
+      hasCustodyRowForWalletProofsFromDatabase(database, {
+        mintUrl: input.group.mintUrl,
+        unit: input.group.asset.unit,
+        proofs,
+      }),
+  )
 }
 
 async function readSavedManualRound(

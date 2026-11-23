@@ -27,6 +27,9 @@ import {
   recoverWalletProofConsolidations,
 } from '../src/walletProofConsolidation.ts'
 import { canonicalTestKeysetId } from './support/canonicalKeysetId.ts'
+import { createCustodyProofSqliteRow } from '../src/custodyProofSqliteRow.ts'
+import { DurableCustodySqliteStore } from '../src/durableCustodySqliteStore.ts'
+import { withDurableCustodyUnitOfWork } from '../src/durableCustodyUnitOfWork.ts'
 
 const MINT_URL = 'https://mint.example'
 const SEED = '11'.repeat(64)
@@ -99,6 +102,108 @@ test('manual proof consolidation journals separate regular and CTF groups', asyn
     )
   })
 })
+
+/** The fund rows that a refused consolidation must not change. */
+function fundRows(directory: string) {
+  return withDaemonStateSqliteTransaction(directory, (database) =>
+    Object.fromEntries(
+      [
+        'target_wallet_proofs',
+        'target_keyset_counters',
+        'custody_keyset_counters',
+        'target_proof_operations',
+        'custody_proofs',
+        'custody_operations',
+        'custody_proof_reservations',
+      ].map((table) => [
+        table,
+        database
+          .prepare(`SELECT * FROM ${table}`)
+          .all()
+          .map((row) => JSON.stringify(row))
+          .sort(),
+      ]),
+    ),
+  )
+}
+
+for (const custodyHeld of [true, false])
+  test(
+    custodyHeld
+      ? 'consolidation refuses a round with an input that custody holds before any effect'
+      : 'consolidation of proofs outside custody still runs and writes no custody row',
+    async () => {
+      await withProfile(async (directory) => {
+        await writeRegularProofs()
+        const { fence } = await testFence(directory, `custody-held-${custodyHeld}`)
+        if (custodyHeld) {
+          // Custody holds one input, as for a proof of a receive.
+          await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
+            new DurableCustodySqliteStore(database).putProofBatchCas([
+              {
+                proof: createCustodyProofSqliteRow({
+                  scopeId: fence.scopeId,
+                  normalizedMint: MINT_URL,
+                  unit: 'sat',
+                  proof: {
+                    id: REGULAR_OLD_KEYSET_ID,
+                    amount: 1,
+                    secret: 'regular-0',
+                    C: 'C-regular-0',
+                    dleq: null,
+                    p2pkE: null,
+                    witness: null,
+                  },
+                  baseAsset: 'sat',
+                  conditionId: null,
+                  outcomeSetId: null,
+                  productBinding: null,
+                  signatureVerified: true,
+                  dleqState: 'not-present',
+                  nut07State: 'UNSPENT',
+                  selectability: 'selectable',
+                  storageClass: 'terminal-replay-retained',
+                  reservationOperationId: null,
+                  revision: 0,
+                  nowMs: Date.now(),
+                }),
+                expectedRevision: null,
+              },
+            ])
+          })
+        }
+        const before = await fundRows(directory)
+        const fake = fakeDependencies()
+        const response = await dispatch(
+          { method: 'wallet.consolidateProofs' },
+          { ...fake.dependencies, getCustodyFence: () => fence },
+        )
+        const after = await fundRows(directory)
+        if (!custodyHeld) {
+          assert.equal(response.ok, true)
+          assert.equal((response.result as { status?: unknown }).status, 'completed')
+          assert.ok(fake.calls.complete > 0)
+          assert.deepEqual(after.custody_proofs, before.custody_proofs)
+          assert.deepEqual(after.custody_operations, [])
+          return
+        }
+        const custodyInput = JSON.parse(after.custody_proofs![0]!) as Record<string, unknown>
+        assert.equal(custodyInput.nut07_state, 'UNSPENT')
+        assert.ok(
+          after.target_wallet_proofs!.some((row) => JSON.parse(row).secret === 'regular-0'),
+          'a swap spent the custody input and wrote wallet-only outputs',
+        )
+        assert.deepEqual(response, {
+          ok: false,
+          code: 'proof-consolidation-unavailable',
+          error: 'proof consolidation does not yet record its result in custody',
+        })
+        assert.equal(fake.calls.prepare, 0)
+        assert.equal(fake.calls.complete, 0)
+        assert.deepEqual(after, before)
+      })
+    },
+  )
 
 test('inactive conditional keysets are reported without an invalid cross-keyset swap', async () => {
   await withProfile(async (directory) => {

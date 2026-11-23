@@ -9,6 +9,7 @@ import {
 import type { CtfRangeOrderCounterStarts } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   deriveDurableCustodyArtifactFingerprint,
+  deriveDurableCustodyProofId,
   deriveDurableCustodyWalletId,
   deriveDurableCustodyScopeId,
 } from '@bitcaster-market/client-sdk/durableCustody'
@@ -1402,6 +1403,36 @@ export async function readSpendableWalletProofsFenced(input: {
     input.mutation.fence,
     input.mutation.observedAtMs,
     (database) => readSpendableWalletProofsFromDatabase(database, input.mintUrl, asset),
+  )
+}
+
+/**
+ * Whether custody has a row, in any state, for one of these wallet proofs. A
+ * command that does not record its result in custody must not spend such a
+ * proof: custody would keep the spent proof as unspent.
+ */
+export function hasCustodyRowForWalletProofsFromDatabase(
+  database: DatabaseSync,
+  input: {
+    readonly mintUrl: string
+    readonly unit: 'sat' | 'msat'
+    readonly proofs: readonly Pick<CashuProofRecord, 'id' | 'secret'>[]
+  },
+): boolean {
+  const scopeId = readScopeId(database)
+  const row = database.prepare('SELECT 1 FROM custody_proofs WHERE scope_id = ? AND proof_id = ?')
+  return input.proofs.some(
+    ({ id, secret }) =>
+      row.get(
+        scopeId,
+        deriveDurableCustodyProofId({
+          scopeId,
+          normalizedMint: input.mintUrl,
+          unit: input.unit,
+          keysetId: requireText(id, 'wallet proof keyset'),
+          secret,
+        }),
+      ) !== undefined,
   )
 }
 
