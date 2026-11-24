@@ -1,6 +1,6 @@
 import type { Filter } from 'nostr-tools/filter'
 import { validateEvent, verifyEvent, type Event, type EventTemplate } from 'nostr-tools/pure'
-import { normalizeNostrRelayUrls } from './nostrRelays.ts'
+import { normalizeNostrRelayUrl, normalizeNostrRelayUrls } from './nostrRelays.ts'
 
 export interface NostrPublicProfile {
   readonly pubkey: string
@@ -25,6 +25,16 @@ export type NostrProfileQuery = (
   filter: Filter,
   onEvent: (event: Event) => void,
 ) => Promise<void>
+
+/** Send one REQ with every filter and settle at EOSE. A throw from `onEvent` rejects the read. */
+export type NostrProfileFiltersQuery = (
+  relayUrl: string,
+  filters: readonly Filter[],
+  onEvent: (event: Event) => void,
+) => Promise<void>
+
+/** A relay list (NIP-65, kind 10002) adds at most this many write relays to a profile read. */
+export const MAX_NOSTR_PROFILE_WRITE_RELAYS = 4
 
 export const MAX_NOSTR_PROFILE_CONTENT_BYTES = 65_536
 export const MAX_NOSTR_PROFILE_TRANSPORT_BYTES = 131_072
@@ -177,14 +187,23 @@ export async function readNostrProfile(
   relayUrls: readonly string[],
   query: NostrProfileQuery,
 ): Promise<NostrProfileReadResult> {
-  const { latest, completedRelayCount, failedRelayCount } = await queryProfileEvents(
+  return profileReadResult(
     publicKeyHex,
-    relayUrls,
-    query,
-    MAX_NOSTR_PROFILE_CONTENT_BYTES,
+    await queryProfileEvents(publicKeyHex, relayUrls, query, MAX_NOSTR_PROFILE_CONTENT_BYTES),
   )
-  const profile = decodeNostrProfileEvent(latest, publicKeyHex)
-  return { status: profile ? 'found' : 'not-found', profile, completedRelayCount, failedRelayCount }
+}
+
+function profileReadResult(
+  publicKeyHex: string,
+  read: { latest: Event | null; completedRelayCount: number; failedRelayCount: number },
+): NostrProfileReadResult {
+  const profile = decodeNostrProfileEvent(read.latest, publicKeyHex)
+  return {
+    status: profile ? 'found' : 'not-found',
+    profile,
+    completedRelayCount: read.completedRelayCount,
+    failedRelayCount: read.failedRelayCount,
+  }
 }
 
 async function queryProfileEvents(
@@ -208,6 +227,112 @@ async function queryProfileEvents(
 }
 
 /**
+ * The write relays of a relay list, in tag order. An `r` tag without a marker
+ * or with the `write` marker names a write relay. Only a wss URL that obeys the
+ * relay URL rules counts, so a published list cannot open a loopback socket.
+ */
+function writeRelayUrls(relayList: Event): string[] {
+  const urls: string[] = []
+  for (const [name, value, marker] of relayList.tags) {
+    if (name !== 'r' || value === undefined) continue
+    if (marker !== undefined && marker !== 'write') continue
+    let url: string
+    try {
+      url = normalizeNostrRelayUrl(value)
+    } catch {
+      continue
+    }
+    if (!url.startsWith('wss://') || urls.includes(url)) continue
+    urls.push(url)
+    if (urls.length === MAX_NOSTR_PROFILE_WRITE_RELAYS) break
+  }
+  return urls
+}
+
+/**
+ * Read the profile as other Nostr clients do. The first step sends one REQ for
+ * the profile and the relay list to each selected relay and each index relay.
+ * The second step reads the profile from the write relays of the newest relay
+ * list that the first step did not read. Each step reads its relays in
+ * parallel. The first step needs one answered relay. An empty selection is an
+ * opt-out from relay traffic, so it also reads no index relay.
+ */
+async function queryProfileEventsWithRelayList(
+  publicKeyHex: string,
+  relayUrls: readonly string[],
+  indexRelayUrls: readonly string[],
+  query: NostrProfileFiltersQuery,
+  contentLimit: number,
+  eventLimit: number,
+): Promise<{ latest: Event | null; completedRelayCount: number; failedRelayCount: number }> {
+  if (normalizeNostrRelayUrls(relayUrls).length === 0)
+    throw new Error('Configure a Nostr relay before reading the signer profile.')
+  const firstRelays = normalizeNostrRelayUrls([...relayUrls, ...indexRelayUrls])
+  const profileFilter = { kinds: [0], authors: [publicKeyHex], limit: 1 }
+  const relayListFilter = { kinds: [10002], authors: [publicKeyHex], limit: 1 }
+  const newest: { profile: Event | null; relayList: Event | null } = {
+    profile: null,
+    relayList: null,
+  }
+  const acceptProfile = (value: unknown) => {
+    const event = verifiedProfileEvent(value, publicKeyHex, contentLimit, eventLimit)
+    if (event && (!newest.profile || compareNostrProfileEvents(event, newest.profile) > 0))
+      newest.profile = event
+    return event !== null
+  }
+  const first = await readNostrAuthorRelays(
+    publicKeyHex,
+    firstRelays,
+    (url, receive) => query(url, [profileFilter, relayListFilter], receive),
+    (value) => {
+      if (acceptProfile(value)) return
+      const event = verifyNostrAuthorEvent(
+        value,
+        publicKeyHex,
+        10002,
+        MAX_NOSTR_PROFILE_CONTENT_BYTES,
+        MAX_NOSTR_PROFILE_EVENT_BYTES,
+      )
+      if (event && (!newest.relayList || compareNostrProfileEvents(event, newest.relayList) > 0))
+        newest.relayList = event
+    },
+  )
+  const writeRelays = newest.relayList
+    ? writeRelayUrls(newest.relayList).filter((url) => !firstRelays.includes(url))
+    : []
+  const second = await countAuthorRelayReads(
+    writeRelays,
+    (url, receive) => query(url, [profileFilter], receive),
+    acceptProfile,
+  )
+  return {
+    latest: newest.profile,
+    completedRelayCount: first.completedRelayCount + second.completedRelayCount,
+    failedRelayCount: first.failedRelayCount + second.failedRelayCount,
+  }
+}
+
+/** Read the signer profile from the selected relays, the index relays and the user's relay list. */
+export async function readNostrProfileWithRelayList(
+  publicKeyHex: string,
+  relayUrls: readonly string[],
+  indexRelayUrls: readonly string[],
+  query: NostrProfileFiltersQuery,
+): Promise<NostrProfileReadResult> {
+  return profileReadResult(
+    publicKeyHex,
+    await queryProfileEventsWithRelayList(
+      publicKeyHex,
+      relayUrls,
+      indexRelayUrls,
+      query,
+      MAX_NOSTR_PROFILE_CONTENT_BYTES,
+      MAX_NOSTR_PROFILE_EVENT_BYTES,
+    ),
+  )
+}
+
+/**
  * Read one author from each selected relay. Events that a relay delivers after
  * its query settles are ignored. At least one relay must complete.
  */
@@ -221,6 +346,18 @@ export async function readNostrAuthorRelays(
   const relays = normalizeNostrRelayUrls(relayUrls)
   if (relays.length === 0)
     throw new Error('Configure a Nostr relay before reading the signer profile.')
+  const counts = await countAuthorRelayReads(relays, read, accept)
+  if (counts.completedRelayCount === 0)
+    throw new Error('Nostr profile read failed. Check the configured relays and retry.')
+  return counts
+}
+
+/** Read each relay in parallel and count the reads that completed and failed. */
+async function countAuthorRelayReads(
+  relays: readonly string[],
+  read: (url: string, receive: (value: Event) => void) => Promise<void>,
+  accept: (value: unknown) => void,
+): Promise<{ completedRelayCount: number; failedRelayCount: number }> {
   let completedRelayCount = 0
   let failedRelayCount = 0
   await Promise.all(
@@ -238,8 +375,6 @@ export async function readNostrAuthorRelays(
       }
     }),
   )
-  if (completedRelayCount === 0)
-    throw new Error('Nostr profile read failed. Check the configured relays and retry.')
   return { completedRelayCount, failedRelayCount }
 }
 
@@ -256,8 +391,31 @@ export interface NostrProfileEditSnapshot {
   /** The signed content is the edit authority. Metadata is only a display projection. */
   readonly event: Event | null
   readonly metadata: Record<string, unknown> | null
+  /**
+   * `selected-relays`: the read covered only the selected relays. An edit then
+   * needs every selected relay. `relay-list`: the read also covered the index
+   * relays and the user's write relays, as other Nostr clients read. An edit
+   * then needs one answered relay.
+   */
+  readonly readScope: 'selected-relays' | 'relay-list'
   readonly completedRelayCount: number
   readonly failedRelayCount: number
+}
+
+function editSnapshot(
+  read: { latest: Event | null; completedRelayCount: number; failedRelayCount: number },
+  readScope: NostrProfileEditSnapshot['readScope'],
+): NostrProfileEditSnapshot {
+  const event = read.latest
+  const metadata = objectMetadata(event)
+  return {
+    status: event ? (metadata ? 'usable' : 'unusable') : 'absent',
+    event,
+    metadata,
+    readScope,
+    completedRelayCount: read.completedRelayCount,
+    failedRelayCount: read.failedRelayCount,
+  }
 }
 
 export async function readNostrProfileEditSnapshot(
@@ -265,25 +423,32 @@ export async function readNostrProfileEditSnapshot(
   relayUrls: readonly string[],
   query: NostrProfileQuery,
 ): Promise<NostrProfileEditSnapshot> {
-  const {
-    latest: event,
-    completedRelayCount,
-    failedRelayCount,
-  } = await queryProfileEvents(
+  const read = await queryProfileEvents(
     publicKeyHex,
     relayUrls,
     query,
     MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
     MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
   )
-  const metadata = objectMetadata(event)
-  return {
-    status: event ? (metadata ? 'usable' : 'unusable') : 'absent',
-    event,
-    metadata,
-    completedRelayCount,
-    failedRelayCount,
-  }
+  return editSnapshot(read, 'selected-relays')
+}
+
+/** The edit read of {@link readNostrProfileWithRelayList}. */
+export async function readNostrProfileEditSnapshotWithRelayList(
+  publicKeyHex: string,
+  relayUrls: readonly string[],
+  indexRelayUrls: readonly string[],
+  query: NostrProfileFiltersQuery,
+): Promise<NostrProfileEditSnapshot> {
+  const read = await queryProfileEventsWithRelayList(
+    publicKeyHex,
+    relayUrls,
+    indexRelayUrls,
+    query,
+    MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
+    MAX_NOSTR_PROFILE_TRANSPORT_BYTES,
+  )
+  return editSnapshot(read, 'relay-list')
 }
 
 /** Validate retained public records on every storage read. */
@@ -298,7 +463,14 @@ export function selectNostrProfileEditBase(
   snapshot: NostrProfileEditSnapshot,
   retained: unknown | null,
 ): Event | null {
-  if (snapshot.completedRelayCount < 1 || snapshot.failedRelayCount !== 0)
+  // A new profile replaces the old one completely, and a relay that did not
+  // answer can hold a profile. A read of only the selected relays thus needs
+  // every relay. A relay-list read needs one answered relay, as other Nostr
+  // clients do. Its consumer warns when no relay returned a profile.
+  if (
+    snapshot.completedRelayCount < 1 ||
+    (snapshot.readScope === 'selected-relays' && snapshot.failedRelayCount !== 0)
+  )
     throw new Error('Nostr profile edit requires completed reads from all selected relays.')
   const saved = retained === null ? null : decodeNostrProfileEditEvent(retained, publicKeyHex)
   if (retained !== null && !saved) throw new Error('Retained Nostr profile edit base is invalid.')

@@ -1,5 +1,6 @@
 import {
   DEFAULT_PUBLIC_NOSTR_RELAYS,
+  NOSTR_PROFILE_INDEX_RELAY,
   normalizeNostrRelayUrl,
   selectNostrRelayUrls,
 } from "@bitcaster/client-sdk/nostrRelays";
@@ -18,6 +19,14 @@ export const DEFAULT_NOSTR_RELAYS = selectNostrRelayUrls(
         .filter(Boolean),
   import.meta.env.PROD ? DEFAULT_PUBLIC_NOSTR_RELAYS : LOCAL_NOSTR_RELAYS,
 );
+
+/**
+ * The signer profile read also reads these relays. A development build uses
+ * only local relays, so it reads no public index relay.
+ */
+export const PROFILE_INDEX_NOSTR_RELAYS: readonly string[] = import.meta.env.PROD
+  ? [NOSTR_PROFILE_INDEX_RELAY]
+  : [];
 
 export function defaultRelayConfigs(): RelayConfig[] {
   return DEFAULT_NOSTR_RELAYS.map((url) => ({ url, connectionStatus: "disconnected" }));

@@ -625,7 +625,7 @@
     "notificationsBlocked": "Notifications are blocked in your browser settings.",
     "notificationsUnsupported": "Your browser does not support notifications.",
     "profileIndexer": "Profile indexer",
-    "profileIndexerDesc": "Profile pages show follower counts and the first activity date from the Primal indexer.",
+    "profileIndexerDesc": "Profile pages show follower counts and the first activity date from the Primal indexer, and your profile also comes from an index relay.",
     "profileIndexerHelp": "What the indexer sees",
     "profileIndexerHelpUrl": "https://bitcasterdoc.com/user-guide/core-concepts/resolution/#check-the-oracle-profile",
     "pageLoading": "Loading Settings…",
@@ -652,6 +652,7 @@
     },
     "profileEditTitle": "Edit public profile",
     "profileEditHint": "Edit your name, description, and picture URL. Other metadata stays unchanged.",
+    "profileEditRelayWarning": "Some relays did not answer. If you have a profile on another relay, saving replaces it.",
     "profileEditFields": {
       "name": "Name",
       "about": "Description",

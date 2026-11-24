@@ -320,6 +320,8 @@ describe("fetchAndStoreNostrProfile", () => {
   let beforeReply: (() => void) | undefined;
   let failRead = false;
   let unreachableRelay: string | undefined;
+  // A relay listed here answers with its own events of the requested kinds.
+  let relayEvents: Record<string, NostrEvent[]> = {};
   const cached = {
     pubkey: signed.pubkey,
     displayName: "Cached User",
@@ -335,6 +337,7 @@ describe("fetchAndStoreNostrProfile", () => {
     beforeReply = undefined;
     failRead = false;
     unreachableRelay = undefined;
+    relayEvents = {};
     mocks.settingsState.nostrSignerMode = "nip07";
     mocks.settingsState.nsecSecret = null;
     mocks.settingsState.relays = [{ url: "wss://relay.example" }];
@@ -347,7 +350,7 @@ describe("fetchAndStoreNostrProfile", () => {
       onclose: (() => void) | null = null;
       onerror: (() => void) | null = null;
       onmessage: ((message: MessageEvent) => void) | null = null;
-      constructor(url: string) {
+      constructor(readonly url: string) {
         queueMicrotask(() => {
           if (failRead || url === unreachableRelay) {
             this.onerror?.();
@@ -362,9 +365,11 @@ describe("fetchAndStoreNostrProfile", () => {
         if (frame[0] !== "REQ") return;
         queueMicrotask(() => {
           beforeReply?.();
-          if (received)
+          const kinds = (frame.slice(2) as { kinds: number[] }[]).flatMap((filter) => filter.kinds);
+          const events = relayEvents[this.url] ?? (received ? [received] : []);
+          for (const event of events.filter((stored) => kinds.includes(stored.kind)))
             this.onmessage?.(
-              new MessageEvent("message", { data: JSON.stringify(["EVENT", frame[1], received]) }),
+              new MessageEvent("message", { data: JSON.stringify(["EVENT", frame[1], event]) }),
             );
           this.onmessage?.(
             new MessageEvent("message", { data: JSON.stringify(["EOSE", frame[1]]) }),
@@ -405,6 +410,26 @@ describe("fetchAndStoreNostrProfile", () => {
     received = signed;
     unreachableRelay = "wss://down.example";
     mocks.settingsState.relays = [{ url: "wss://relay.example" }, { url: unreachableRelay }];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(
+      expect.objectContaining({ displayName: "Signed user" }),
+      "found",
+    );
+  });
+
+  it("reports an absent profile when one relay fails and no answering relay has one", async () => {
+    unreachableRelay = "wss://down.example";
+    mocks.settingsState.relays = [{ url: "wss://relay.example" }, { url: unreachableRelay }];
+    await nostrModule.fetchAndStoreNostrProfile();
+    expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(null, "not-found");
+  });
+
+  it("shows a profile that only a write relay of the relay list holds", async () => {
+    const relayList = finalizeEvent(
+      { kind: 10002, created_at: 5, tags: [["r", "wss://outbox.example"]], content: "" },
+      key,
+    );
+    relayEvents = { "wss://relay.example": [relayList], "wss://outbox.example": [signed] };
     await nostrModule.fetchAndStoreNostrProfile();
     expect(mocks.settingsState.setProfile).toHaveBeenLastCalledWith(
       expect.objectContaining({ displayName: "Signed user" }),

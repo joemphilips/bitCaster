@@ -620,7 +620,7 @@
     "notificationsBlocked": "ブラウザーの設定で通知がブロックされています。",
     "notificationsUnsupported": "お使いのブラウザーは通知に対応していません。",
     "profileIndexer": "プロフィールインデクサー",
-    "profileIndexerDesc": "プロフィールページに、Primalのインデクサーから取得したフォロワー数と最初の活動日を表示します。",
+    "profileIndexerDesc": "プロフィールページに、Primalのインデクサーから取得したフォロワー数と最初の活動日を表示し、自分のプロフィールはインデックスリレーからも取得します。",
     "profileIndexerHelp": "インデクサーに伝わる情報",
     "profileIndexerHelpUrl": "https://bitcasterdoc.com/ja/user-guide/core-concepts/resolution/#オラクルのプロフィールを確認する",
     "pageLoading": "設定画面を読み込み中…",
@@ -647,6 +647,7 @@
     },
     "profileEditTitle": "公開プロフィールを編集",
     "profileEditHint": "名前、自己紹介、画像URLを編集します。その他のメタデータは保持されます。",
+    "profileEditRelayWarning": "一部のリレーが応答しませんでした。別のリレーにプロフィールがある場合、保存するとそのプロフィールは置き換わります。",
     "profileEditFields": {
       "name": "名前",
       "about": "自己紹介",

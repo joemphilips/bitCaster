@@ -337,19 +337,32 @@ describe("verified browser profile editing", () => {
     },
   );
 
-  it("refuses incomplete or unusable fresh reads before signing", async () => {
+  it("refuses unusable fresh metadata before signing", async () => {
     const signing = vi.spyOn(ndk.signer!, "sign");
-    for (const script of [
-      { closedReads: [relays[1]!] },
-      { event: finalizeEvent({ kind: 0, created_at: 99, tags: [], content: "{" }, key) },
-    ]) {
-      const io = transport(script);
-      await expect(
-        saveBrowserNostrProfileEdit({ name: "Draft" }, undefined, io),
-      ).rejects.toMatchObject({ code: "base-unavailable" });
-      expect(io.publications).toHaveLength(0);
-    }
+    const io = transport({
+      event: finalizeEvent({ kind: 0, created_at: 99, tags: [], content: "{" }, key),
+    });
+    await expect(
+      saveBrowserNostrProfileEdit({ name: "Draft" }, undefined, io),
+    ).rejects.toMatchObject({ code: "base-unavailable" });
+    expect(io.publications).toHaveLength(0);
     expect(signing).not.toHaveBeenCalled();
+  });
+
+  it("edits a found profile without a warning when another relay does not answer", async () => {
+    const view = await loadBrowserNostrProfileEdit(
+      undefined,
+      transport({ closedReads: [relays[1]!] }),
+    );
+    expect(view.fields.name).toBe("Alias");
+    expect(view.incompleteRead).toBe(false);
+    const saved = await saveBrowserNostrProfileEdit(
+      { about: "Edited" },
+      undefined,
+      transport({ closedReads: [relays[1]!] }),
+    );
+    expect(saved.status).toBe("saved");
+    expect(JSON.parse(saved.event.content)).toMatchObject({ name: "Old", about: "Edited" });
   });
 
   it.each(["cancel", "identity"] as const)(

@@ -11,6 +11,7 @@ describe("relay selection", () => {
     expect(module.defaultRelayConfigs()).toEqual([
       { url: "ws://localhost:7777", connectionStatus: "disconnected" },
     ]);
+    expect(module.PROFILE_INDEX_NOSTR_RELAYS).toEqual([]);
   });
 
   it("uses the curated public defaults in production", async () => {
@@ -19,6 +20,7 @@ describe("relay selection", () => {
     const module = await import("../relayDefaults");
     expect(module.DEFAULT_NOSTR_RELAYS).toEqual([...module.KNOWN_PUBLIC_NOSTR_RELAYS]);
     expect(module.DEFAULT_NOSTR_RELAYS).toHaveLength(6);
+    expect(module.PROFILE_INDEX_NOSTR_RELAYS).toEqual(["wss://purplepag.es"]);
   });
 
   it("lets an environment list replace all defaults with custom and public relays", async () => {

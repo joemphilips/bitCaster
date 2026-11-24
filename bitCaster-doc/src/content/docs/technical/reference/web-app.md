@@ -69,8 +69,8 @@ Settings.
 
 The selected relays also receive the key of each profile that you open.
 The bitCaster engine also receives the key to list the markets created by it.
-Primal runs one of the default relays. The setting stops only the indexer
-request, not the relay requests. The browser loads the images and the NIP-05
+Primal runs one of the default relays. On this page, the setting stops only
+the indexer request, not the relay requests. The browser loads the images and the NIP-05
 check from the hosts that the profile names. It contacts no host for a PNG,
 JPEG, GIF, WebP, or SVG picture that the profile embeds as a `data:` URI. The
 page does not show other `data:` content. The relays, the indexer and
@@ -89,15 +89,23 @@ You can still enter an existing HTTPS image URL instead.
 The card also shows a PNG, JPEG, GIF, WebP, or SVG picture that the profile
 embeds as a `data:` URI. Other `data:` content does not appear.
 
-Save first reads all selected relays. If a read or signature request fails,
-your draft stays available. A relay rejection and a missing acknowledgement
-are different results; a missing acknowledgement does not prove rejection.
+The card, the editor, and **Save profile** read your profile from the selected
+relays, from the profile index relay `wss://purplepag.es`, and from up to four
+write relays of your NIP-65 relay list. The newest signed profile is the edit base.
+A relay that does not answer does not stop an edit. If no relay returns a profile
+and a relay does not answer, the editor shows a warning: a save replaces a profile
+that only that relay holds. If no relay answers, you cannot edit the profile.
+Turn off **Profile indexer** in Nostr Settings to stop the index relay read.
+If a read or signature request fails, your draft stays available.
+A relay rejection and a missing acknowledgement are different results; a missing
+acknowledgement does not prove rejection.
 If publication succeeds but local retention fails, the app reports both facts.
 After a successful durable save, this client preserves that metadata when a
 later relay reply is older. This does not prevent concurrent edits on other devices.
 Profile names and NIP-05 address claims are not proof of identity.
-Use only your saved relay destinations. An empty relay list is an explicit
-opt-out from Nostr relay traffic, not a request to use fallback relays.
+The app publishes the profile only to your saved relays. An empty relay list is an
+explicit opt-out from Nostr relay traffic: the app then reads no index relay and no
+relay list, and it uses no fallback relays.
 Liked markets and other preferences are not a backup of wallet funds.
 
 ## Switch between environments

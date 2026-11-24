@@ -1,3 +1,9 @@
+/**
+ * A profile index relay. It keeps the profile (kind 0) and the relay list
+ * (kind 10002) of many keys. A signer profile read also reads it.
+ */
+export const NOSTR_PROFILE_INDEX_RELAY = 'wss://purplepag.es'
+
 /** Curated public defaults from ADR-028. An explicit list replaces these defaults. */
 export const DEFAULT_PUBLIC_NOSTR_RELAYS = [
   'wss://nos.lol',
@@ -5,7 +11,7 @@ export const DEFAULT_PUBLIC_NOSTR_RELAYS = [
   'wss://relay.primal.net',
   'wss://relay.nostr.net',
   'wss://relay.damus.io',
-  'wss://purplepag.es',
+  NOSTR_PROFILE_INDEX_RELAY,
 ] as const
 
 /** Former defaults that no longer answer. A saved browser selection drops them on load. */

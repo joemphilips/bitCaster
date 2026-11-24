@@ -656,7 +656,7 @@ describe("Settings profile indexer", () => {
     expect(toggle).toHaveAttribute("aria-checked", "true");
     // One sentence states the feature. The user guide states what the indexer and relays see.
     expect(toggle).toHaveAccessibleDescription(
-      "Profile pages show follower counts and the first activity date from the Primal indexer.",
+      "Profile pages show follower counts and the first activity date from the Primal indexer, and your profile also comes from an index relay.",
     );
     expect(screen.getByRole("link", { name: "What the indexer sees" })).toHaveAttribute(
       "href",

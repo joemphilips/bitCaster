@@ -12,6 +12,7 @@ const event = finalizeEvent(
 const baseline = {
   publicKey: event.pubkey,
   fields: { name: "Canonical", about: "Bio", picture: "" },
+  incompleteRead: false,
 };
 const saved: BrowserProfileSaveResult = {
   publicKey: event.pubkey,
@@ -100,6 +101,20 @@ describe("Nostr profile editor", () => {
     });
     expect(screen.getByRole("alert")).toHaveTextContent(/cancelled after publication started/i);
     expect(screen.getByLabelText("Name")).toHaveValue("Draft");
+  });
+
+  it("shows the relay warning only while the last read missed a relay without a profile", async () => {
+    const warning =
+      "Some relays did not answer. If you have a profile on another relay, saving replaces it.";
+    const load = vi
+      .fn()
+      .mockResolvedValueOnce({ ...baseline, incompleteRead: true })
+      .mockResolvedValue(baseline);
+    await editor(undefined, load);
+    expect(screen.getByText(warning)).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reload metadata" }));
+    await waitFor(() => expect(screen.queryByText(warning)).not.toBeInTheDocument());
   });
 
   it("reloads untouched fields without replacing an unsaved dirty field", async () => {

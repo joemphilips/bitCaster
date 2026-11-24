@@ -6,20 +6,21 @@ import {
   nostrProfileEditFields,
   nostrProfileEditorPatch,
   prepareNostrProfileEdit,
-  readNostrProfile,
-  readNostrProfileEditSnapshot,
+  readNostrProfileEditSnapshotWithRelayList,
+  readNostrProfileWithRelayList,
   selectNostrProfileEditBase,
   signNostrProfileEdit,
   validateNostrProfileEditorPatch,
   type NostrProfileEditFields,
   type NostrProfileEditorPatch,
+  type NostrProfileFiltersQuery,
 } from "@bitcaster/client-sdk/nostrProfile";
 import { useSettingsStore } from "@/stores/settings";
 import { getNostrSignerRevision, subscribeToNostrSignerRevision } from "./nostrSignerRevision";
 import { awaitAbortable } from "@bitcaster/client-sdk/engineClient";
-import { effectiveRelayUrls } from "./relayDefaults";
+import { effectiveRelayUrls, PROFILE_INDEX_NOSTR_RELAYS } from "./relayDefaults";
 import { withBrowserProfileEditSession } from "./browserProfileCache";
-import { queryBrowserProfileRelay, publishBrowserProfileRelay } from "./browserProfileRelay";
+import { publishBrowserProfileRelay, queryBrowserProfileRelayFilters } from "./browserProfileRelay";
 
 export type BrowserProfileErrorCode =
   | "unavailable"
@@ -44,6 +45,8 @@ export interface BrowserNostrProfileOptions {
   readonly nowSeconds?: () => number;
   readonly readTimeoutMs?: number;
   readonly publishTimeoutMs?: number;
+  /** The index relays, if the setting allows them. Absent means the build default. */
+  readonly indexRelays?: readonly string[];
 }
 
 export interface BrowserProfileSelection {
@@ -127,38 +130,51 @@ export async function captureBrowserNostrProfileSelection(
   }
 }
 
-function profileQuery(selection: BrowserProfileSelection, options: BrowserNostrProfileOptions) {
-  return (
-    url: string,
-    filter: Parameters<typeof queryBrowserProfileRelay>[1],
-    onEvent: (event: Event) => void,
-  ) =>
-    queryBrowserProfileRelay(url, filter, onEvent, {
+function profileQuery(
+  selection: BrowserProfileSelection,
+  options: BrowserNostrProfileOptions,
+): NostrProfileFiltersQuery {
+  return (url, filters, onEvent) =>
+    queryBrowserProfileRelayFilters(url, filters, onEvent, {
       ...selection,
       websocketImplementation: options.websocketImplementation,
       timeoutMs: options.readTimeoutMs,
     });
 }
 
+/** The "Profile indexer" setting also turns off the profile index relay. */
+function profileIndexRelays(options: BrowserNostrProfileOptions): readonly string[] {
+  return useSettingsStore.getState().profileIndexerEnabled
+    ? (options.indexRelays ?? PROFILE_INDEX_NOSTR_RELAYS)
+    : [];
+}
+
+/** Reads also cover the index relays and the write relays of the user's relay list. */
 export function readBrowserSignerProfile(
   selection: BrowserProfileSelection,
   options: BrowserNostrProfileOptions = {},
 ) {
   selection.requireCurrent();
-  return readNostrProfile(selection.publicKey, selection.relays, profileQuery(selection, options));
+  return readNostrProfileWithRelayList(
+    selection.publicKey,
+    selection.relays,
+    profileIndexRelays(options),
+    profileQuery(selection, options),
+  );
 }
 
 async function editBase(
   selection: BrowserProfileSelection,
   retained: Event | null,
   options: BrowserNostrProfileOptions,
-) {
+): Promise<{ base: Event | null; incompleteRead: boolean }> {
   selection.requireCurrent();
   let snapshot;
   try {
-    snapshot = await readNostrProfileEditSnapshot(
+    snapshot = await readNostrProfileEditSnapshotWithRelayList(
       selection.publicKey,
       selection.relays,
+      profileIndexRelays(options),
       profileQuery(selection, options),
     );
   } catch {
@@ -166,16 +182,23 @@ async function editBase(
     throw new BrowserProfileError("read-failed");
   }
   selection.requireCurrent();
+  let base;
   try {
-    return selectNostrProfileEditBase(selection.publicKey, snapshot, retained);
+    base = selectNostrProfileEditBase(selection.publicKey, snapshot, retained);
   } catch {
     throw new BrowserProfileError("base-unavailable");
   }
+  return { base, incompleteRead: base === null && snapshot.failedRelayCount > 0 };
 }
 
 export interface BrowserProfileEditView {
   readonly publicKey: string;
   readonly fields: NostrProfileEditFields;
+  /**
+   * No relay returned a profile, and a relay did not answer. A save replaces
+   * a profile that only that relay holds.
+   */
+  readonly incompleteRead: boolean;
 }
 
 export async function loadBrowserNostrProfileEdit(
@@ -188,8 +211,12 @@ export async function loadBrowserNostrProfileEdit(
       selection.publicKey,
       async (session) => {
         selection.requireCurrent();
-        const base = await editBase(selection, session.read(), options);
-        return { publicKey: selection.publicKey, fields: nostrProfileEditFields(base) };
+        const { base, incompleteRead } = await editBase(selection, session.read(), options);
+        return {
+          publicKey: selection.publicKey,
+          fields: nostrProfileEditFields(base),
+          incompleteRead,
+        };
       },
       selection.signal,
     );
@@ -313,7 +340,7 @@ async function saveInSession(
   session: ProfileEditSession,
 ): Promise<BrowserProfileSaveResult> {
   selection.requireCurrent();
-  const base = await editBase(selection, session.read(), options);
+  const { base } = await editBase(selection, session.read(), options);
   let template: EventTemplate;
   try {
     // The editor name goes to the key that the card shows on this fresh base.

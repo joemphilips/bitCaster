@@ -60,6 +60,7 @@ export function NostrProfileEditor({
   const dirty = useRef(new Set<EditableField>());
   const [busy, setBusy] = useState<"loading" | "saving" | "uploading" | null>(null);
   const [message, setMessage] = useState<string | null>(null);
+  const [incompleteRead, setIncompleteRead] = useState(false);
   // An image outside the accepted type, size, or pixel limits is a field error, not a result.
   const [imageInvalid, setImageInvalid] = useState(false);
   const imageErrorId = useId();
@@ -92,6 +93,7 @@ export function NostrProfileEditor({
       const view = await load(controller.signal);
       if (!mounted.current || operation.current !== controller) return;
       baseline.current = { ...view.fields };
+      setIncompleteRead(view.incompleteRead);
       setDraft(
         (previous) =>
           Object.fromEntries(
@@ -102,7 +104,10 @@ export function NostrProfileEditor({
           ) as typeof emptyFields,
       );
     } catch (error) {
-      if (mounted.current && operation.current === controller) showError(error);
+      if (mounted.current && operation.current === controller) {
+        setIncompleteRead(false);
+        showError(error);
+      }
     } finally {
       if (operation.current === controller) {
         operation.current = null;
@@ -218,6 +223,11 @@ export function NostrProfileEditor({
           <p className="text-sm text-slate-500 dark:text-slate-400">
             {t("settings.profileEditHint")}
           </p>
+          {incompleteRead && (
+            <p role="status" className="text-sm text-amber-700 dark:text-amber-400">
+              {t("settings.profileEditRelayWarning")}
+            </p>
+          )}
           {fields.map((field) => {
             const label = t(`settings.profileEditFields.${field}`);
             const inputProps = {

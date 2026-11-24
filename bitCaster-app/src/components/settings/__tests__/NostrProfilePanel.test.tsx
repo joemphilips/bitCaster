@@ -15,6 +15,7 @@ const profile = {
 const baseline = {
   publicKey: profile.pubkey,
   fields: { name: "Aki Nakamura", picture: profile.avatar, about: profile.bio },
+  incompleteRead: false,
 };
 const saved: BrowserProfileSaveResult = {
   publicKey: profile.pubkey,
