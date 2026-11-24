@@ -4,10 +4,13 @@ import net from 'node:net'
 export const deadline = 5000
 
 /**
- * Starts ../server.js on a free port with the given environment settings.
- * Returns the server module and its listening instance. The caller closes the instance.
+ * Starts ../server.js, or the server module at serverUrl, on a free port with the given environment
+ * settings. Returns the server module and its listening instance. The caller closes the instance.
  */
-export async function startFrontendServer(env) {
+export async function startFrontendServer(
+  env,
+  serverUrl = new URL('../server.js', import.meta.url),
+) {
   Object.assign(process.env, { ...env, PORT: '0' })
   // The server listens when it is imported. Keep its instance to read the assigned port and to close it.
   let frontend
@@ -18,7 +21,7 @@ export async function startFrontendServer(env) {
   }
   let server
   try {
-    server = await import('../server.js')
+    server = await import(serverUrl.href)
   } finally {
     net.Server.prototype.listen = listen
   }

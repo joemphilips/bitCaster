@@ -7,7 +7,7 @@ import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
-import { dirname, join } from "node:path";
+import { dirname } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -188,7 +188,9 @@ app.use(
 );
 app.use(express.static(__dirname));
 // Express 5 route syntax: "/{*path}" also matches "/", where "/*path" needs one segment.
-app.get("/{*path}", (_req, res) => res.sendFile(join(__dirname, "index.html")));
+// A relative path with the root option checks dot segments only inside the root. An absolute path
+// refuses a dot segment anywhere, for example in a parent directory such as ~/.local.
+app.get("/{*path}", (_req, res) => res.sendFile("index.html", { root: __dirname }));
 
 // Express 5 passes a listen error to this callback. Throw it so that the process stops
 // with the error, as an unhandled server error event does.
