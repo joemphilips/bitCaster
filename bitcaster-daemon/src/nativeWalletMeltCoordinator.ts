@@ -42,6 +42,7 @@ import {
 import {
   runDurableWalletMeltOperation,
   type DurableWalletMeltExecutionResult,
+  type DurableWalletMeltUnpaidReason,
 } from '@bitcaster-market/client-sdk/durableWalletMelt'
 import {
   computeInputFeeSubunitsForProofs,
@@ -136,8 +137,22 @@ export interface NativeWalletMeltWallet {
   }
 }
 
-export interface NativeWalletMeltResult extends DurableWalletMeltExecutionResult {
-  readonly operationId: string
+export type NativeWalletMeltResult =
+  | {
+      readonly operationId: string
+      readonly state: 'paid'
+      readonly proofs: readonly Proof[]
+    }
+  | {
+      readonly operationId: string
+      readonly state: 'unpaid'
+      /** Null when an earlier call ended the operation: the saved state holds no reason. */
+      readonly unpaidReason: DurableWalletMeltUnpaidReason | null
+      readonly proofs: readonly []
+    }
+
+function abortedResult(operationId: string): NativeWalletMeltResult {
+  return { operationId, state: 'unpaid', unpaidReason: null, proofs: [] }
 }
 
 /** Fenced SQLite coordinator for one exact native Lightning melt. */
@@ -302,7 +317,7 @@ export class NativeWalletMeltCoordinator {
   }): Promise<NativeWalletMeltResult> {
     const loaded = await this.#requireOperation(input.operationId)
     if (loaded.record.operation.state === 'aborted') {
-      return { operationId: input.operationId, state: 'unpaid', proofs: [] }
+      return abortedResult(input.operationId)
     }
     const mode = loaded.record.operation.state === 'dispatch-intent' ? 'execute' : 'recover'
     const result = await this.#run(mode, loaded, input.wallet)
@@ -316,7 +331,7 @@ export class NativeWalletMeltCoordinator {
   }): Promise<NativeWalletMeltResult> {
     const loaded = await this.#requireOperation(input.operationId)
     if (loaded.record.operation.state === 'aborted') {
-      return { operationId: input.operationId, state: 'unpaid', proofs: [] }
+      return abortedResult(input.operationId)
     }
     const result = await this.#run('recover', loaded, input.wallet)
     return { ...result, operationId: input.operationId }

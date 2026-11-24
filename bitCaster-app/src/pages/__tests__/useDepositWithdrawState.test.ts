@@ -742,9 +742,14 @@ describe("useDepositWithdrawState", () => {
       expect(result.current.currentView).toBe("send-ecash");
     });
 
-    it.each(["paid", "unpaid", "error"] as const)(
+    it.each([
+      ["paid", null],
+      ["payment-failed", "Payment failed"],
+      ["mint-limit", "The mint's payment limit is reached. Try again later."],
+      ["error", "Payment status unavailable"],
+    ] as const)(
       "shows melt success only for confirmed payment: %s",
-      async (outcome) => {
+      async (outcome, expectedError) => {
         const proofDb = await import("@/stores/proof-db");
         const cashu = await import("@/lib/cashu");
         vi.mocked(cashu.createMeltQuote).mockResolvedValueOnce({
@@ -760,10 +765,11 @@ describe("useDepositWithdrawState", () => {
             new Error("Payment status unavailable"),
           );
         } else {
-          vi.mocked(cashu.meltProofs).mockResolvedValueOnce({
-            paid: outcome === "paid",
-            change: [],
-          } as never);
+          vi.mocked(cashu.meltProofs).mockResolvedValueOnce(
+            outcome === "paid"
+              ? { paid: true, change: [] }
+              : { paid: false, unpaidReason: outcome, change: [] },
+          );
         }
 
         const { result } = renderHook(() => useDepositWithdrawState("withdraw", onDismiss));
@@ -778,6 +784,7 @@ describe("useDepositWithdrawState", () => {
         expect(proofDb.getCanonicalSelectableProofs).not.toHaveBeenCalled();
         expect(proofDb.addProofs).not.toHaveBeenCalled();
         expect(proofDb.removeProofs).not.toHaveBeenCalled();
+        expect(result.current.error).toBe(expectedError);
         expect(result.current.currentView).toBe(outcome === "paid" ? "success" : "melt-confirm");
         expect(result.current.successAmountMsat).toBe(outcome === "paid" ? 1_000 : 0);
         expect(result.current.successBaseAsset).toBe("sat");

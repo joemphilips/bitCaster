@@ -1156,7 +1156,8 @@
       "range": "このミントからの1回の出金は{{min}}〜{{max}} satsです。",
       "minimum": "このミントからの1回の出金は{{min}} sats以上です。",
       "notAccepted": "このミントはLightningでの出金を受け付けていません。",
-      "refused": "このミントはこの出金額を受け付けていません。"
+      "refused": "このミントはこの出金額を受け付けていません。",
+      "limitReached": "ミントの支払い上限に達しました。後でもう一度お試しください。"
     }
   },
   "insufficientBalance": {

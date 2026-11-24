@@ -1163,7 +1163,8 @@
       "range": "This mint accepts {{min}} to {{max}} sats for each withdrawal.",
       "minimum": "This mint accepts at least {{min}} sats for each withdrawal.",
       "notAccepted": "This mint does not accept Lightning withdrawals.",
-      "refused": "This mint does not accept this withdrawal amount."
+      "refused": "This mint does not accept this withdrawal amount.",
+      "limitReached": "The mint's payment limit is reached. Try again later."
     }
   },
   "insufficientBalance": {

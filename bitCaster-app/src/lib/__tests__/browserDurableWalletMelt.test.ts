@@ -3,6 +3,7 @@ import "fake-indexeddb/auto";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Amount,
+  MintOperationError,
   Wallet,
   Mint,
   type CounterSource,
@@ -235,7 +236,32 @@ describe("browser durable wallet melt", () => {
         wallet,
         context: meltContext(database),
       }),
-    ).resolves.toEqual({ paid: false, change: [] });
+    ).resolves.toEqual({ paid: false, unpaidReason: "payment-failed", change: [] });
+    expect((await database.custodyProofs.toArray())[0]?.selectability).toBe("selectable");
+    expect((await database.custodyOperations.toArray())[0]?.record.operation.state).toBe("aborted");
+  });
+
+  it("releases canonical inputs after the mint refuses the melt for its limit", async () => {
+    const database = createDatabase();
+    const input = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "limit-input", 7n));
+    await seedInput(database, input);
+    const quote = meltQuote("quote-limit");
+    const preview = meltPreview(quote, input);
+    const wallet = meltWallet(preview, { state: "UNPAID", change: [] });
+    vi.mocked(wallet.completeMelt).mockRejectedValue(
+      new MintOperationError(11006, "Melt outflow budget exceeded; try again later"),
+    );
+
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: [input],
+        wallet,
+        context: meltContext(database),
+      }),
+    ).resolves.toEqual({ paid: false, unpaidReason: "mint-limit", change: [] });
+    expect(wallet.checkMeltQuote).toHaveBeenCalledOnce();
     expect((await database.custodyProofs.toArray())[0]?.selectability).toBe("selectable");
     expect((await database.custodyOperations.toArray())[0]?.record.operation.state).toBe("aborted");
   });
@@ -344,7 +370,7 @@ describe("browser durable wallet melt", () => {
         wallet: unpaidWallet,
         context: meltContext(database),
       }),
-    ).resolves.toEqual({ paid: false, change: [] });
+    ).resolves.toEqual({ paid: false, unpaidReason: "payment-failed", change: [] });
 
     const uncertainWallet = meltWallet(preview, { state: "PAID", change: [change] });
     vi.mocked(uncertainWallet.completeMelt).mockRejectedValueOnce(new Error("lost melt response"));

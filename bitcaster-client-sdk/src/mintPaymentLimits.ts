@@ -34,7 +34,10 @@ export type MintPaymentAmountRejection =
   | Exclude<MintPaymentAmountCheck, { readonly kind: 'within-limits' }>
   | { readonly kind: 'refused' }
 
-/** NUT error code "Amount outside of limit range" for NUT-04 and NUT-05 quote requests. */
+/**
+ * NUT error code "Amount outside of limit range". A mint uses it for a NUT-04
+ * or NUT-05 quote request, and for a NUT-05 melt above its limit for a period.
+ */
 export const MINT_AMOUNT_OUTSIDE_LIMIT_ERROR_CODE = 11006
 
 const MSAT_PER_SAT = 1_000n
@@ -119,7 +122,7 @@ export function mintPaymentMaximumMsat(limits: MintPaymentLimits): number | null
   }
 }
 
-/** True when a mint refused a quote request because its amount is outside the limits. */
+/** True when a mint refused a quote or a melt because its amount is outside the limits. */
 export function isMintAmountOutsideLimitError(error: unknown): boolean {
   return isMintOperationError(error) && error.code === MINT_AMOUNT_OUTSIDE_LIMIT_ERROR_CODE
 }

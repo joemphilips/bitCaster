@@ -51,6 +51,7 @@ import {
   bolt11InvoiceAmountMsat,
   isMintAmountOutsideLimitError,
 } from "@bitcaster/client-sdk/mintPaymentLimits";
+import type { DurableWalletMeltUnpaidReason } from "@bitcaster/client-sdk/durableWalletMelt";
 import { useMintPaymentAmountLimit } from "@/hooks/useMintPaymentAmountLimit";
 
 export type ExtendedView =
@@ -61,6 +62,11 @@ export type ExtendedView =
   | "scanner"
   | "payment-request-display"
   | "success";
+
+const MELT_UNPAID_KEYS = {
+  "mint-limit": "mintLimits.withdrawal.limitReached",
+  "payment-failed": "deposit.paymentFailed",
+} as const satisfies Record<DurableWalletMeltUnpaidReason, string>;
 
 export type InvoiceStatus = "pending" | "paid" | "expired" | "error";
 
@@ -788,10 +794,10 @@ export function useDepositWithdrawState(
     setMeltIsPaying(true);
     setError(null);
     try {
-      const { paid } = await meltProofs(meltQuote, selectedMintId);
+      const melt = await meltProofs(meltQuote, selectedMintId);
 
-      if (!paid) {
-        if (isWalletScopeActive(walletId)) setError("Payment failed");
+      if (!melt.paid) {
+        if (isWalletScopeActive(walletId)) setError(t(MELT_UNPAID_KEYS[melt.unpaidReason]));
         return;
       }
 
@@ -813,7 +819,7 @@ export function useDepositWithdrawState(
     } finally {
       setMeltIsPaying(false);
     }
-  }, [meltQuote, selectedMintId]);
+  }, [meltQuote, selectedMintId, t]);
 
   const onScan = useCallback(() => {
     scanReturnViewRef.current = currentView;

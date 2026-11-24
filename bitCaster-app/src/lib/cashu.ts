@@ -120,7 +120,10 @@ import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
 } from "@/lib/browserDurableOutgoingCashuTransfer";
-import { meltBrowserDurableWallet } from "@/lib/browserDurableWalletMelt";
+import {
+  meltBrowserDurableWallet,
+  type BrowserDurableWalletMeltResult,
+} from "@/lib/browserDurableWalletMelt";
 import { createBrowserCustodyProofRow } from "@/stores/durable-custody-db";
 import {
   decodeBrowserCustodyProofRow,
@@ -2549,7 +2552,7 @@ export async function createMeltQuote(
 export async function meltProofs(
   quote: MeltQuoteResponse,
   mintUrl?: string,
-): Promise<{ paid: boolean; change: Proof[] }> {
+): Promise<BrowserDurableWalletMeltResult> {
   const context = captureBrowserMintPersistenceContext();
   const normalizedMintUrl = normalizeUrl(mintUrl ?? context.activeMintUrl);
   const wallet = await getWalletForMnemonicUnit(normalizedMintUrl, "msat", context.mnemonic);
@@ -2567,10 +2570,7 @@ export async function meltProofs(
     context,
   });
   context.requireCapturedProfile();
-  return {
-    paid: response.paid,
-    change: [...response.change],
-  };
+  return response;
 }
 
 /** Check the status of a mint quote. */

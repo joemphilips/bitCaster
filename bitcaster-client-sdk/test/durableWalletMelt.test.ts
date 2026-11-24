@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { Amount, OutputData, type MeltPreview, type Proof } from '@cashu/cashu-ts'
+import {
+  Amount,
+  MintOperationError,
+  OutputData,
+  type MeltPreview,
+  type Proof,
+} from '@cashu/cashu-ts'
 import {
   runDurableWalletMeltOperation,
   type DurableWalletMeltExecutionInput,
@@ -177,7 +183,7 @@ test('releases only after an explicit unpaid payment response', async () => {
     }),
   )
 
-  assert.deepEqual(result, { state: 'unpaid', proofs: [] })
+  assert.deepEqual(result, { state: 'unpaid', unpaidReason: 'payment-failed', proofs: [] })
   assert.deepEqual(calls, ['complete', 'release-unpaid'])
 })
 
@@ -196,7 +202,7 @@ test('recovery releases only after the saved-preview retry explicitly returns un
     }),
   )
 
-  assert.deepEqual(result, { state: 'unpaid', proofs: [] })
+  assert.deepEqual(result, { state: 'unpaid', unpaidReason: 'payment-failed', proofs: [] })
   assert.deepEqual(calls, ['check:quote-1', 'complete', 'release-unpaid'])
 })
 
@@ -262,6 +268,154 @@ test('rechecks the same quote after an uncertain retry and restores saved paid c
     'restore-change',
     'stage-paid',
   ])
+})
+
+const LIMIT_REFUSAL = new MintOperationError(11006, 'Melt outflow budget exceeded; try again later')
+
+test('a limit refusal releases the reservation when the quote still reads unpaid', async () => {
+  const calls: string[] = []
+  const result = await runDurableWalletMeltOperation(
+    meltInput(meltOperation(), {
+      calls,
+      async completeMelt() {
+        throw LIMIT_REFUSAL
+      },
+      async checkMeltQuote(_method, quote) {
+        return { quote, state: 'UNPAID' }
+      },
+    }),
+  )
+
+  assert.deepEqual(result, { state: 'unpaid', unpaidReason: 'mint-limit', proofs: [] })
+  assert.deepEqual(calls, ['complete', 'check:quote-1', 'release-unpaid'])
+})
+
+test('recovery releases after a limit refusal of the saved-preview retry', async () => {
+  const calls: string[] = []
+  const result = await runDurableWalletMeltOperation(
+    meltInput(meltOperation(), {
+      mode: 'recover',
+      calls,
+      async completeMelt() {
+        throw LIMIT_REFUSAL
+      },
+      async checkMeltQuote(_method, quote) {
+        return { quote, state: 'UNPAID' }
+      },
+    }),
+  )
+
+  assert.deepEqual(result, { state: 'unpaid', unpaidReason: 'mint-limit', proofs: [] })
+  assert.deepEqual(calls, ['check:quote-1', 'complete', 'check:quote-1', 'release-unpaid'])
+})
+
+test('a limit refusal keeps the reservation while the quote is not unpaid', async () => {
+  for (const state of ['PENDING', 'UNKNOWN', 'unpaid', '']) {
+    const calls: string[] = []
+    await assert.rejects(
+      runDurableWalletMeltOperation(
+        meltInput(meltOperation(), {
+          calls,
+          async completeMelt() {
+            throw LIMIT_REFUSAL
+          },
+          async checkMeltQuote(_method, quote) {
+            return { quote, state }
+          },
+        }),
+      ),
+      LIMIT_REFUSAL,
+      state,
+    )
+    assert.deepEqual(calls, ['complete', 'check:quote-1'], state)
+  }
+})
+
+test('a limit refusal of a paid quote restores the saved change', async () => {
+  const calls: string[] = []
+  const result = await runDurableWalletMeltOperation(
+    meltInput(meltOperation(), {
+      calls,
+      async completeMelt() {
+        throw LIMIT_REFUSAL
+      },
+      async checkMeltQuote(_method, quote) {
+        return { quote, state: 'PAID', change: [{ id: KEYSET_ID, amount: 0, C_: 'signature' }] }
+      },
+    }),
+  )
+
+  assert.equal(result.state, 'paid')
+  assert.deepEqual(result.proofs, [CHANGE])
+  assert.deepEqual(calls, ['complete', 'check:quote-1', 'restore-change', 'stage-paid'])
+})
+
+test('a limit refusal keeps the reservation without a status of the exact quote', async () => {
+  const statuses = [
+    {
+      error: /foreign/,
+      checkMeltQuote: async () => ({ quote: 'foreign-quote', state: 'UNPAID' }),
+    },
+    {
+      error: /status unavailable/,
+      checkMeltQuote: async (): Promise<never> => {
+        throw new Error('status unavailable')
+      },
+    },
+  ]
+  for (const { error, checkMeltQuote } of statuses) {
+    const calls: string[] = []
+    await assert.rejects(
+      runDurableWalletMeltOperation(
+        meltInput(meltOperation(), {
+          calls,
+          async completeMelt() {
+            throw LIMIT_REFUSAL
+          },
+          checkMeltQuote,
+        }),
+      ),
+      error,
+    )
+    assert.deepEqual(calls, ['complete', 'check:quote-1'])
+  }
+})
+
+test('every other failure keeps the reservation of an unpaid quote', async () => {
+  const failures: readonly Error[] = [
+    // Proofs pending, melting disabled, payment failed, quote pending.
+    new MintOperationError(11002, 'refused'),
+    new MintOperationError(20003, 'refused'),
+    new MintOperationError(20004, 'refused'),
+    new MintOperationError(20005, 'refused'),
+    // Not an answer of the mint with a code.
+    Object.assign(new Error('refused'), { code: 11006 }),
+    new Error('lost response'),
+  ]
+  for (const failure of failures) {
+    for (const [mode, expected] of [
+      ['execute', ['complete']],
+      ['recover', ['check:quote-1', 'complete', 'check:quote-1']],
+    ] as const) {
+      const calls: string[] = []
+      await assert.rejects(
+        runDurableWalletMeltOperation(
+          meltInput(meltOperation(), {
+            mode,
+            calls,
+            async completeMelt() {
+              throw failure
+            },
+            async checkMeltQuote(_method, quote) {
+              return { quote, state: 'UNPAID' }
+            },
+          }),
+        ),
+        failure,
+      )
+      assert.deepEqual(calls, expected, `${mode} ${failure.message}`)
+    }
+  }
 })
 
 function meltInput(

@@ -8,6 +8,7 @@ import {
   type MintPaymentDirection,
   type MintPaymentLimits,
 } from '@bitcaster-market/client-sdk/mintPaymentLimits'
+import type { NativeWalletPaymentResult } from './nativeWalletPaymentOps.ts'
 import type { DaemonResponse } from './protocol.ts'
 
 /** Read the public NUT-06 info of one mint. */
@@ -98,6 +99,19 @@ export function nativeMintPaymentAmountFailure(
       rejection: error.rejection,
       ...(error.previousInvoiceHidden ? { previousInvoiceHidden: true } : {}),
     },
+  }
+}
+
+/** The machine-readable RPC failure of a payment that the mint refused for its payment limit. */
+export function nativeMintPaymentLimitReachedFailure(
+  result: Extract<NativeWalletPaymentResult, { readonly state: 'unpaid' }>,
+): DaemonResponse {
+  return {
+    ok: false,
+    code: 'mint-payment-limit-reached',
+    error:
+      "The mint's payment limit is reached. No payment was made. Get a new quote and try again later.",
+    result,
   }
 }
 

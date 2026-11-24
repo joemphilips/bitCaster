@@ -42,8 +42,9 @@ after(async () => {
 /**
  * Serve the CLI's daemon RPC with the daemon's own dispatcher and limit check.
  * Only the mint is fake: it serves its info and must receive no quote request.
+ * `payResult` replaces the payment operations with the result of one payment.
  */
-function preload(): string {
+function preload(payResult?: unknown): string {
   const code = `
     import assert from 'node:assert/strict'
     import { configureDataDir } from ${JSON.stringify(`${DAEMON_SOURCE}dataDir.ts`)}
@@ -62,7 +63,8 @@ function preload(): string {
       ${JSON.stringify(MINT)},
       { readMintInfo },
     )
-    const nativeWalletPaymentOps = new NativeWalletPaymentOps({
+    const payResult = ${JSON.stringify(payResult ?? null)}
+    const nativeWalletPaymentOps = payResult !== null ? { pay: async () => payResult } : new NativeWalletPaymentOps({
       profile: { engineBaseUrl: 'https://engine.example', mintUrl: ${JSON.stringify(MINT)}, initializedAt: new Date(1).toISOString() },
       secrets: { walletSeedHex: '11'.repeat(64) },
       directory: ${JSON.stringify(directory)},
@@ -83,14 +85,17 @@ function preload(): string {
   return `data:text/javascript,${encodeURIComponent(code)}`
 }
 
-async function run(args: string[]): Promise<{ stdout: string; stderr: string; code: number }> {
+async function run(
+  args: string[],
+  payResult?: unknown,
+): Promise<{ stdout: string; stderr: string; code: number }> {
   try {
     const result = await execFileAsync(
       process.execPath,
       [
         '--experimental-strip-types',
         '--import',
-        preload(),
+        preload(payResult),
         join(import.meta.dirname, '..', 'src', 'main.ts'),
         '--datadir',
         directory,
@@ -144,5 +149,46 @@ test('wallet pay quote refuses an invoice above the mint withdrawal maximum', as
     })
   } finally {
     await rm(invoiceDirectory, { recursive: true, force: true })
+  }
+})
+
+test('wallet pay execute reports a reached mint payment limit with its code', async () => {
+  const consentDirectory = await mkdtemp(join(tmpdir(), 'wallet-mint-limits-consent-'))
+  try {
+    const operationId = `wallet-melt:${'a'.repeat(64)}`
+    const consentFile = join(consentDirectory, 'payment-quote.json')
+    const consent = {
+      operationId,
+      walletId: 'b'.repeat(64),
+      mintUrl: MINT,
+      unit: 'msat',
+      method: 'bolt11',
+      invoice: 'lnbc10n1pfakeinvoice',
+      quoteId: 'payment-quote-1',
+      amountMsat: 1_000,
+      feeReserveMsat: 22,
+      selectedInputFeeMsat: 2,
+      totalWalletDebitMsat: 1_024,
+      expiryUnixSeconds: 1_900_000_000,
+      state: 'UNPAID',
+    }
+    await writeFile(consentFile, JSON.stringify({ ok: true, result: consent }), { mode: 0o600 })
+
+    const payResult = { operationId, state: 'unpaid', unpaidReason: 'mint-limit', changeCount: 0 }
+    const result = await run(
+      ['wallet', 'pay', 'execute', '--fee-consent-file', consentFile],
+      payResult,
+    )
+
+    assert.equal(result.code, 1, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout), {
+      ok: false,
+      code: 'mint-payment-limit-reached',
+      error:
+        "The mint's payment limit is reached. No payment was made. Get a new quote and try again later.",
+      result: payResult,
+    })
+  } finally {
+    await rm(consentDirectory, { recursive: true, force: true })
   }
 })

@@ -184,6 +184,52 @@ test('a payment quote outside the mint limits returns a machine-readable refusal
   }
 })
 
+for (const unpaidReason of ['mint-limit', 'payment-failed', null] as const) {
+  test(`an unpaid payment returns its typed reason: ${unpaidReason}`, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'bitcaster-daemon-wallet-payment-unpaid-rpc-'))
+    const previousHome = process.env.BITCASTER_DAEMON_HOME
+    process.env.BITCASTER_DAEMON_HOME = home
+    try {
+      await bootstrapFreshDaemonProfile({
+        directory: home,
+        engineBaseUrl: 'https://engine.example',
+        mintUrl: 'https://mint.example',
+        walletSeedHex: '71'.repeat(64),
+        nostrSecretKeyHex: '72'.repeat(32),
+      })
+      const consent = quote()
+      const result = {
+        operationId: consent.operationId,
+        state: 'unpaid',
+        unpaidReason,
+        changeCount: 0,
+      } as const
+      assert.deepEqual(
+        await dispatch(
+          { method: 'wallet.pay.execute', params: { consent } },
+          {
+            nativeWalletPaymentOps: createOperations([], { pay: async () => result }),
+            isCustodyReady: () => true,
+          },
+        ),
+        unpaidReason === 'mint-limit'
+          ? {
+              ok: false,
+              code: 'mint-payment-limit-reached',
+              error:
+                "The mint's payment limit is reached. No payment was made. Get a new quote and try again later.",
+              result,
+            }
+          : { ok: true, result },
+      )
+    } finally {
+      if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
+      else process.env.BITCASTER_DAEMON_HOME = previousHome
+      await rm(home, { recursive: true, force: true })
+    }
+  })
+}
+
 function createOperations(
   calls: string[],
   overrides: Partial<NonNullable<DispatchDependencies['nativeWalletPaymentOps']>> = {},

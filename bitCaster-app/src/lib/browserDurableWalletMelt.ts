@@ -18,7 +18,10 @@ import {
   type Proof,
   type SerializedBlindedSignature,
 } from "@cashu/cashu-ts";
-import { runDurableWalletMeltOperation } from "@bitcaster/client-sdk/durableWalletMelt";
+import {
+  runDurableWalletMeltOperation,
+  type DurableWalletMeltUnpaidReason,
+} from "@bitcaster/client-sdk/durableWalletMelt";
 import {
   assertDurableCustodyMintOperationAuthority,
   prepareDurableCustodyMintOperationAuthority,
@@ -131,10 +134,13 @@ export interface BrowserDurableWalletMeltInput {
   readonly context: BrowserDurableWalletMeltContext;
 }
 
-export interface BrowserDurableWalletMeltResult {
-  readonly paid: boolean;
-  readonly change: readonly Proof[];
-}
+export type BrowserDurableWalletMeltResult =
+  | { readonly paid: true; readonly change: readonly Proof[] }
+  | {
+      readonly paid: false;
+      readonly unpaidReason: DurableWalletMeltUnpaidReason;
+      readonly change: readonly [];
+    };
 
 export async function meltBrowserDurableWallet(
   input: BrowserDurableWalletMeltInput,
@@ -597,7 +603,14 @@ async function runMeltProtocolWithSnapshot(
         releaseUnpaidMelt({ scope, adapter, owner, now, record: snapshot.record }),
     },
   });
-  return { paid: result.state === "paid", change: result.proofs };
+  switch (result.state) {
+    case "paid":
+      return { paid: true, change: result.proofs };
+    case "unpaid":
+      return { paid: false, unpaidReason: result.unpaidReason, change: [] };
+    default:
+      return assertNever(result);
+  }
 }
 
 async function stageAndApplyMeltChange(input: {
@@ -1107,4 +1120,8 @@ async function claimOwner(
 
 function ownerAt(owner: DurableCustodyOwnerAuthorization, observedAtMs: number) {
   return { ...owner, observedAtMs };
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported browser wallet melt result: ${JSON.stringify(value)}`);
 }

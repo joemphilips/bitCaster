@@ -12,6 +12,7 @@ import {
   hydrateDurableWalletProof,
   type DurableWalletMeltOperation,
 } from './durableWalletOperation.ts'
+import { isMintAmountOutsideLimitError } from './mintPaymentLimits.ts'
 
 export type DurableWalletMeltResultState = 'none' | 'verified-staged' | 'applied'
 
@@ -22,7 +23,7 @@ export interface DurableWalletMeltOperationStore {
   applyStagedResult(): Promise<readonly Proof[]>
   /** Verify, stage, and admit change returned by an authenticated paid response. */
   stageAndApplyPaidChange(change: readonly Proof[]): Promise<readonly Proof[]>
-  /** Release the exact reservation after an explicit unpaid payment response. */
+  /** Release the exact reservation after an explicit unpaid response or a limit refusal. */
   releaseUnpaidReservation(): Promise<void>
 }
 
@@ -54,10 +55,19 @@ export interface DurableWalletMeltExecutionInput {
   readonly store: DurableWalletMeltOperationStore
 }
 
-export interface DurableWalletMeltExecutionResult {
-  readonly state: 'paid' | 'unpaid'
-  readonly proofs: readonly Proof[]
-}
+/**
+ * Why a melt ended as unpaid. `mint-limit`: the mint refused it for its payment
+ * limit (11006). `payment-failed`: the mint answered that the quote is unpaid.
+ */
+export type DurableWalletMeltUnpaidReason = 'mint-limit' | 'payment-failed'
+
+export type DurableWalletMeltExecutionResult =
+  | { readonly state: 'paid'; readonly proofs: readonly Proof[] }
+  | {
+      readonly state: 'unpaid'
+      readonly unpaidReason: DurableWalletMeltUnpaidReason
+      readonly proofs: readonly []
+    }
 
 /** Execute or recover one persisted melt without changing its quote or output authority. */
 export async function runDurableWalletMeltOperation(
@@ -110,12 +120,18 @@ async function submitMelt(
   operation: DurableWalletMeltOperation,
   preview: MeltPreview<Pick<MeltQuoteResponse, 'quote'>>,
 ): Promise<DurableWalletMeltExecutionResult> {
-  const response = await input.transport.completeMelt(preview)
+  let response: Awaited<ReturnType<DurableWalletMeltTransport['completeMelt']>>
+  try {
+    response = await input.transport.completeMelt(preview)
+  } catch (error) {
+    if (!isMintAmountOutsideLimitError(error)) throw error
+    return settleFailedSubmission(input, operation, preview, error)
+  }
   if (response.quote.quote !== operation.preview.quote.quote) {
     throw new Error('wallet melt response quote is foreign')
   }
   if (response.quote.state !== 'PAID') {
-    if (response.quote.state === 'UNPAID') return releaseUnpaid(input)
+    if (response.quote.state === 'UNPAID') return releaseUnpaid(input, 'payment-failed')
     throw new Error('wallet melt remains pending')
   }
   return applyPaidChange(input, response.change ?? [])
@@ -138,11 +154,7 @@ async function recoverMelt(
   try {
     response = await input.transport.completeMelt(preview)
   } catch (error) {
-    const refreshed = await checkExactQuote(input, operation)
-    if (refreshed.state === 'PAID') {
-      return recoverPaidChange(input, preview, refreshed.change ?? [])
-    }
-    throw error
+    return settleFailedSubmission(input, operation, preview, error)
   }
   if (response.quote.quote !== operation.preview.quote.quote) {
     throw new Error('wallet melt response quote is foreign')
@@ -150,8 +162,33 @@ async function recoverMelt(
   if (response.quote.state === 'PAID') {
     return applyPaidChange(input, response.change ?? [])
   }
-  if (response.quote.state === 'UNPAID') return releaseUnpaid(input)
+  if (response.quote.state === 'UNPAID') return releaseUnpaid(input, 'payment-failed')
   throw new Error('wallet melt remains pending')
+}
+
+/**
+ * Settle a submission without a payment response from a fresh quote status.
+ *
+ * A limit refusal (11006) says that the mint did not start this payment: the
+ * amount is outside its limit, for one payment or for a period. The mint then
+ * has no pending state, so an unpaid status releases the reservation. After
+ * every other failure the request can still be in progress, and an unpaid
+ * status releases nothing.
+ */
+async function settleFailedSubmission(
+  input: DurableWalletMeltExecutionInput,
+  operation: DurableWalletMeltOperation,
+  preview: MeltPreview<Pick<MeltQuoteResponse, 'quote'>>,
+  failure: unknown,
+): Promise<DurableWalletMeltExecutionResult> {
+  const status = await checkExactQuote(input, operation)
+  if (status.state === 'PAID') {
+    return recoverPaidChange(input, preview, status.change ?? [])
+  }
+  if (status.state === 'UNPAID' && isMintAmountOutsideLimitError(failure)) {
+    return releaseUnpaid(input, 'mint-limit')
+  }
+  throw failure
 }
 
 async function checkExactQuote(
@@ -191,9 +228,10 @@ async function applyPaidChange(
 
 async function releaseUnpaid(
   input: DurableWalletMeltExecutionInput,
+  unpaidReason: DurableWalletMeltUnpaidReason,
 ): Promise<DurableWalletMeltExecutionResult> {
   await input.store.releaseUnpaidReservation()
-  return { state: 'unpaid', proofs: [] }
+  return { state: 'unpaid', unpaidReason, proofs: [] }
 }
 
 function requireMeltOperation(value: DurableWalletMeltOperation): DurableWalletMeltOperation {

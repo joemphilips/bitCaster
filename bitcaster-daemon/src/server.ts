@@ -128,6 +128,7 @@ import type { DaemonRecoveryIndexStatus } from './daemonRecoveryIndex.ts'
 import {
   NativeMintPaymentAmountError,
   nativeMintPaymentAmountFailure,
+  nativeMintPaymentLimitReachedFailure,
 } from './nativeMintPaymentLimits.ts'
 import type { NativePaymentRequestService } from './nativePaymentRequestService.ts'
 import type {
@@ -2690,13 +2691,13 @@ async function dispatchNativeWalletPayment(
     case 'wallet.pay.execute': {
       const consent = params.consent as WalletPaymentQuote
       try {
-        return {
-          ok: true,
-          result: await ops.pay({
-            ...consent,
-            approvedMaxDebitMsat: consent.totalWalletDebitMsat,
-          }),
-        }
+        const result = await ops.pay({
+          ...consent,
+          approvedMaxDebitMsat: consent.totalWalletDebitMsat,
+        })
+        return result.state === 'unpaid' && result.unpaidReason === 'mint-limit'
+          ? nativeMintPaymentLimitReachedFailure(result)
+          : { ok: true, result }
       } catch (error) {
         const repair = custodyRepairResponse(error)
         if (repair !== null) return repair

@@ -7,6 +7,7 @@ import { bytesToHex } from '@noble/curves/utils.js'
 import { secp256k1 } from '@noble/curves/secp256k1.js'
 import {
   Amount,
+  MintOperationError,
   OutputData,
   createBlindSignature,
   createDLEQProof,
@@ -643,6 +644,7 @@ test('UNPAID status alone and PENDING keep inputs reserved; only explicit UNPAID
     })
     assert.deepEqual(released, {
       state: 'unpaid',
+      unpaidReason: 'payment-failed',
       proofs: [],
       operationId: fixture.operation.operationId,
     })
@@ -655,6 +657,55 @@ test('UNPAID status alone and PENDING keep inputs reserved; only explicit UNPAID
     await fixture.close()
   }
 })
+
+for (const firstStatus of ['UNPAID', 'PENDING'] as const) {
+  test(`a limit refusal of a quote that reads ${firstStatus} releases only an unpaid reservation`, async () => {
+    const fixture = await createFixture()
+    try {
+      await fixture.prepare()
+      let status: string = firstStatus
+      const input = {
+        operationId: fixture.operation.operationId,
+        wallet: fixture.wallet({
+          async checkMeltQuote(_method, quote) {
+            return fixture.quote(quote, status)
+          },
+          async completeMelt() {
+            throw new MintOperationError(11006, 'Melt outflow budget exceeded; try again later')
+          },
+        }),
+      }
+      const released = {
+        state: 'unpaid',
+        unpaidReason: 'mint-limit',
+        proofs: [],
+        operationId: fixture.operation.operationId,
+      }
+      switch (firstStatus) {
+        case 'UNPAID':
+          assert.deepEqual(await fixture.coordinator.execute(input), released)
+          break
+        case 'PENDING':
+          await assert.rejects(fixture.coordinator.execute(input), { code: 11006 })
+          assert.equal((await fixture.readRows()).predecessorState, 'locked')
+          assert.deepEqual(await fixture.availableProofSecrets(), [])
+          status = 'UNPAID'
+          assert.deepEqual(await fixture.coordinator.recover(input), released)
+          break
+        default:
+          assert.fail(`unhandled status ${firstStatus satisfies never}`)
+      }
+      const rows = await fixture.readRows()
+      assert.equal(rows.predecessorState, 'selectable')
+      assert.equal(rows.reservationCount, 0)
+      assert.equal(rows.operationState, 'aborted')
+      assert.deepEqual(await fixture.availableProofSecrets(), ['melt-input'])
+      assert.deepEqual(await fixture.activity(), [])
+    } finally {
+      await fixture.close()
+    }
+  })
+}
 
 test('foreign wallet-mirror reservation blocks release and rolls back custody transition', async () => {
   const fixture = await createFixture()

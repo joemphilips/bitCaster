@@ -10,6 +10,7 @@ import {
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyWalletId,
 } from '@bitcaster-market/client-sdk/durableCustody'
+import type { DurableWalletMeltUnpaidReason } from '@bitcaster-market/client-sdk/durableWalletMelt'
 import { serializeDurableWalletMeltOperation } from '@bitcaster-market/client-sdk/durableWalletOperation'
 import {
   computeInputFeeSubunitsForProofs,
@@ -50,6 +51,7 @@ import { withDurableCustodyFencedRead } from './durableCustodyUnitOfWork.ts'
 import {
   NativeWalletMeltCoordinator,
   type NativeWalletMeltApprovalContext,
+  type NativeWalletMeltResult,
   type NativeWalletMeltStatusProjection,
   type NativeWalletMeltWallet,
 } from './nativeWalletMeltCoordinator.ts'
@@ -82,11 +84,19 @@ export interface NativeWalletPaymentApproval extends WalletPaymentQuote {
   readonly approvedMaxDebitMsat: number
 }
 
-export interface NativeWalletPaymentResult {
-  readonly operationId: string
-  readonly state: 'paid' | 'unpaid' | 'pending'
-  readonly changeCount: number
-}
+export type NativeWalletPaymentResult =
+  | {
+      readonly operationId: string
+      readonly state: 'paid' | 'pending'
+      readonly changeCount: number
+    }
+  | {
+      readonly operationId: string
+      readonly state: 'unpaid'
+      /** Null when an earlier call ended the payment: the saved state holds no reason. */
+      readonly unpaidReason: DurableWalletMeltUnpaidReason | null
+      readonly changeCount: 0
+    }
 
 export interface NativeWalletPaymentRecoveryItem {
   readonly operationId: string
@@ -252,14 +262,9 @@ export class NativeWalletPaymentOps {
           ? terminalOnlyWallet()
           : await this.#loadedWallet(saved.mintUrl)
         try {
-          const result = await this.#coordinator.recover({
-            operationId: saved.operationId,
-            wallet,
-          })
-          outcomes.push({
-            operationId: saved.operationId,
-            outcome: result.state === 'paid' ? 'recovered' : 'pending',
-          })
+          // Paid and unpaid are both final: an unpaid payment released its inputs.
+          await this.#coordinator.recover({ operationId: saved.operationId, wallet })
+          outcomes.push({ operationId: saved.operationId, outcome: 'recovered' })
         } catch {
           const current = await this.#coordinator.readStatus(saved.operationId)
           outcomes.push({
@@ -656,16 +661,20 @@ function isLocallyComplete(status: NativeWalletMeltStatusProjection): boolean {
   )
 }
 
-function publicResult(result: {
-  readonly operationId: string
-  readonly state: 'paid' | 'unpaid'
-  readonly proofs: readonly Proof[]
-}): NativeWalletPaymentResult {
-  return {
-    operationId: result.operationId,
-    state: result.state,
-    changeCount: result.proofs.length,
+function publicResult(result: NativeWalletMeltResult): NativeWalletPaymentResult {
+  const { operationId } = result
+  switch (result.state) {
+    case 'paid':
+      return { operationId, state: 'paid', changeCount: result.proofs.length }
+    case 'unpaid':
+      return { operationId, state: 'unpaid', unpaidReason: result.unpaidReason, changeCount: 0 }
+    default:
+      return assertNever(result)
   }
+}
+
+function assertNever(value: never): never {
+  throw new Error(`unsupported native wallet payment result: ${JSON.stringify(value)}`)
 }
 
 function terminalOnlyWallet(): NativeWalletMeltWallet {

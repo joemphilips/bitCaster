@@ -356,6 +356,54 @@ test('recovery skips valid mint work and advances the shared active-work cursor'
   }
 })
 
+test('a limit refusal ends the payment as unpaid and releases its inputs', async () => {
+  const fixture = await createFixture()
+  try {
+    const quote = await fixture.ops.quote({ invoice: INVOICE })
+    fixture.wallet.completeMelt = async () => {
+      fixture.calls.complete += 1
+      throw new MintOperationError(11006, 'Melt outflow budget exceeded; try again later')
+    }
+    const approval = { ...quote, approvedMaxDebitMsat: 1_200 }
+    const unpaid = { operationId: quote.operationId, state: 'unpaid', changeCount: 0 }
+    assert.deepEqual(await fixture.ops.pay(approval), { ...unpaid, unpaidReason: 'mint-limit' })
+    assert.equal((await fixture.ops.status(quote))?.operationState, 'aborted')
+
+    // The ended payment is never sent again: a new payment needs a new quote.
+    // The saved operation does not hold the reason.
+    assert.deepEqual(await fixture.ops.pay(approval), { ...unpaid, unpaidReason: null })
+    assert.equal(fixture.calls.complete, 1)
+    const page = await fixture.ops.recoverActivePage({ cursor: null })
+    assert.deepEqual(page.outcomes, [])
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('recovery of a payment that the mint refuses for its limit leaves no pending work', async () => {
+  const fixture = await createFixture()
+  try {
+    const quote = await fixture.ops.quote({ invoice: INVOICE })
+    fixture.wallet.completeMelt = async () => {
+      fixture.calls.complete += 1
+      throw fixture.calls.complete === 1
+        ? new Error('simulated uncertain transport')
+        : new MintOperationError(11006, 'Melt outflow budget exceeded; try again later')
+    }
+    assert.equal(
+      (await fixture.ops.pay({ ...quote, approvedMaxDebitMsat: 1_200 })).state,
+      'pending',
+    )
+
+    const recovered = await fixture.ops.recoverActivePage({ cursor: null })
+    assert.deepEqual(recovered.outcomes, [{ operationId: quote.operationId, outcome: 'recovered' }])
+    assert.equal(fixture.calls.complete, 2)
+    assert.deepEqual((await fixture.ops.recoverActivePage({ cursor: null })).outcomes, [])
+  } finally {
+    await fixture.close()
+  }
+})
+
 test('recovery reports malformed saved melt approval as an error', async () => {
   const fixture = await createFixture()
   try {
