@@ -1,11 +1,28 @@
 import {
   Amount,
+  Mint,
   OutputData,
+  Wallet,
+  createBlindSignature,
+  createDLEQProof,
+  deriveKeysetId,
+  pointFromHex,
   type OperationCounters,
   type Proof,
   type SwapPreview,
 } from "@cashu/cashu-ts";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { describe, expect, it, vi } from "vitest";
+import {
+  hydrateDurableWalletSendPreview,
+  verifyDurableWalletSendResult,
+} from "@bitcaster/client-sdk/durableWalletOperation";
+import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
+import { BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX } from "@/stores/proof-db";
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from "../../../../bitcaster-client-sdk/test/support/mintDenominationKeys";
 import { prepareBrowserDeterministicOutgoingCashuSend } from "../browserDeterministicOutgoingCashu";
 import { browserOutgoingCounterPreparationFor } from "../browserOutgoingCounterPreparation";
 
@@ -99,6 +116,78 @@ describe("browser deterministic outgoing Cashu preparation", () => {
     expect(browserOutgoingCounterPreparationFor(operation).transcript.changes()).toEqual([
       { keysetId: KEYSET_ID, expectedNextCounter: 17, nextCounter: 19 },
     ]);
+  });
+
+  it("completes a payment of a wallet that fills its bounded proof window", async () => {
+    const root = new Uint8Array(32).fill(1);
+    const amounts = Array.from({ length: 14 }, (_, power) => 2 ** power);
+    const keys = mintDenominationKeys(root, amounts.map(String));
+    const keyset = { unit: "msat", input_fee_ppk: 1_000 };
+    const id = deriveKeysetId(keys, { ...keyset, versionByte: 1 });
+    const sign = (amount: number, point: string) => {
+      const key = mintDenominationPrivateKey(root, String(amount));
+      const dleq = createDLEQProof(pointFromHex(point), key);
+      return {
+        id,
+        amount: Amount.from(amount),
+        C_: createBlindSignature(pointFromHex(point), key, id).C_.toHex(true),
+        dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+      };
+    };
+    const proofs = Array.from(
+      { length: BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX },
+      (_, index): Proof => {
+        // One large input gives more outputs than inputs, so the result exceeds the window.
+        const amount = 8_192;
+        // This fixture does not verify the input signatures. Any curve point serves.
+        return { id, amount: Amount.from(amount), secret: `held-${index}`, C: keys[amount]! };
+      },
+    );
+    let wallet: Wallet | undefined;
+    draftWalletMock.create = async ({ counterSource }) => {
+      const mint = new Mint("https://mint.example");
+      mint.getInfo = async () => ({ nuts: {} }) as never;
+      mint.getKeySets = async () => ({ keysets: [{ id, active: true, ...keyset }] });
+      mint.getKeys = async () => ({ keysets: [{ id, ...keyset, keys }] });
+      mint.swap = async ({ outputs }) => ({
+        signatures: outputs.map(({ amount, B_ }) => sign(Number(String(amount)), B_)),
+      });
+      wallet = new Wallet(mint, {
+        unit: "msat",
+        bip39seed: SEED,
+        counterSource,
+        selectProofs: selectWalletProofs,
+      });
+      await wallet.loadMint();
+      return wallet;
+    };
+    const operation = await prepareBrowserDeterministicOutgoingCashuSend({
+      operationId: "browser-send-large",
+      amount: 5_000,
+      proofs,
+      mintUrl: "https://mint.example",
+      unit: "msat",
+      seed: SEED,
+      wallet: {
+        getKeyset: () => ({ id }),
+        prepareSwapToSend: async () => {
+          throw new Error("active wallet must not prepare outgoing outputs");
+        },
+      },
+      requireCapturedProfile: () => undefined,
+      keepProofDerivationLocators: [],
+      diagnosticLabel: "browser send",
+    });
+    const { preview } = operation;
+    const result = await wallet!.completeSwap(hydrateDurableWalletSendPreview(operation));
+
+    // Before the fix, the mint signed the outputs and then this check refused them.
+    const exact = verifyDurableWalletSendResult(operation, result);
+    const total = (values: readonly { amount: unknown }[]) =>
+      values.reduce((sum, { amount }) => sum + Number(String(amount)), 0);
+    expect(total(exact.send)).toBe(5_000);
+    expect(total(exact.keep)).toBe(total(preview.inputs) - 5_000 - preview.inputs.length);
+    expect(preview.unselectedProofs).toEqual([]);
   });
 });
 

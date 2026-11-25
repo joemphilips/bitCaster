@@ -2278,7 +2278,7 @@ test('durable send gives cashu-ts all eligible proofs for nonzero input fees and
   }
 })
 
-test('durable send hydrates passthrough proofs before canonical custody completion', async () => {
+test('durable send leaves the unselected proofs out of its saved plan and does not change them', async () => {
   const fixture = await createFixture()
   try {
     const selectedProofs = [fixture.inputProof]
@@ -2312,7 +2312,7 @@ test('durable send hydrates passthrough proofs before canonical custody completi
     let preparedPassthrough: Proof[] = []
     const wallet = fixture.wallet(
       async () => ({
-        keep: preparedPassthrough,
+        keep: [],
         send: sendOutputs.map((output) => signedProof(output)),
       }),
       CheckStateEnum.UNSPENT,
@@ -2353,10 +2353,11 @@ test('durable send hydrates passthrough proofs before canonical custody completi
     })
 
     assert.equal(transfer.deliveryState, 'delivery-pending')
+    assert.deepEqual(transfer.walletSendOperation.preview.unselectedProofs, [])
     const token = transfer.token
     assert.ok(token)
     assert.equal(token.proofs.length, sendOutputs.length)
-    assert.equal(token.custodyRevisions.length, 17 + 47 + sendOutputs.length)
+    assert.equal(token.custodyRevisions.length, 17 + sendOutputs.length)
     assert.equal(await fixture.count('target_wallet_proofs'), passthroughProofs.length)
     const operation = await getProofOperation('outgoing-passthrough-hydration')
     assert.equal(operation?.state, 'completed')
@@ -2392,15 +2393,6 @@ test('durable send hydrates passthrough proofs before canonical custody completi
       assert.equal(await fixture.targetWalletHasProof(proof), true)
       assert.equal(await fixture.custodySelectability(proof), 'selectable')
       assert.equal(await fixture.custodyRevision(proof), 0)
-      const identity = deriveDurableCustodyArtifactFingerprint({
-        id: proof.id,
-        secret: proof.secret,
-        C: proof.C,
-      })
-      assert.deepEqual(
-        transfer.token.custodyRevisions.find((revision) => revision.proofIdentity === identity),
-        { proofIdentity: identity, revision: 0 },
-      )
     }
     for (const proof of selectedProofs) {
       assert.equal(await fixture.targetWalletHasProof(proof), false)

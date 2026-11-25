@@ -1041,7 +1041,9 @@ export function verifyDurableWalletSendResult(
   if (
     result.keep.length !== expectedKeep.length ||
     result.send.length !== operation.preview.sendOutputs.length ||
-    result.keep.length + result.send.length > DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
+    // Count only the proofs that the mint signed. An earlier version also saved unselected proofs.
+    operation.preview.keepOutputs.length + operation.preview.sendOutputs.length >
+      DURABLE_CUSTODY_RESULT_PROOF_LIMIT_MAX
   ) {
     throw new Error('durable wallet send result does not match its exact output plan')
   }

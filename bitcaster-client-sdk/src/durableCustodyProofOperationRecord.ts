@@ -1,9 +1,11 @@
 // Canonical generic proof-operation record re-authored from 7e1385c.
 import {
+  DURABLE_CUSTODY_RECORD_BYTES_MAX,
   assertDurableCustodyImmutableAuthorityMatches,
   createDurableCustodyDispatchIntent,
   deriveDurableCustodyArtifactFingerprint,
   deriveDurableCustodyProofId,
+  encodeBoundedDurableArtifact,
   isDurableCustodyProofReservationActive,
   type DurableCustodyRecord,
   type DurableCustodyExactArtifact,
@@ -124,6 +126,25 @@ export function createDurableCustodyProofOperation(input: {
       exactPrivateMaterial: input.exactBoundary.privateMaterial,
     },
   })
+}
+
+/** What the mint result adds to a record: its references, and one row for each planned output. */
+const RESULT_BYTES = 1_024
+const RESULT_BYTES_PER_OUTPUT = 256
+
+/**
+ * Refuse a new operation whose record cannot also hold its result. Call this before the first
+ * effect. After the mint spends the inputs, the result must fit, or no recovery can complete it.
+ */
+export function assertDurableCustodyRecordCanHoldResult(record: DurableCustodyRecord): void {
+  const outputs = record.operation.proofStorage.lineage.successorProofIds.length
+  const resultBytes = RESULT_BYTES + outputs * RESULT_BYTES_PER_OUTPUT
+  const recordBytes = encodeBoundedDurableArtifact(
+    record,
+    DURABLE_CUSTODY_RECORD_BYTES_MAX,
+  ).byteLength
+  if (recordBytes + resultBytes > DURABLE_CUSTODY_RECORD_BYTES_MAX)
+    throw new Error('custody record cannot hold the result of this operation')
 }
 
 export function deriveDurableCustodyProofOperationFingerprints(

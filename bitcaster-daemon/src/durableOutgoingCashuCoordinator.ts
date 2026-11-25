@@ -11,6 +11,7 @@ import {
 import { commitDaemonCounterTranscript, DaemonCounterSnapshotConflictError } from './state.ts'
 import { randomUUID } from 'node:crypto'
 import { getEncodedTokenV4, type Proof, type SwapPreview } from '@cashu/cashu-ts'
+import { prepareOutgoingCashuSwap } from '@bitcaster-market/client-sdk/deterministicOutgoingCashuPreparation'
 import {
   applyDurableCustodyTransaction,
   deriveDurableCustodyArtifactFingerprint,
@@ -29,6 +30,7 @@ import {
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
   bindDurableCustodyProofOperation,
+  assertDurableCustodyRecordCanHoldResult,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
@@ -1576,6 +1578,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
     })
     const reservationId = `wallet-send:${input.transferId}`
     const binding = outgoingBinding(walletScope(fence), operation, wallet, reservationId)
+    assertDurableCustodyRecordCanHoldResult(binding.record)
     const targetInput: Parameters<typeof prepareProofOperationWithExactReservationFromDatabase>[1] =
       {
         operationId: input.transferId,
@@ -1594,7 +1597,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
           amount: amountToNumber(preview.amount),
           fees: amountToNumber(preview.fees),
           keysetId: preview.keysetId,
-          unselectedProofs: preview.unselectedProofs ?? [],
+          unselectedProofs: [],
           unit: 'msat',
         },
         reservationId,
@@ -1815,7 +1818,8 @@ export class DaemonDurableOutgoingCashuCoordinator {
     })
     assertSpendableFundsCanPay(input.wallet, available, input.amountMsat)
     assertV2OutgoingProofs(available.proofs.map(({ proof }) => proof))
-    const preview = await input.wallet.prepareSwapToSend(
+    const preview = await prepareOutgoingCashuSwap(
+      { prepareSwapToSend: input.wallet.prepareSwapToSend.bind(input.wallet) },
       input.amountMsat,
       available.proofs.map(({ proof }) => proof as Proof),
       undefined,

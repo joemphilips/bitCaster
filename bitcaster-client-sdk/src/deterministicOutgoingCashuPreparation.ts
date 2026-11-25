@@ -1,4 +1,5 @@
 import type { OperationCounters, OutputData, Proof, SwapPreview } from '@cashu/cashu-ts'
+import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from './durableCustody.ts'
 import { locateSeedDerivedProofLineage } from './durableSeedDerivedProofLineage.ts'
 import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
 
@@ -23,6 +24,34 @@ export interface PreparedDeterministicOutgoingCashuSend {
   readonly preview: SwapPreview
   readonly counters: OperationCounters
   readonly keepProofDerivationLocators: readonly DurableWalletProofDerivationLocator[]
+}
+
+/**
+ * Select the inputs of one outgoing payment and plan its swap. A quote and its execution both use
+ * this function, so they select from the same proofs by the same rule.
+ *
+ * The plan does not name the proofs that it leaves in the wallet. It has no authority over them,
+ * and a wallet can hold more of them than one saved operation accepts.
+ */
+export async function prepareOutgoingCashuSwap<Config, OutputConfig>(
+  wallet: {
+    prepareSwapToSend(
+      amount: number,
+      proofs: Proof[],
+      config: Config,
+      outputConfig: OutputConfig,
+    ): Promise<SwapPreview>
+  },
+  amount: number,
+  proofs: readonly Proof[],
+  config: Config,
+  outputConfig: OutputConfig,
+): Promise<SwapPreview> {
+  const preview = await wallet.prepareSwapToSend(amount, [...proofs], config, outputConfig)
+  if (preview.inputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
+    throw new Error('outgoing Cashu payment needs more inputs than one operation accepts')
+  }
+  return { ...preview, unselectedProofs: [] }
 }
 
 /** Prepare one deterministic V2 send and locate every retained change output. */
@@ -64,9 +93,10 @@ async function prepareDeterministicPreview(
   keysetId: string,
 ): Promise<{ readonly preview: SwapPreview; readonly counters: OperationCounters }> {
   const reservation: { value: OperationCounters | null } = { value: null }
-  const preview = await input.wallet.prepareSwapToSend(
+  const preview = await prepareOutgoingCashuSwap(
+    input.wallet,
     input.amount,
-    input.proofs as Proof[],
+    input.proofs,
     {
       includeFees: false,
       keysetId,
