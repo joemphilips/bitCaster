@@ -527,7 +527,7 @@
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
     "cborg": "5.1.11",
-    "nostr-tools": "2.26.1"
+    "nostr-tools": "2.25.1"
   },
   "devDependencies": {
     "esbuild": "0.28.2",
