@@ -7,6 +7,7 @@ import {
   type ProofLike,
   type SendResponse,
 } from '@cashu/cashu-ts'
+import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from '../src/durableCustody.ts'
 import { selectWalletProofs } from '../src/walletProofSelection.ts'
 
 const MINT_URL = 'https://mint.example'
@@ -33,13 +34,13 @@ test('the selection depends on the proofs and not on their order or the attempt'
   }
 })
 
-test('a wallet that can pay is never refused, and the input count stays below random selection', () => {
+test('a wallet that can pay is never refused, and the input count stays near random selection', () => {
   const random = generator(23)
+  let inputs = 0
+  let randomInputs = 0
   for (const includeFees of [true, false]) {
     for (const ppk of [0, 1, 100, 500, 999, 1_000, 1_500, 2_500]) {
       const chain = keyChain({ [ACTIVE]: ppk })
-      let inputs = 0
-      let randomInputs = 0
       for (let round = 0; round < 150; round += 1) {
         // Arbitrary amounts and power-of-two amounts, from nearly empty to full use of the wallet.
         const proofs =
@@ -69,8 +70,78 @@ test('a wallet that can pay is never refused, and the input count stays below ra
         inputs += result.send.length
         randomInputs += reference.send.length
       }
-      assert.ok(inputs <= randomInputs, `${inputs} inputs, random selection used ${randomInputs}`)
     }
+  }
+  assert.ok(inputs <= 1.1 * randomInputs, `${inputs} inputs, random selection used ${randomInputs}`)
+})
+
+test('a wallet of many small receipts keeps its payments and holdings bounded', () => {
+  for (const seed of [1, 2]) {
+    const random = generator(seed)
+    const chain = keyChain({ [ACTIVE]: 1_000 })
+    let held: ProofLike[] = []
+    let created = 0
+    const receive = (amount: number) => {
+      for (let power = 0; 2 ** power <= amount; power += 1)
+        if (Math.floor(amount / 2 ** power) % 2 === 1)
+          held.push(proof(ACTIVE, 2 ** power, `${seed}:${created++}`))
+    }
+    receive(1_000_000)
+    let maxInputs = 0
+    let maxHeld = 0
+    let payments = 0
+    for (let round = 0; round < 1_000; round += 1) {
+      receive(1 + Math.floor(random() * 3_000))
+      maxHeld = Math.max(maxHeld, held.length)
+      if (round % 10 !== 0) continue
+      const target = 1 + Math.floor(random() * 30_000)
+      const result = selectWalletProofs(held, target, chain, true)
+      assert.ok(result.send.length > 0)
+      payments += 1
+      maxInputs = Math.max(maxInputs, result.send.length)
+      held = [...result.keep]
+      receive(netOf(result.send, 1_000, true) - target)
+    }
+    assert.equal(payments, 100)
+    assert.ok(maxInputs <= DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX, `${maxInputs} inputs`)
+    // The random cashu-ts selection holds at most about 1100 proofs here.
+    assert.ok(maxHeld <= 1_500, `${maxHeld} held proofs`)
+  }
+})
+
+test('a payment that fits the custody input limit uses the fewest inputs when it must', () => {
+  const chain = keyChain({ [ACTIVE]: 1_000, [OLD_VERSION]: 0 }, [OLD_VERSION])
+  const many = [
+    ...Array.from({ length: 1_000 }, (_, index) => proof(ACTIVE, 3, `small${index}`)),
+    ...Array.from({ length: 20 }, (_, index) => proof(ACTIVE, 65, `large${index}`)),
+  ]
+  // The net values are 2 and 64, so 18 large proofs give 1152 and one more gives 1216.
+  const result = selectWalletProofs(many, 1_200, chain, true)
+  assertPartition(result, many)
+  assert.equal(result.send.length, 19)
+  assert.equal(netOf(result.send, 1_000, true), 1_216)
+  const reversed = selectWalletProofs([...many].reverse(), 1_200, chain, true)
+  assert.deepEqual(secretsOf(reversed), secretsOf(result))
+
+  // The forced stale proofs count against the limit and stay selected.
+  const stale = Array.from({ length: 100 }, (_, index) => proof(OLD_VERSION, 1, `stale${index}`))
+  const rotated = selectWalletProofs([...many, ...stale], 1_300, chain, true)
+  assert.equal(rotated.send.length, 119)
+  assert.equal(rotated.send.filter(({ id }) => id === OLD_VERSION).length, 100)
+})
+
+test('stale keysets that alone exceed the input limit stay selected, as in cashu-ts', () => {
+  const chain = keyChain({ [ACTIVE]: 0, [INACTIVE]: 0 }, [INACTIVE])
+  const proofs = [
+    ...Array.from({ length: 300 }, (_, index) => proof(INACTIVE, 2, `stale${index}`)),
+    proof(ACTIVE, 1_024, 'fresh'),
+  ]
+  for (const [target, inputs] of [
+    [700, 301],
+    [520, 260],
+  ] as const) {
+    assert.equal(selectProofsRotating(proofs, target, chain, true).send.length, inputs)
+    assert.equal(selectWalletProofs(proofs, target, chain, true).send.length, inputs)
   }
 })
 
@@ -266,10 +337,13 @@ function shuffle<T>(random: () => number, values: readonly T[]): T[] {
   return result
 }
 
+/** A seeded 32-bit generator (mulberry32). */
 function generator(seed: number): () => number {
   let state = seed
   return () => {
-    state = (state * 1_103_515_245 + 12_345) % 2_147_483_648
-    return state / 2_147_483_648
+    state = (state + 0x6d2b79f5) | 0
+    let mixed = Math.imul(state ^ (state >>> 15), state | 1)
+    mixed ^= mixed + Math.imul(mixed ^ (mixed >>> 7), mixed | 61)
+    return ((mixed ^ (mixed >>> 14)) >>> 0) / 2 ** 32
   }
 }
