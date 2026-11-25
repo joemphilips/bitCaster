@@ -193,6 +193,8 @@ test('a fee that needs too many proofs has its own code', async () => {
     )
     assert.equal(response.ok, false)
     assert.equal('code' in response && response.code, 'wallet-operation-too-large')
+    // The fee is fixed, so a smaller amount is no advice.
+    assert.match('error' in response ? response.error : '', /Combine proofs first/)
   })
 })
 

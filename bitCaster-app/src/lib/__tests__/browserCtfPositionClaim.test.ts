@@ -32,6 +32,7 @@ import {
   MINT,
   MINT_PUBLIC_KEY,
   OUTCOME,
+  PAYOUT_KEYSET,
   REGULAR_KEYSET,
   SEED,
   fixture,
@@ -39,6 +40,7 @@ import {
   disposeFixtures,
   signedPayout,
   signOutputs,
+  signPayoutOutputs,
 } from "./fixtures/browserCtfRedeemFixture";
 import { browserD4OracleEvidence } from "../../test/browserD4OracleFixture";
 
@@ -63,6 +65,37 @@ type ClaimFixtureState = Pick<
   Awaited<ReturnType<typeof fixture>>,
   "database" | "adapter" | "owner" | "counterStore"
 >;
+
+function payoutWallet(): RedeemWallet {
+  return {
+    ...winningWallet(),
+    redeemOutcomeProofs: async ({ outputs }) => signPayoutOutputs(outputs as OutputData[]),
+  };
+}
+
+const PAYOUT_AUTHORITY = {
+  prepareNewLegAuthority: async () => ({
+    regularKeyset: PAYOUT_KEYSET,
+    oracleWitness: '{"oracle_sig":"test"}',
+  }),
+  restoreOutputs: async (_mintUrl: string, outputs: { regular?: unknown }) => ({
+    regular: signPayoutOutputs(outputs.regular as OutputData[]),
+  }),
+} as unknown as Parameters<typeof context>[2];
+
+async function shownPositionAmount(entry: Awaited<ReturnType<typeof fixture>>): Promise<number> {
+  const rows = await readCanonicalPortfolioCustody(entry.scope.scopeId, entry.database);
+  return (rows ?? [])
+    .filter(({ conditionId }) => conditionId === CONDITION)
+    .reduce((sum, { amount }) => sum + Number(amount), 0);
+}
+
+async function regularAmount(entry: Awaited<ReturnType<typeof fixture>>): Promise<number> {
+  const rows = await entry.database.custodyProofs.toArray();
+  return rows
+    .filter((row) => row.assetKind === "regular" && row.selectability === "selectable")
+    .reduce((sum, row) => sum + row.amount, 0);
+}
 
 type NewLegAuthority = BrowserCanonicalCtfPositionClaimPreparation;
 
@@ -291,6 +324,131 @@ describe("browser canonical CTF position claim", () => {
       expect.objectContaining({ secret: "stale-cache" }),
     );
     expect(await entry.database.proofs.count()).toBe(2);
+  });
+
+  it.each([65, 160, 256, 600])(
+    "claims a position of %i proofs of one keyset completely in one claim",
+    async (count) => {
+      const entry = await fixture({ amounts: Array(count).fill(1), oneKeyset: true });
+      const requests: number[] = [];
+      const payouts: number[] = [];
+      const shown: number[] = [];
+      const wallet: RedeemWallet = {
+        ...payoutWallet(),
+        redeemOutcomeProofs: async ({ inputs, outputs }) => {
+          requests.push(inputs.length);
+          return signPayoutOutputs(outputs as OutputData[]);
+        },
+      };
+      const result = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: {
+          ...context(entry, wallet, PAYOUT_AUTHORITY),
+          onCommittedLeg: async ({ payoutAmount }) => {
+            payouts.push(payoutAmount);
+            shown.push(await shownPositionAmount(entry));
+          },
+        },
+      });
+      expect(result).toMatchObject({
+        kind: "completed",
+        committedPayoutAmount: count,
+        pendingLegs: 0,
+      });
+      expect(Math.max(...requests)).toBeLessThanOrEqual(64);
+      expect(requests.reduce((sum, inputs) => sum + inputs, 0)).toBe(count);
+      // After each page the portfolio shows the rest, and the payout so far is exact.
+      payouts.forEach((_, index) => {
+        const paid = payouts.slice(0, index + 1).reduce((sum, amount) => sum + amount, 0);
+        expect(shown[index]).toBe(count - paid);
+      });
+      expect(await shownPositionAmount(entry)).toBe(0);
+      expect(await regularAmount(entry)).toBe(count);
+    },
+    60_000,
+  );
+
+  it.each([160, 256])(
+    "keeps the rest of %i proofs claimable after a crash between two pages",
+    async (count) => {
+      const entry = await fixture({ amounts: Array(count).fill(1), oneKeyset: true });
+      let calls = 0;
+      const crashing: RedeemWallet = {
+        ...payoutWallet(),
+        redeemOutcomeProofs: async ({ outputs }) => {
+          calls += 1;
+          if (calls === 2) throw new Error("request timed out");
+          return signPayoutOutputs(outputs as OutputData[]);
+        },
+      };
+      let stopAfterPage = false;
+      const first = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        stopOnCommittedPayout: true,
+        context: {
+          ...context(entry, crashing, PAYOUT_AUTHORITY),
+          onCommittedLeg: () => {
+            stopAfterPage = true;
+          },
+        },
+      });
+      expect(stopAfterPage).toBe(true);
+      expect(first).toMatchObject({ kind: "stopped", committedPayoutAmount: 64 });
+      expect(await shownPositionAmount(entry)).toBe(count - 64);
+      expect(await regularAmount(entry)).toBe(64);
+
+      const interrupted = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context(entry, crashing, PAYOUT_AUTHORITY),
+      });
+      expect(interrupted.kind).toBe("pending");
+      // The page without an answer stays in the position until its recovery.
+      expect(await shownPositionAmount(entry)).toBe(64);
+      expect(await regularAmount(entry)).toBe(count - 64);
+
+      const resumed = await claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        context: context(entry, payoutWallet(), PAYOUT_AUTHORITY),
+      });
+      expect(resumed).toMatchObject({ kind: "completed", committedPayoutAmount: 64 });
+      expect(await shownPositionAmount(entry)).toBe(0);
+      expect(await regularAmount(entry)).toBe(count);
+    },
+    60_000,
+  );
+
+  it("claims exact targets of one keyset on several pages, and refuses a changed one first", async () => {
+    const entry = await fixture({ amounts: Array(100).fill(1), oneKeyset: true });
+    const targets = entry.proofs.map(({ proofId, revision, proofFingerprint }) => ({
+      proofId,
+      revision,
+      proofFingerprint,
+    }));
+    const last = [...targets].sort((a, b) => (a.proofId < b.proofId ? -1 : 1)).at(-1)!;
+    let requests = 0;
+    const wallet: RedeemWallet = {
+      ...payoutWallet(),
+      redeemOutcomeProofs: async ({ outputs }) => {
+        requests += 1;
+        return signPayoutOutputs(outputs as OutputData[]);
+      },
+    };
+    const claim = (exact: typeof targets) =>
+      claimBrowserCanonicalCtfPosition({
+        position: { conditionId: CONDITION, outcomeCollection: OUTCOME },
+        targets: exact,
+        context: context(entry, wallet, PAYOUT_AUTHORITY),
+      });
+    const changed = targets.map((target) =>
+      target === last ? { ...target, revision: target.revision + 1 } : target,
+    );
+    expect(await claim(changed)).toMatchObject({
+      kind: "error",
+      error: { category: "profile-ownership" },
+    });
+    expect(requests).toBe(0);
+    expect(await claim(targets)).toMatchObject({ kind: "completed", committedPayoutAmount: 100 });
+    expect(requests).toBe(2);
   });
 
   it("claims only captured exact targets and ignores a newly arriving canonical proof", async () => {

@@ -199,6 +199,7 @@ it("uses one real IndexedDB commit for output counters and transfer authority", 
         requireCapturedProfile: context.requireCapturedProfile,
         keepProofDerivationLocators,
         diagnosticLabel: "browser outgoing test",
+        tooLargeAdvice: "smaller-amount",
       });
     const run = () =>
       executeBrowserDurableOutgoingCashuTransfer({
@@ -493,6 +494,7 @@ async function createOutgoingScenario(seedByte: number, conflicts = 0) {
       requireCapturedProfile: context.requireCapturedProfile,
       keepProofDerivationLocators,
       diagnosticLabel: "browser outgoing test",
+      tooLargeAdvice: "smaller-amount",
     });
   return {
     database,

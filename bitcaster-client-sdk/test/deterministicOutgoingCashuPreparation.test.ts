@@ -36,6 +36,7 @@ test('prepares one deterministic V2 send and returns exact keep-output locators'
     seed: SEED,
     wallet,
     diagnosticLabel: 'test send',
+    operationId: 'operation-1',
   })
 
   assert.equal(result.preview.keysetId, KEYSET_ID)
@@ -82,6 +83,7 @@ test('requests the canonical keyset, fee-free preparation, and deterministic out
     seed: SEED,
     wallet,
     diagnosticLabel: 'test send',
+    operationId: 'operation-1',
   })
 
   assert.equal(prepareCalls, 1)
@@ -108,6 +110,7 @@ test('rejects a missing or duplicate counter reservation', async () => {
       seed: SEED,
       wallet: missing,
       diagnosticLabel: 'test send',
+      operationId: 'operation-1',
     }),
     /counter reservation is missing/,
   )
@@ -118,6 +121,7 @@ test('rejects a missing or duplicate counter reservation', async () => {
       seed: SEED,
       wallet: duplicate,
       diagnosticLabel: 'test send',
+      operationId: 'operation-1',
     }),
     /counters were reserved twice/,
   )
@@ -144,6 +148,7 @@ test('rejects counter ranges that do not match the exact output plan or seed lin
       seed: SEED,
       wallet: wrongOutputCount,
       diagnosticLabel: 'test send',
+      operationId: 'operation-1',
     }),
     /conflicts with the output plan/,
   )
@@ -154,6 +159,7 @@ test('rejects counter ranges that do not match the exact output plan or seed lin
       seed: SEED,
       wallet: wrongSeedLineage,
       diagnosticLabel: 'test send',
+      operationId: 'operation-1',
     }),
     /does not match the exact deterministic counter range/,
   )
@@ -179,6 +185,7 @@ test('rejects invalid amounts and non-V2 keysets before preparing outputs', asyn
         seed: SEED,
         wallet,
         diagnosticLabel: 'test send',
+        operationId: 'operation-1',
       }),
       /amount is invalid/,
     )
@@ -197,6 +204,7 @@ test('rejects invalid amounts and non-V2 keysets before preparing outputs', asyn
       seed: SEED,
       wallet: v3Wallet,
       diagnosticLabel: 'test send',
+      operationId: 'operation-1',
     }),
     /canonical V2 keyset/,
   )

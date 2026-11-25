@@ -221,6 +221,7 @@ import {
   type DaemonCtfRangeRecoveryStatus,
 } from './ctfRangeOrderRelease.ts'
 import { WalletOperationTooLargeError } from '@bitcaster-market/client-sdk/walletOperationSize'
+import { COMBINE_PROOFS, USE_SMALLER_AMOUNT } from './walletOperationAdvice.ts'
 import { CtfRangeOrderOutputCheckError } from '@bitcaster-market/client-sdk/ctfRangeOrderOutputCheck'
 import {
   DAEMON_WATCH_MEDIA_TYPE,
@@ -639,8 +640,14 @@ function normalizeRpcError(err: unknown): DaemonResponse {
 }
 
 /** A wallet command that is refused before any effect, with its fixed code and text. */
-function walletRefusalResponse(err: unknown): DaemonResponse | null {
-  return err instanceof CustodyRepairRequiredError || err instanceof WalletOperationTooLargeError
+function walletRefusalResponse(err: unknown, tooLargeAdvice?: string): DaemonResponse | null {
+  if (err instanceof WalletOperationTooLargeError)
+    return {
+      ok: false,
+      code: err.code,
+      error: tooLargeAdvice === undefined ? err.message : `${err.message} ${tooLargeAdvice}`,
+    }
+  return err instanceof CustodyRepairRequiredError
     ? { ok: false, code: err.code, error: err.message }
     : null
 }
@@ -1054,7 +1061,7 @@ async function dispatchCommand(
           ),
         }
       } catch (error) {
-        const repair = walletRefusalResponse(error)
+        const repair = walletRefusalResponse(error, USE_SMALLER_AMOUNT)
         if (repair !== null) return repair
         throw error
       } finally {
@@ -2681,7 +2688,7 @@ async function dispatchNativeWalletPayment(
         if (error instanceof NativeMintPaymentAmountError) {
           return nativeMintPaymentAmountFailure(error)
         }
-        const repair = walletRefusalResponse(error)
+        const repair = walletRefusalResponse(error, USE_SMALLER_AMOUNT)
         if (repair !== null) return repair
         return {
           ok: false,
@@ -2700,7 +2707,7 @@ async function dispatchNativeWalletPayment(
           ? nativeMintPaymentLimitReachedFailure(result)
           : { ok: true, result }
       } catch (error) {
-        const repair = walletRefusalResponse(error)
+        const repair = walletRefusalResponse(error, USE_SMALLER_AMOUNT)
         if (repair !== null) return repair
         return {
           ok: false,
@@ -2854,7 +2861,7 @@ async function dispatchParticipationScore(
         },
       }
     } catch (error) {
-      const repair = walletRefusalResponse(error)
+      const repair = walletRefusalResponse(error, COMBINE_PROOFS)
       if (repair !== null) return repair
       return {
         ok: false,
@@ -2977,7 +2984,7 @@ async function dispatchParticipationScore(
         result: scoreDeliveryStatusResult(consent, remoteStatus.state, remoteStatus.result),
       }
     }
-    const repair = walletRefusalResponse(error)
+    const repair = walletRefusalResponse(error, COMBINE_PROOFS)
     if (repair !== null) return repair
     const message =
       error instanceof Error &&
@@ -3233,7 +3240,7 @@ async function dispatchMarketFunding(
         },
       }
     } catch (error) {
-      const repair = walletRefusalResponse(error)
+      const repair = walletRefusalResponse(error, COMBINE_PROOFS)
       if (repair !== null) return repair
       const refusal = safeMarketFundingRefusal(error)
       if (refusal !== null) {
@@ -3278,7 +3285,7 @@ async function dispatchMarketFunding(
       },
     }
   } catch (error) {
-    const repair = walletRefusalResponse(error)
+    const repair = walletRefusalResponse(error, COMBINE_PROOFS)
     if (repair !== null) return repair
     const attemptId = attempt.kind === 'begin' ? attempt.newAttemptId : attempt.transferId
     const refusal = safeMarketFundingRefusal(error)

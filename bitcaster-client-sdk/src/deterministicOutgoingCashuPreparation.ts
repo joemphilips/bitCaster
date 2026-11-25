@@ -46,11 +46,13 @@ export async function prepareOutgoingCashuSwap<Config, OutputConfig>(
   proofs: readonly Proof[],
   config: Config,
   outputConfig: OutputConfig,
+  operationKey?: string,
 ): Promise<SwapPreview> {
   const preview = await wallet.prepareSwapToSend(amount, [...proofs], config, outputConfig)
   assertNewWalletOperationFits(
     preview.inputs,
     (preview.sendOutputs?.length ?? 0) + (preview.keepOutputs?.length ?? 0),
+    operationKey,
   )
   return { ...preview, unselectedProofs: [] }
 }
@@ -62,6 +64,7 @@ export async function prepareDeterministicOutgoingCashuSend(input: {
   readonly seed: Uint8Array
   readonly wallet: DeterministicOutgoingCashuWallet
   readonly diagnosticLabel: string
+  readonly operationId: string
 }): Promise<PreparedDeterministicOutgoingCashuSend> {
   const keysetId = requireCanonicalV2Keyset(input)
   const { preview, counters } = await prepareDeterministicPreview(input, keysetId)
@@ -112,6 +115,7 @@ async function prepareDeterministicPreview(
       send: { type: 'deterministic', counter: 0 },
       keep: { type: 'deterministic', counter: 0 },
     },
+    input.operationId,
   )
   if (reservation.value === null || reservation.value.keysetId !== preview.keysetId) {
     throw new Error(`${input.diagnosticLabel} output counter reservation is missing`)

@@ -1,4 +1,5 @@
 // @vitest-environment node
+import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
 import "fake-indexeddb/auto";
 import { NEW_WALLET_OPERATION_INPUT_LIMIT } from "@bitcaster/client-sdk/walletOperationSize";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -960,6 +961,33 @@ describe("browser melt real private counter preparation", () => {
     }
   });
 
+  it("selects inputs with the real selector and prepares the payment with cashu-ts", async () => {
+    const f = await realMeltFixture();
+    const others = Array.from({ length: 6 }, (_, index) =>
+      proofForOutput(
+        OutputData.createSingleData(2, KEYSET_ID, `real-${index}`, BigInt(20 + index)),
+      ),
+    );
+    for (const other of others) await seedInput(f.database, other);
+    // The payment needs 4 of the 14 msat that the wallet holds.
+    f.quote.amount = Amount.from(3);
+    const held = [f.input, ...others];
+    const paid = await meltBrowserDurableWallet({
+      mintUrl: MINT,
+      quote: f.quote,
+      proofs: held,
+      wallet: f.wallet,
+      context: f.context,
+    });
+    expect(paid.paid).toBe(true);
+    const preview = f.complete.mock.calls[0]![0];
+    expect(preview.inputs).toHaveLength(2);
+    const spent = new Set(preview.inputs.map(({ secret }) => secret));
+    const rows = await getCanonicalSelectableProofs(browserWalletScope(SEED).scopeId, f.database);
+    const kept = rows!.map(({ secret }) => secret);
+    for (const proof of held) expect(kept.includes(proof.secret)).toBe(!spent.has(proof.secret));
+  });
+
   it("preserves the durable SDK legacy-keyset refusal for no-change", async () => {
     const f = await realMeltFixture({ noChange: true, legacy: true });
     await f.database.walletCounterAssociations.clear();
@@ -1089,6 +1117,7 @@ async function realMeltFixture(
       bip39seed: SEED,
       counterSource: source,
       keysetId: selectedId,
+      selectProofs: selectWalletProofs,
     });
     await wallet.loadMint();
     const prepare = wallet.prepareMelt.bind(wallet);

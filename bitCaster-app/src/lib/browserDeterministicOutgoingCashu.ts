@@ -15,6 +15,10 @@ import {
 } from "../stores/browser-wallet-counter-db";
 import { db, type BitcasterDB } from "../stores/proof-db";
 import { createUncachedWalletForSeedUnit } from "../stores/wallet";
+import {
+  localizedWalletOperationRefusal,
+  type WalletOperationAdvice,
+} from "./walletOperationRefusal";
 import { bindBrowserOutgoingCounterPreparation } from "./browserOutgoingCounterPreparation";
 
 export type BrowserDeterministicOutgoingCashuWallet = DeterministicOutgoingCashuWallet;
@@ -32,6 +36,7 @@ export async function prepareBrowserDeterministicOutgoingCashuSend(input: {
   readonly requireCapturedProfile: () => void;
   readonly keepProofDerivationLocators: Array<DurableWalletProofDerivationLocator | null>;
   readonly diagnosticLabel: string;
+  readonly tooLargeAdvice: WalletOperationAdvice;
 }) {
   const database = input.database ?? db;
   const scope = browserWalletScope(input.seed);
@@ -69,7 +74,12 @@ export async function prepareBrowserDeterministicOutgoingCashuSend(input: {
   if (pinned.id !== selected.id || !pinned.verify()) {
     throw new Error(`${input.diagnosticLabel} pinned output keyset changed`);
   }
-  const prepared = await prepareDeterministicOutgoingCashuSend({ ...input, wallet: draftWallet });
+  const prepared = await prepareDeterministicOutgoingCashuSend({
+    ...input,
+    wallet: draftWallet,
+  }).catch((error: unknown) => {
+    throw localizedWalletOperationRefusal(error, input.tooLargeAdvice);
+  });
   const allocation = transcript.allocations();
   if (
     allocation.length !== 1 ||

@@ -58,6 +58,7 @@ import {
   createBrowserCustodyProofRow,
 } from "../stores/durable-custody-db";
 import { assertNewWalletOperationFits } from "@bitcaster/client-sdk/walletOperationSize";
+import { localizedWalletOperationRefusal } from "./walletOperationRefusal";
 import { db, type BitcasterDB, type StoredProof } from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
@@ -709,7 +710,11 @@ function selectMeltProofs(input: BrowserDurableWalletMeltInput, proofs: Proof[])
     -Amount.from(input.quote.amount).toBigInt(),
   );
   // The mint returns an unused reserve in at most one blank output for each bit of the overage.
-  assertNewWalletOperationFits(selected, overage.toString(2).length);
+  try {
+    assertNewWalletOperationFits(selected, overage.toString(2).length);
+  } catch (error) {
+    throw localizedWalletOperationRefusal(error, "smaller-amount");
+  }
   const secrets = new Set(selected.map(({ secret }) => secret));
   return proofs.filter(({ secret }) => secrets.has(secret));
 }

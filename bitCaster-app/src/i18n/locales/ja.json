@@ -707,6 +707,8 @@
     "profileTitle": "公開プロフィール"
   },
   "deposit": {
+    "tooManyProofsAmount": "この支払いには多すぎるプルーフが必要です。何も送信していません。金額を小さくしてください。",
+    "tooManyProofsFixed": "この支払いには多すぎるプルーフが必要です。何も送信していません。先に残高の一部を ecash として出金し、このウォレットで受け取ってプルーフをまとめてから、もう一度お試しください。",
     "title": "入金",
     "acknowledgeTokenHandoff": "トークンを保存または送信しました",
     "withdrawal": "出金",

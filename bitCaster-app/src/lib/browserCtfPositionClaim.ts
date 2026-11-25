@@ -42,6 +42,8 @@ import { withWalletProfileLock } from "./walletProfileLock";
 import { requireBrowserCtfVerifiedLosingProofAuthority } from "./browserCtfRemoveCoordinator";
 
 const RECOVERABLE_PAGE_LIMIT = 256;
+/** One custody operation holds a limited number of inputs. One claim continues through all pages. */
+const CLAIM_PAGE_PROOF_LIMIT = 64;
 /** The proof identity captured by an exclusion confirmation. */
 export interface BrowserCanonicalCtfPositionClaimTarget {
   readonly proofId: string;
@@ -284,9 +286,11 @@ async function claimWhileLocked(
       conditionId: input.position.conditionId,
       outcomeCollection: input.position.outcomeCollection,
       database: context.database,
+      pageLimit: CLAIM_PAGE_PROOF_LIMIT,
     });
     for await (const canonicalLeg of legs) {
-      const leg = exact === null ? canonicalLeg : exactLeg(canonicalLeg, exact);
+      const leg =
+        exact === null ? canonicalLeg : await exactLeg(canonicalLeg, exact, context.adapter);
       if (leg === null) continue;
       const operationId = durableOperationIdForLeg(
         scope.scopeId,
@@ -583,27 +587,33 @@ async function readExactTargetState(
   return { targets, rows, covered: new Set() };
 }
 
-function exactLeg(leg: BrowserCtfRedeemLeg, exact: ExactTargetState): BrowserCtfRedeemLeg | null {
-  const targetRows = leg.rows.filter(({ proofId }) => exact.targets.has(proofId));
-  if (targetRows.length === 0) return null;
-  const keysetTargetIds = [...exact.rows.values()]
-    .filter(({ keysetId }) => keysetId === leg.keyset.keysetId)
-    .map(({ proofId }) => proofId);
+function requireClaimableTarget(row: BrowserCustodyProofRow | null, exact: ExactTargetState): void {
+  const target = row === null ? undefined : exact.targets.get(row.proofId);
   if (
-    keysetTargetIds.length !== targetRows.length ||
-    keysetTargetIds.some((proofId) => !targetRows.some((row) => row.proofId === proofId))
+    row === null ||
+    target === undefined ||
+    row.selectability !== "selectable" ||
+    row.revision !== target.revision ||
+    row.proofFingerprint !== target.proofFingerprint
   ) {
     throw new BrowserCtfClaimBoundaryError("profile-ownership");
   }
-  for (const row of targetRows) {
-    const target = exact.targets.get(row.proofId)!;
-    if (
-      row.selectability !== "selectable" ||
-      row.revision !== target.revision ||
-      row.proofFingerprint !== target.proofFingerprint
-    ) {
-      throw new BrowserCtfClaimBoundaryError("profile-ownership");
-    }
+}
+
+async function exactLeg(
+  leg: BrowserCtfRedeemLeg,
+  exact: ExactTargetState,
+  adapter: BrowserDurableCustodyAdapter,
+): Promise<BrowserCtfRedeemLeg | null> {
+  const targetRows = leg.rows.filter(({ proofId }) => exact.targets.has(proofId));
+  if (targetRows.length === 0) return null;
+  targetRows.forEach((row) => requireClaimableTarget(row, exact));
+  // A page can hold a part of the targets of one keyset. Before the first payout, the targets on the
+  // other pages must be claimable too.
+  for (const row of exact.rows.values()) {
+    if (row.keysetId !== leg.keyset.keysetId || exact.covered.has(row.proofId)) continue;
+    if (targetRows.some(({ proofId }) => proofId === row.proofId)) continue;
+    requireClaimableTarget(await adapter.readProof(row.scopeId, row.proofId), exact);
   }
   const selected = new Set(targetRows.map(({ proofId }) => proofId));
   return {

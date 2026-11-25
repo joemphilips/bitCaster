@@ -227,6 +227,7 @@ async function prepareBrowserMarketFundingTransfer(input: {
         seed: context.seed,
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Market funding",
+        tooLargeAdvice: "combine-proofs",
       });
       const keyset = wallet.getKeyset(operation.preview.keysetId);
       if (

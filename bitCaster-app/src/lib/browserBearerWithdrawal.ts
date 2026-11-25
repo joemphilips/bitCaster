@@ -92,6 +92,7 @@ export async function executeBrowserBearerWithdrawal(input: {
         unit: "msat",
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Withdrawal",
+        tooLargeAdvice: "smaller-amount",
       });
     },
     keepProofDerivationLocators: keepLocators,

@@ -712,6 +712,8 @@
     "profileTitle": "Public profile"
   },
   "deposit": {
+    "tooManyProofsAmount": "This payment needs too many of your proofs. Nothing was sent. Use a smaller amount.",
+    "tooManyProofsFixed": "This payment needs too many of your proofs. Nothing was sent. First combine them: withdraw a part of your balance as ecash and receive it in this wallet. Then try again.",
     "title": "Deposit",
     "acknowledgeTokenHandoff": "I saved or sent the token",
     "withdrawal": "Withdrawal",

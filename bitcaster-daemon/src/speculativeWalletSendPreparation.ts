@@ -32,6 +32,7 @@ export async function prepareSpeculativeWalletSend(input: {
   readonly storage: DaemonStateSqliteSession
   readonly fence: CustodyScopeFence
   readonly nowMs: number
+  readonly operationId: string
   readonly mintUrl: string
   readonly amount: number
   readonly proofs: readonly Proof[]
@@ -67,6 +68,7 @@ export async function prepareSpeculativeWalletSend(input: {
   let callbacks = 0
   let observed: OperationCounters | undefined
   const preparation = await prepareDeterministicOutgoingCashuSend({
+    operationId: input.operationId,
     amount: input.amount,
     proofs: input.proofs,
     seed: input.seed,

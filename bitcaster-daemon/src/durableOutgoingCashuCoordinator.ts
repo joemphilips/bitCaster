@@ -1515,6 +1515,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
       storage: this.#storage,
       fence,
       nowMs: observedAtMs,
+      operationId: input.transferId,
       mintUrl: input.mintUrl,
       amount: input.amountMsat,
       proofs,

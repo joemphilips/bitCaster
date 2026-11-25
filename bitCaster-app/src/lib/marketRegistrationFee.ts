@@ -190,6 +190,7 @@ export async function prepareConditionRegistrationFee(input: {
         seed: context.seed,
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Condition registration fee",
+        tooLargeAdvice: "combine-proofs",
       });
     },
     keepProofDerivationLocators: keepLocators,

@@ -17,6 +17,8 @@ import {
   hydrateDurableWalletSendPreview,
   verifyDurableWalletSendResult,
 } from "@bitcaster/client-sdk/durableWalletOperation";
+import { NEW_WALLET_OPERATION_INPUT_LIMIT } from "@bitcaster/client-sdk/walletOperationSize";
+import i18n from "@/i18n";
 import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
 import { BOUNDED_CANONICAL_REGULAR_PROOF_LIMIT_MAX } from "@/stores/proof-db";
 import {
@@ -102,6 +104,7 @@ describe("browser deterministic outgoing Cashu preparation", () => {
       requireCapturedProfile: () => undefined,
       keepProofDerivationLocators,
       diagnosticLabel: "browser send",
+      tooLargeAdvice: "smaller-amount",
     });
 
     expect(prepareCalls).toBe(1);
@@ -117,6 +120,55 @@ describe("browser deterministic outgoing Cashu preparation", () => {
       { keysetId: KEYSET_ID, expectedNextCounter: 17, nextCounter: 19 },
     ]);
   });
+
+  it.each([
+    ["en", "smaller-amount", "Use a smaller amount."],
+    ["en", "combine-proofs", "First combine them"],
+    ["ja", "smaller-amount", "金額を小さくしてください"],
+    ["ja", "combine-proofs", "プルーフをまとめてから"],
+  ] as const)(
+    "localizes a refusal (%s, %s) and reserves nothing",
+    async (language, advice, text) => {
+      const previous = i18n.language;
+      await i18n.changeLanguage(language);
+      let reserved = 0;
+      draftWalletMock.create = async () => ({
+        getKeyset: () => ({ id: KEYSET_ID, verify: () => true }),
+        prepareSwapToSend: async () => ({
+          ...createPreview(0),
+          inputs: Array<Proof>(NEW_WALLET_OPERATION_INPUT_LIMIT + 1).fill(INPUT_PROOF),
+        }),
+      });
+      try {
+        const refused = prepareBrowserDeterministicOutgoingCashuSend({
+          operationId: "browser-send-refused",
+          amount: 2,
+          proofs: [INPUT_PROOF],
+          mintUrl: "https://mint.example",
+          unit: "msat",
+          seed: SEED,
+          wallet: {
+            getKeyset: () => ({ id: KEYSET_ID }),
+            prepareSwapToSend: async () => {
+              reserved += 1;
+              return createPreview(0);
+            },
+          },
+          requireCapturedProfile: () => undefined,
+          keepProofDerivationLocators: [],
+          diagnosticLabel: "browser send",
+          tooLargeAdvice: advice,
+        });
+        await expect(refused).rejects.toMatchObject({
+          code: "wallet-operation-too-large",
+          message: expect.stringContaining(text),
+        });
+        expect(reserved).toBe(0);
+      } finally {
+        await i18n.changeLanguage(previous);
+      }
+    },
+  );
 
   it("completes a payment of a wallet that fills its bounded proof window", async () => {
     const root = new Uint8Array(32).fill(1);
@@ -177,6 +229,7 @@ describe("browser deterministic outgoing Cashu preparation", () => {
       requireCapturedProfile: () => undefined,
       keepProofDerivationLocators: [],
       diagnosticLabel: "browser send",
+      tooLargeAdvice: "smaller-amount",
     });
     const { preview } = operation;
     const result = await wallet!.completeSwap(hydrateDurableWalletSendPreview(operation));

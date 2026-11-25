@@ -10,7 +10,10 @@ import {
   prepareDurableCustodyExactArtifact,
   type DurableCustodyRecord,
 } from '../src/durableCustody.ts'
-import { assertDurableCustodyRecordCanHoldResult } from '../src/durableCustodyProofOperationRecord.ts'
+import {
+  assertDurableCustodyRecordCanHoldResult,
+  bindNewDurableCustodyProofOperation,
+} from '../src/durableCustodyProofOperationRecord.ts'
 import {
   LATER_RECORD_TEXT_BYTES,
   NEW_WALLET_OPERATION_INPUT_LIMIT,
@@ -75,6 +78,80 @@ test('the exact worst case fits, and one more output is refused', () => {
   assert.ok(largest >= 48, `${largest} outputs at the input limit`)
 })
 
+test('the size bound covers the last check for each legal operation key', () => {
+  const keys = [
+    'k',
+    'k'.repeat(128),
+    'k'.repeat(512),
+    'k'.repeat(1_024),
+    ':'.repeat(512),
+    '"'.repeat(512),
+    'あ'.repeat(300),
+  ]
+  for (const key of keys) {
+    for (const inputs of [1, 40, 80, 120, NEW_WALLET_OPERATION_INPUT_LIMIT]) {
+      for (const outputs of [1, 12, 48]) {
+        const proofs = Array(inputs).fill({ id: keysetIds(WORST)[0]! })
+        if (!passes(() => assertNewWalletOperationFits(proofs, outputs, key))) continue
+        assertDurableCustodyRecordCanHoldResult(
+          createRecord({ ...WORST, inputs, outputs, operationKey: key }),
+        )
+      }
+    }
+  }
+})
+
+for (const [semanticKind, stage] of [
+  ['ctf-redeem', 'ctf-redeem'],
+  ['ctf-merge', 'ctf-merge'],
+  ['ctf-range-regular-source', 'capability-preparation'],
+  ['ctf-range-conditional-source', 'capability-preparation'],
+  ['generic-receive', 'receive'],
+  ['generic-send', 'send'],
+  ['wallet-send', 'send'],
+] as const) {
+  test(`a new ${semanticKind} that cannot hold its result is refused before it is saved`, () => {
+    const oversized = createRecord({
+      ...WORST,
+      inputs: 185,
+      outputs: 8,
+      mintOriginBytes: 24,
+      operationKeyBytes: 1,
+      semanticKind,
+      stage,
+    })
+    let saved = 0
+    const transaction = (existing: DurableCustodyRecord | null) =>
+      ({
+        getOperation: () => existing,
+        putOperation: () => {
+          saved += 1
+        },
+        putExactArtifact: () => undefined,
+        reserveExactInputs: () => undefined,
+        rebuildActiveWorkIndex: () => undefined,
+      }) as never
+    const artifacts = {
+      requestBody: prepareDurableCustodyExactArtifact({ kind: 'exact' }),
+      output: prepareDurableCustodyExactArtifact({ kind: 'exact' }),
+      privateMaterial: prepareDurableCustodyExactArtifact({ kind: 'exact' }),
+    }
+    assert.throws(
+      () => bindNewDurableCustodyProofOperation(transaction(null), oversized, artifacts),
+      WalletOperationTooLargeError,
+    )
+    assert.equal(saved, 0)
+    // A saved record keeps its replay. Only a new operation is refused.
+    assert.doesNotThrow(() => {
+      try {
+        bindNewDurableCustodyProofOperation(transaction(oversized), oversized, artifacts)
+      } catch (error) {
+        if (error instanceof WalletOperationTooLargeError) throw error
+      }
+    })
+  })
+}
+
 test('a record that holds its request but not its result is refused with the fixed code', () => {
   // The daemon reached this state near 190 inputs: the mint signed, and no recovery could save it.
   const record = createRecord({
@@ -90,7 +167,7 @@ test('a record that holds its request but not its result is refused with the fix
     (error: Error) =>
       error instanceof WalletOperationTooLargeError &&
       error.code === 'wallet-operation-too-large' &&
-      error.message.includes('Use a smaller amount'),
+      error.message.includes('Nothing was sent'),
   )
 })
 
@@ -123,14 +200,22 @@ function hex(prefix: string, index: number): string {
   return `${prefix}${index.toString(16)}`.padEnd(64, '0')
 }
 
-function createRecord(shape: typeof WORST): DurableCustodyRecord {
+type RecordInput = Parameters<typeof createDurableCustodyDispatchIntent>[0]
+
+interface Shape extends Readonly<typeof WORST> {
+  readonly operationKey?: string
+  readonly semanticKind?: RecordInput['semanticKind']
+  readonly stage?: RecordInput['facts']['binding']['stage']
+}
+
+function createRecord(shape: Shape): DurableCustodyRecord {
   const walletId = deriveDurableCustodyWalletId(new Uint8Array(32).fill(7))
   const scope = { scopeKind: 'wallet' as const, walletId }
-  const key = 'k'.repeat(shape.operationKeyBytes)
+  const key = shape.operationKey ?? 'k'.repeat(shape.operationKeyBytes)
   const ids = keysetIds(shape)
   const facts = createDurableProofOperationFacts({
     unit: 'msat',
-    binding: { kind: 'wallet', activityId: key, stage: 'send' },
+    binding: { kind: 'wallet', activityId: key, stage: shape.stage ?? 'send' },
     horizon: { notBeforeMs: null, notAfterMs: null, safetyMarginMs: 0 },
     hasOutputs: true,
     inputKeysetRequirement: 'required',
@@ -156,7 +241,7 @@ function createRecord(shape: typeof WORST): DurableCustodyRecord {
   return createDurableCustodyDispatchIntent({
     scope: { ...scope, scopeId: deriveDurableCustodyScopeId(scope) },
     retainedOperationKey: key,
-    semanticKind: 'wallet-send',
+    semanticKind: shape.semanticKind ?? 'wallet-send',
     facts,
     normalizedMint: mintOrigin(shape.mintOriginBytes),
     inventoryAccountId: null,

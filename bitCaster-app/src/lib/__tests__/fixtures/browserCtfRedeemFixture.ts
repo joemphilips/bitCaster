@@ -12,6 +12,10 @@ import {
   type OutputData,
   type Proof,
 } from "@cashu/cashu-ts";
+import {
+  mintDenominationKeys,
+  mintDenominationPrivateKey,
+} from "../../../../../bitcaster-client-sdk/test/support/mintDenominationKeys";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
 import { BROWSER_D4_CONDITION } from "../../../test/browserD4OracleFixture";
 import { readPreparedDurableCtfRedeemRequest } from "@bitcaster/client-sdk/ctfRedeem";
@@ -73,6 +77,19 @@ export const REGULAR_KEYSET: MintKeys = {
   input_fee_ppk: 0,
 };
 
+/** A payout keyset with more denominations, so that a large payout has few outputs. */
+const PAYOUT_KEYS = mintDenominationKeys(
+  MINT_PRIVATE_KEY,
+  Array.from({ length: 11 }, (_, power) => String(2 ** power)),
+);
+export const PAYOUT_KEYSET: MintKeys = {
+  id: deriveKeysetId(PAYOUT_KEYS, { unit: "msat", input_fee_ppk: 0, versionByte: 1 }),
+  unit: "msat",
+  active: true,
+  keys: PAYOUT_KEYS,
+  input_fee_ppk: 0,
+};
+
 export const immediateLockManager = {
   request: (async (_name: string, _options: LockOptions, action: LockGrantedCallback<unknown>) =>
     action(null)) as LockManager["request"],
@@ -103,6 +120,8 @@ export async function fixture(
     readonly counterSource?: "memory" | "browser";
     readonly databaseName?: string;
     readonly seed?: Uint8Array;
+    /** Put every proof in one keyset. Without it each proof has its own keyset. */
+    readonly oneKeyset?: boolean;
   } = {},
 ): Promise<BrowserCtfRedeemFixture> {
   const amounts = input.amounts ?? [1];
@@ -116,7 +135,7 @@ export async function fixture(
       normalizedMint: MINT,
       unit: "msat",
       proof: {
-        id: conditionalKeysetIdFor(index),
+        id: conditionalKeysetIdFor(input.oneKeyset === true ? 0 : index),
         amount: amount as never,
         secret: index === 0 ? "ctf-input" : `ctf-input-${index}`,
         C: MINT_PUBLIC_KEY,
@@ -131,7 +150,7 @@ export async function fixture(
       createBrowserProofBackupAuthorityRow(proof, 2, null, "ctf-receive"),
     );
   }
-  for (const [index] of amounts.entries()) {
+  for (const [index] of (input.oneKeyset === true ? [1] : amounts).entries()) {
     await database.custodyConditionalKeysets.put({
       schemaVersion: 1,
       scopeId: scope.scopeId,
@@ -178,6 +197,13 @@ export async function fixture(
     await counterStore.restoreInContext(
       { mintUrl: MINT, unit: "msat" },
       REGULAR_KEYSET.id,
+      0,
+      false,
+      () => undefined,
+    );
+    await counterStore.restoreInContext(
+      { mintUrl: MINT, unit: "msat" },
+      PAYOUT_KEYSET.id,
       0,
       false,
       () => undefined,
@@ -254,6 +280,26 @@ function signOutput(output: OutputData): Proof {
     },
     REGULAR_KEYSET,
   );
+}
+
+export function signPayoutOutputs(outputs: readonly OutputData[]): Proof[] {
+  return outputs.map((output) => {
+    const key = mintDenominationPrivateKey(
+      MINT_PRIVATE_KEY,
+      output.blindedMessage.amount.toString(),
+    );
+    const point = pointFromHex(output.blindedMessage.B_);
+    const dleq = createDLEQProof(point, key);
+    return output.toProof(
+      {
+        id: PAYOUT_KEYSET.id,
+        amount: output.blindedMessage.amount,
+        C_: createBlindSignature(point, key, PAYOUT_KEYSET.id).C_.toHex(true),
+        dleq: { e: bytesToHex(dleq.e), s: bytesToHex(dleq.s) },
+      },
+      PAYOUT_KEYSET,
+    );
+  });
 }
 
 export async function disposeFixtures(): Promise<void> {

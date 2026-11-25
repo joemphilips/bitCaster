@@ -155,6 +155,7 @@ export async function executeBrowserParticipationScoreDelivery(
         seed: context.seed,
         keepProofDerivationLocators: keepLocators,
         diagnosticLabel: "Participation Score",
+        tooLargeAdvice: "combine-proofs",
       });
     },
     keepProofDerivationLocators: keepLocators,
