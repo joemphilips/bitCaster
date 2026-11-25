@@ -1,4 +1,5 @@
 import type { CounterSource } from '@cashu/cashu-ts'
+import { ApprovedWalletDebitExceededError } from './approvedWalletDebit.ts'
 import {
   prepareSpeculativeWalletSend,
   OutgoingPreparationRetryError,
@@ -1536,7 +1537,9 @@ export class DaemonDurableOutgoingCashuCoordinator {
         input.maxWalletDebitMsat < 1 ||
         debit.totalWalletDebitMsat > input.maxWalletDebitMsat
       ) {
-        throw new Error('outgoing wallet debit exceeds the approved maximum')
+        throw new ApprovedWalletDebitExceededError(
+          'outgoing wallet debit exceeds the approved maximum',
+        )
       }
     }
     if (input.marketFunding !== undefined) {

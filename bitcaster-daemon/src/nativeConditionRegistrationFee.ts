@@ -8,6 +8,7 @@ import { hydrateDurableWalletProof } from '@bitcaster-market/client-sdk/durableW
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
 import type { DurableOutgoingCashuTransfer } from '@bitcaster-market/client-sdk/durableOutgoingCashuTransfer'
 import type { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
+import { ApprovedWalletDebitExceededError } from './approvedWalletDebit.ts'
 import type { CashuWalletLike } from './walletOps.ts'
 
 const TRANSFER_ID_DOMAIN = 'bitcaster/native-condition-registration-fee/v1\0'
@@ -251,7 +252,9 @@ function assertRetryDebitConsent(
   }
   const storedDebit = preparedWalletDebit(transfer)
   if (maximumDebitMsat < storedDebit) {
-    throw new Error('condition registration fee transfer exceeds the approved maximum')
+    throw new ApprovedWalletDebitExceededError(
+      'condition registration fee transfer exceeds the approved maximum',
+    )
   }
 }
 
@@ -287,7 +290,9 @@ function assertFeeQuote(
     throw new Error('condition registration fee quote is invalid')
   }
   if (quote.totalWalletDebitMsat > maximumDebitMsat) {
-    throw new Error('condition registration fee exceeds the approved wallet debit')
+    throw new ApprovedWalletDebitExceededError(
+      'condition registration fee exceeds the approved wallet debit',
+    )
   }
 }
 

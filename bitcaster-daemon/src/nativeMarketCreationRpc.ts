@@ -10,6 +10,7 @@ import {
   requiredMarketCreationOutcomeCollections,
   validateMarketCreateEngineUrl,
 } from '@bitcaster-market/client-sdk'
+import { ApprovedWalletDebitExceededError } from './approvedWalletDebit.ts'
 import { createAuthenticatedBitcasterEngineClient } from './engineClient.ts'
 import { DaemonDurableOutgoingCashuCoordinator } from './durableOutgoingCashuCoordinator.ts'
 import { publishNativeOracleBackup } from './nativeOracleBackup.ts'
@@ -55,6 +56,13 @@ export async function dispatchNativeMarketCreation(
       error instanceof NativeOracleSignerUnavailableError
     )
       return { ok: false, code: 'oracle-signer-required', error: error.message }
+    if (error instanceof ApprovedWalletDebitExceededError)
+      return {
+        ok: false,
+        code: 'market-creation-debit-exceeded',
+        error:
+          'The registration fee exceeds the approved wallet debit. Check creation-status. Use creation-quote before approving a registration fee, then retry the same creation ID.',
+      }
     // Mint errors can echo submitted fee proofs. Do not forward raw downstream error text.
     return {
       ok: false,

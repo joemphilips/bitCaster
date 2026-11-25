@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { ApprovedWalletDebitExceededError } from '../src/approvedWalletDebit.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
 import { dispatch } from '../src/server.ts'
@@ -110,6 +111,47 @@ test('zero-fee creation quote needs no wallet preparation', async () => {
       ok: true,
       result: { requiredFeeMsat: 0, sendPreparationFeeMsat: 0, totalWalletDebitMsat: 0 },
     })
+  })
+})
+
+test('a fee above the approved debit has its own code and exposes no downstream text', async () => {
+  await withProfile(async (directory) => {
+    const market = {
+      title: 'Saved creation',
+      description: 'Same request',
+      outcomeType: 'yesno',
+      outcomeDetails: [{ name: 'Yes' }, { name: 'No' }],
+      maturityEpoch: 2_000_000_000,
+      categoryTags: [],
+      baseAsset: 'sat',
+    } as const
+    await createNativeOracleCreationStore(directory).reserveCreation({
+      creationId: 'saved',
+      eventId: 'saved-event',
+      canonicalInput: JSON.stringify({
+        market,
+        registration: { requiredFeeMsat: 7 },
+        destination: {
+          engineBaseUrl: 'https://engine.example',
+          mintUrl: 'https://mint.example',
+          relayUrls: ['wss://relay.example/'],
+        },
+      }),
+    })
+    const response = await dispatch(
+      { method: 'market.creation-resume', params: { creationId: 'saved' } },
+      {
+        getCustodyFence() {
+          throw new Error('fixture stops before custody access')
+        },
+        createCashuWallet() {
+          throw new ApprovedWalletDebitExceededError('private-debit-marker')
+        },
+      },
+    )
+    assert.equal(response.ok, false)
+    assert.equal('code' in response && response.code, 'market-creation-debit-exceeded')
+    assert.equal(JSON.stringify(response).includes('private-debit-marker'), false)
   })
 })
 
