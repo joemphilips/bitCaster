@@ -542,9 +542,20 @@ async function verifyArchive({ archive, name, versionText, target, temp }) {
   )
 
   // Every endpoint is a closed loopback port, so the daemon contacts no service.
-  cli(['config', 'set', '--engine-url', LOOPBACK_HTTP_URL, '--mint-url', LOOPBACK_HTTP_URL])
+  // The daemon starts only with a trusted engine URL.
+  cli([
+    'config',
+    'set',
+    '--engine-url',
+    LOOPBACK_HTTP_URL,
+    '--trust-engine-url',
+    '--mint-url',
+    LOOPBACK_HTTP_URL,
+  ])
   const config = JSON.parse(cli(['config', 'list']))
-  expect(config.engineUrl === LOOPBACK_HTTP_URL, 'bitcaster-cli config set did not save the URL')
+  for (const key of ['engineUrl', 'mintUrl']) {
+    expect(config[key]?.value === LOOPBACK_HTTP_URL, `bitcaster-cli config set did not save ${key}`)
+  }
   cli(['relay', 'add', LOOPBACK_RELAY_URL])
   for (const relay of JSON.parse(cli(['relay', 'list'])).nostrRelays) {
     if (relay !== LOOPBACK_RELAY_URL) cli(['relay', 'remove', relay])
