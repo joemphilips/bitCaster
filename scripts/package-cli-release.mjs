@@ -46,6 +46,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const CLI_PACKAGE = '@bitcaster-market/cli'
 const DAEMON_PACKAGE = '@bitcaster-market/daemon'
+const SDK_PACKAGE = '@bitcaster-market/client-sdk'
 const HELPER_NAME = 'bitcaster-oracle-helper'
 const PACKAGE_VERSION_PATTERN = /^[0-9]+\.[0-9]+\.[0-9]+-beta$/
 const COMMIT_COUNT_PATTERN = /^[1-9][0-9]*$/
@@ -526,6 +527,19 @@ async function verifyArchive({ archive, name, versionText, target, temp }) {
     const help = run(join(packageDir, 'bin', bin), ['--help'], { env, capture: true })
     expect(help.includes('Usage: bitcaster-cli'), `${bin} --help does not print the usage`)
   }
+
+  // The extracted archive must hold each module that the product can load.
+  run(
+    process.execPath,
+    [
+      fileURLToPath(new URL('./check-cli-archive-imports.mjs', import.meta.url)),
+      packageDir,
+      CLI_PACKAGE,
+      DAEMON_PACKAGE,
+      SDK_PACKAGE,
+    ],
+    { cwd: extractDir, env, capture: true },
+  )
 
   // Every endpoint is a closed loopback port, so the daemon contacts no service.
   cli(['config', 'set', '--engine-url', LOOPBACK_HTTP_URL, '--mint-url', LOOPBACK_HTTP_URL])

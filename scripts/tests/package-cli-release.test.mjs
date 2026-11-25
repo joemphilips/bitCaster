@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
+import { lazyModuleNames } from '../check-cli-archive-imports.mjs'
 import {
   buildInfoJson,
   checksumLine,
@@ -253,4 +254,80 @@ test('a checksum line uses the sha256sum text format', bounded, () => {
     checksumLine('ab'.repeat(32), 'bitcaster-cli-linux-x64.tar.gz'),
     `${'ab'.repeat(32)}  bitcaster-cli-linux-x64.tar.gz\n`,
   )
+})
+
+test('a lazy load is a literal import or require call outside a comment', bounded, () => {
+  assert.deepEqual(
+    lazyModuleNames(`
+      const jar = new (requireFunc("tough-cookie")).CookieJar()
+      const signalr = require('@microsoft/signalr')
+      await import('./settings.js')
+      // require('in-a-line-comment')
+      /** @type {import('in-a-type')} */
+      this.requireQuote('not-a-module')
+      import fs from 'static-import'
+    `),
+    { import: ['./settings.js'], require: ['tough-cookie', '@microsoft/signalr'] },
+  )
+})
+
+test('the archive check fails when a lazy dependency is not in the archive', bounded, async () => {
+  const temp = await mkdtemp(join(tmpdir(), 'bcli-imports-'))
+  try {
+    const write = async (path, source) => {
+      const file = join(temp, 'archive', 'node_modules', path)
+      await mkdir(join(file, '..'), { recursive: true })
+      await writeFile(file, source)
+    }
+    await write('client/package.json', '{"type":"module","bin":{"client":"dist/main.js"}}')
+    await write('client/dist/main.js', "throw new Error('a bin must not run')")
+    // The client loads the transport lazily, and the transport has a dependency
+    // that it does not declare.
+    await write(
+      'client/dist/hub.js',
+      `import { createRequire } from 'node:module'
+      const require = createRequire(import.meta.url)
+      export const connect = () => require('transport')`,
+    )
+    await write('transport/package.json', '{"main":"index.js"}')
+    await write(
+      'transport/index.js',
+      "const requireFunc = require; exports.open = () => requireFunc('cookies')",
+    )
+    const check = () =>
+      spawnSync(
+        process.execPath,
+        [
+          fileURLToPath(new URL('../check-cli-archive-imports.mjs', import.meta.url)),
+          'archive',
+          'client',
+        ],
+        {
+          cwd: temp,
+          encoding: 'utf8',
+          timeout: 5_000,
+          env: { PATH: process.env.PATH, HOME: temp },
+        },
+      )
+
+    const missing = check()
+    assert.equal(missing.status, 1, missing.stdout)
+    assert.match(
+      missing.stderr,
+      /node_modules\/transport\/index\.js loads cookies: Cannot find module 'cookies'/,
+    )
+
+    await write('cookies/package.json', '{"main":"index.js"}')
+    await write('cookies/index.js', 'exports.jar = 1')
+    const complete = check()
+    assert.equal(complete.status, 0, complete.stderr)
+    assert.deepEqual(JSON.parse(complete.stdout), { modules: 4 })
+
+    await write('client/dist/broken.js', "import 'absent'")
+    const broken = check()
+    assert.equal(broken.status, 1, broken.stdout)
+    assert.match(broken.stderr, /broken\.js: Cannot find package 'absent'/)
+  } finally {
+    await rm(temp, { recursive: true, force: true })
+  }
 })

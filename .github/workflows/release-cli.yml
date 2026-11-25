@@ -16,6 +16,7 @@ on:
     paths:
       - .github/workflows/release-cli.yml
       - scripts/package-cli-release.mjs
+      - scripts/check-cli-archive-imports.mjs
       - scripts/tests/package-cli-release.test.mjs
       - scripts/build-native-oracle-helper.mjs
       - scripts/rewrite-dts-imports.mjs

@@ -73,6 +73,7 @@
     "@cashu/cashu-ts": "file:../cashu-ts",
     "@microsoft/signalr": "^10.0.11",
     "nostr-tools": "2.25.1",
+    "tough-cookie": "^6.0.1",
     "ws": "8.23.0"
   },
   "devDependencies": {
