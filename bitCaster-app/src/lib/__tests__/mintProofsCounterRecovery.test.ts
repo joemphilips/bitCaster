@@ -37,7 +37,6 @@ const mocks = vi.hoisted(() => {
     prepareMint: vi.fn(),
     checkMintQuote: vi.fn(),
     completeMint: vi.fn(),
-    send: vi.fn(),
     prepareSwapToReceive: vi.fn(),
     completeSwap: vi.fn(),
     restore: vi.fn(),
@@ -262,7 +261,6 @@ beforeEach(() => {
   mocks.wallet.prepareMint.mockReset();
   mocks.wallet.checkMintQuote.mockReset();
   mocks.wallet.completeMint.mockReset();
-  mocks.wallet.send.mockReset();
   mocks.scanSeedCountersForAdmission.mockReset();
   mocks.wallet.prepareSwapToReceive.mockReset();
   mocks.wallet.completeSwap.mockReset();
@@ -374,20 +372,6 @@ describe("mintProofs — CDK duplicate-output recovery", () => {
 
     expect(mocks.admitBrowserReceivedProofs).toHaveBeenCalledOnce();
     expect(mocks.profileLock.events).toEqual(["lock-enter", "lock-exit", "proof-admission"]);
-  });
-
-  it("sends regular sat proofs through the explicit sat wallet", async () => {
-    const proofs = [{ id: KEYSET_ID, amount: 20_000, secret: "s1", C: "C1" }] as never;
-    const split = { keep: [], send: proofs };
-    mocks.wallet.send.mockResolvedValueOnce(split);
-
-    const result = await cashu.sendProofs(13, proofs, {
-      mintUrl: "https://mint.test",
-      unit: "sat",
-    });
-
-    expect(result).toBe(split);
-    expect(mocks.wallet.send).toHaveBeenCalledWith(13, proofs);
   });
 
   it.each(["Invoice already paid or pending", "Blinded message already signed or pending"])(

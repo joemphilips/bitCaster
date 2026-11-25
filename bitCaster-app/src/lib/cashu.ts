@@ -2521,19 +2521,6 @@ async function repairMissingLegacyProofs(
   requireCurrentProfile();
 }
 
-/**
- * Send `amountSats` using the provided proofs.
- * Returns `{ keep, send }` — store `keep` proofs, share `send` proofs.
- */
-export async function sendProofs(
-  amount: number,
-  proofs: Proof[],
-  options: { mintUrl?: string; unit: CashuProofUnit },
-): Promise<{ keep: Proof[]; send: Proof[] }> {
-  const wallet = await getWalletForUnit(options.mintUrl, options.unit);
-  return wallet.send(amount, proofs);
-}
-
 /** Create a melt quote for a Lightning invoice. */
 export async function createMeltQuote(
   invoice: string,

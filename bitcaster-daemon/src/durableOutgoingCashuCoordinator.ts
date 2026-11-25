@@ -1530,6 +1530,19 @@ export class DaemonDurableOutgoingCashuCoordinator {
             input.amountMsat,
             input.marketFunding.outcomeCount,
           )
+    // Check the funding cap first. The RPC reports its refusal to the caller.
+    if (input.marketFunding !== undefined) {
+      if (
+        quote === null ||
+        !Number.isSafeInteger(input.marketFunding.maxWalletDebitMsat) ||
+        input.marketFunding.maxWalletDebitMsat < 1 ||
+        quote.totalWalletDebitMsat > input.marketFunding.maxWalletDebitMsat
+      ) {
+        throw new ApprovedWalletDebitExceededError(
+          'market funding wallet debit exceeds the approved maximum',
+        )
+      }
+    }
     if (input.maxWalletDebitMsat !== undefined) {
       const debit = sendDebitQuote(preview, input.amountMsat)
       if (
@@ -1540,16 +1553,6 @@ export class DaemonDurableOutgoingCashuCoordinator {
         throw new ApprovedWalletDebitExceededError(
           'outgoing wallet debit exceeds the approved maximum',
         )
-      }
-    }
-    if (input.marketFunding !== undefined) {
-      if (
-        quote === null ||
-        !Number.isSafeInteger(input.marketFunding.maxWalletDebitMsat) ||
-        input.marketFunding.maxWalletDebitMsat < 1 ||
-        quote.totalWalletDebitMsat > input.marketFunding.maxWalletDebitMsat
-      ) {
-        throw new Error('market funding wallet debit exceeds the approved maximum')
       }
     }
     const operation = serializeDurableWalletSendOperation({
