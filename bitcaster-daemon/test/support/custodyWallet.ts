@@ -52,6 +52,7 @@ const KEYSET_ID = deriveKeysetId(KEYS, {
 /** A larger wallet holds proofs without DLEQ. A payment request cannot spend them, a send can. */
 const DLEQ_PROOF_LIMIT = 64
 export const INVOICE = 'lnbc1approveddebit'
+const FEE_RESERVE_MSAT = 10
 const PAYMENT_EXPIRY = Math.floor(Date.now() / 1_000) + 600
 /** The transfer is saved and minted before the recipient fails. */
 export const OFFLINE_RECIPIENT = {
@@ -65,12 +66,13 @@ export const OFFLINE_RECIPIENT = {
 export async function withCustodyWallet(
   heldAmounts: readonly number[],
   run: (fixture: Awaited<ReturnType<typeof openFixture>>) => Promise<void>,
+  options: { readonly dleq?: boolean; readonly paymentMsat?: number } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'bitcaster-custody-wallet-'))
   const previousHome = process.env.BITCASTER_DAEMON_HOME
   process.env.BITCASTER_DAEMON_HOME = directory
   try {
-    await run(await openFixture(directory, heldAmounts))
+    await run(await openFixture(directory, heldAmounts, options))
   } finally {
     if (previousHome === undefined) delete process.env.BITCASTER_DAEMON_HOME
     else process.env.BITCASTER_DAEMON_HOME = previousHome
@@ -78,7 +80,11 @@ export async function withCustodyWallet(
   }
 }
 
-async function openFixture(directory: string, heldAmounts: readonly number[]) {
+async function openFixture(
+  directory: string,
+  heldAmounts: readonly number[],
+  options: { readonly dleq?: boolean; readonly paymentMsat?: number },
+) {
   await bootstrapFreshDaemonProfile({
     directory,
     engineBaseUrl: 'https://engine.example',
@@ -96,7 +102,9 @@ async function openFixture(directory: string, heldAmounts: readonly number[]) {
     observedAtMs: Date.now(),
   })
   const proofs = heldAmounts.map((amount, index) =>
-    (heldAmounts.length <= DLEQ_PROOF_LIMIT ? heldProof : heldProofWithoutDleq)(amount, index),
+    (options.dleq ?? heldAmounts.length <= DLEQ_PROOF_LIMIT)
+      ? heldProof(amount, index)
+      : heldProofWithoutDleq(amount, index),
   )
   await addAvailableProofs(MINT_URL, proofs, { kind: 'sats', baseAsset: 'sat', unit: 'msat' })
   await withDurableCustodyUnitOfWork(directory, fence, Date.now(), (database) => {
@@ -125,7 +133,7 @@ async function openFixture(directory: string, heldAmounts: readonly number[]) {
     )
   })
   const getFence = () => fence
-  const mint = new SigningMint()
+  const mint = new SigningMint(options.paymentMsat ?? 1_000)
   const deps: WalletOpsDependencies = {
     getCustodyFence: getFence,
     createCashuMint: () => mint.client(),
@@ -157,6 +165,15 @@ async function openFixture(directory: string, heldAmounts: readonly number[]) {
 
 /** A mint that signs each swap once and reports the spent inputs. */
 class SigningMint {
+  /** The next payments succeed. Without it the mint gives no payment answer. */
+  payInvoices = false
+  payments = 0
+  readonly #paymentMsat: number
+
+  constructor(paymentMsat: number) {
+    this.#paymentMsat = paymentMsat
+  }
+
   /** The next swap spends its inputs and signs its outputs, but the answer is lost. */
   loseNextSwapAnswer = false
   swaps = 0
@@ -196,8 +213,8 @@ class SigningMint {
     })
     const payment = () => ({
       quote: 'payment-quote',
-      amount: Amount.from(900),
-      fee_reserve: Amount.from(100),
+      amount: Amount.from(this.#paymentMsat - FEE_RESERVE_MSAT),
+      fee_reserve: Amount.from(FEE_RESERVE_MSAT),
       unit: 'msat',
       state: 'UNPAID' as const,
       request: INVOICE,
@@ -206,8 +223,15 @@ class SigningMint {
     })
     mint.createMeltQuoteBolt11 = async () => payment()
     mint.checkMeltQuote = async () => payment()
-    mint.melt = async () => {
-      throw new Error('no payment answer')
+    mint.melt = async (_method, { inputs, outputs = [] }) => {
+      if (!this.payInvoices) throw new Error('no payment answer')
+      for (const { secret } of inputs) this.#spent.add(proofY(secret))
+      this.payments += 1
+      // The payment used no fee, so the whole reserve returns as change.
+      const change = splitAmount(FEE_RESERVE_MSAT).map((amount, index) =>
+        blindSignature({ amount, B_: outputs[index]!.B_ }),
+      )
+      return { ...payment(), state: 'PAID' as const, change }
     }
     return mint
   }
@@ -222,6 +246,10 @@ class SigningMint {
       ]),
     )
   }
+}
+
+function splitAmount(amount: number): number[] {
+  return DENOMINATIONS.filter((value) => Math.floor(amount / value) % 2 === 1)
 }
 
 function proofY(secret: string): string {

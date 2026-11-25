@@ -274,8 +274,21 @@ test('the automatic retirement reads the mint after the listen, while the engine
     // The wake can join a pass that still runs. The retry comes when that pass ends.
     await bounded(scheduledAfter(schedulesBefore), 'the closed condition did not get a retry')
     const retried = nextRead(HELD)
+    const schedulesBeforeRetry = retrySchedules
+    const watchesBeforeRetry = managedMarkets.length
     retryRun!()
     await bounded(retried, 'the retry did not read the closed condition again')
+    // A real shutdown ends the process. Here the pass goes on after the read and uses the
+    // profile database, so the directory can be removed only when the pass has ended.
+    await bounded(scheduledAfter(schedulesBeforeRetry), 'the retry pass did not end')
+    await bounded(
+      new Promise<void>((resolve) => {
+        const check = () =>
+          managedMarkets.length > watchesBeforeRetry ? resolve() : watchWaiters.push(check)
+        check()
+      }),
+      'the retry pass did not refresh the market watch',
+    )
     assert.deepEqual(otherRequests, [])
     // The retirement never asks the engine for an attestation.
     assert.deepEqual(

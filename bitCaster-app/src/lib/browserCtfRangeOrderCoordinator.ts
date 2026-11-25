@@ -52,7 +52,10 @@ import {
   serializeDurableCustodyOutput,
   type DurableCustodyProofOperationInput,
 } from "@bitcaster/client-sdk/durableCustodyProofOperation";
-import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import {
+  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
+} from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
   prepareDurableCustodyVerifiedMintResult,
   readDurableCustodyVerifiedMintResult,
@@ -1553,7 +1556,7 @@ export class BrowserCtfRangeOrderCoordinator {
             tx,
             browserCustodySelection(scope, browserOwnerAt(owner, this.#now()), reservationId, null),
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+              bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
             {
               predecessorProofs: { [reservationId]: predecessors },
               conditionalKeysets: Object.fromEntries(
@@ -2089,7 +2092,7 @@ export class BrowserCtfRangeOrderCoordinator {
               null,
             ),
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+              bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
             {
               predecessorProofs: { [custodyOperationId]: predecessors },
               conditionalKeysets: Object.fromEntries(

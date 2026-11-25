@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
-import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from '@bitcaster-market/client-sdk/durableCustody'
+import {
+  NEW_WALLET_OPERATION_INPUT_LIMIT,
+  WalletOperationTooLargeError,
+} from '@bitcaster-market/client-sdk/walletOperationSize'
 import { DaemonDurableOutgoingCashuCoordinator } from '../src/durableOutgoingCashuCoordinator.ts'
 import {
   deriveNativeConditionRegistrationFeeTransferId,
@@ -65,8 +68,7 @@ for (const perDenomination of [60, 364]) {
         assert.equal(transfer?.deliveryState, 'delivery-pending')
         assert.equal(total(transfer!.token!.proofs.map(amountOf)), amountMsat)
         assert.ok(
-          transfer!.walletSendOperation.preview.inputs.length <=
-            DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX,
+          transfer!.walletSendOperation.preview.inputs.length <= NEW_WALLET_OPERATION_INPUT_LIMIT,
         )
         assert.equal(balance - total(await fixture.spendableAmounts()), quotedDebit)
         sent += amountMsat
@@ -163,48 +165,44 @@ for (const perDenomination of [60, 364]) {
 test('a payment above the input limit is refused by its quote', async () => {
   // Each proof of 2 msat pays 1 msat after its fee, so the amount is the input count.
   await withCustodyWallet(Array<number>(300).fill(2), async ({ coordinator, openWallet }) => {
-    const limit = DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX
+    const limit = NEW_WALLET_OPERATION_INPUT_LIMIT
     const request = { mintUrl: MINT_URL, wallet: await openWallet() }
     const quote = await coordinator.quoteSend({ ...request, amountMsat: limit })
     assert.equal(quote.sendPreparationFeeMsat, limit)
     await assert.rejects(
       coordinator.quoteSend({ ...request, amountMsat: limit + 1 }),
-      /needs more inputs than one operation accepts/,
+      WalletOperationTooLargeError,
     )
   })
 })
 
-test('a payment with many inputs is paid completely or refused before any effect', async () => {
-  const outcomes = new Map<number, 'paid' | 'refused'>()
-  for (const inputs of [150, 180, 185, 187, 188, 189, 190, 192, 194, 196, 256]) {
+test('a send is paid completely or refused by its quote and its execution before any effect', async () => {
+  const limit = NEW_WALLET_OPERATION_INPUT_LIMIT
+  for (const inputs of [limit - 1, limit, limit + 1, 188, 190, 195, 256]) {
     await withCustodyWallet(Array<number>(inputs).fill(2), async (fixture) => {
       const { coordinator, openWallet, walletFactory, mint } = fixture
-      const execution = coordinator.execute({
-        transferId: 'many-inputs',
-        amountMsat: inputs,
-        mintUrl: MINT_URL,
-        wallet: await openWallet(),
-        seed: SEED,
-        createWallet: walletFactory,
-      })
-      const outcome = await execution.then(
-        () => 'paid' as const,
-        () => 'refused' as const,
-      )
-      outcomes.set(inputs, outcome)
-      const transfer = await coordinator.loadTransfer('many-inputs')
-      if (outcome === 'paid') {
-        assert.equal(transfer?.deliveryState, 'delivery-pending')
+      const request = { amountMsat: inputs, mintUrl: MINT_URL, wallet: await openWallet() }
+      const quote = coordinator.quoteSend(request)
+      const execute = () =>
+        coordinator.execute({
+          ...request,
+          transferId: 'many-inputs',
+          seed: SEED,
+          createWallet: walletFactory,
+        })
+      if (inputs <= limit) {
+        await quote
+        assert.equal((await execute()).deliveryState, 'delivery-pending')
         assert.equal(mint.swaps, 1)
-      } else {
-        assert.equal(transfer, null, `${inputs} inputs left a saved transfer`)
-        assert.equal(mint.swaps, 0, `${inputs} inputs reached the mint`)
-        assert.equal((await fixture.spendableAmounts()).length, inputs)
+        return
       }
+      await assert.rejects(quote, WalletOperationTooLargeError)
+      await assert.rejects(execute(), WalletOperationTooLargeError)
+      assert.equal(await coordinator.loadTransfer('many-inputs'), null)
+      assert.equal(mint.swaps, 0)
+      assert.equal((await fixture.spendableAmounts()).length, inputs)
     })
   }
-  assert.equal(outcomes.get(180), 'paid')
-  assert.equal(outcomes.get(256), 'refused')
 })
 
 function amountOf(proof: { readonly amount: unknown }): number {

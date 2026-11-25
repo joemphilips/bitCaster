@@ -54,7 +54,7 @@ import {
   toDurableCustodyProofOperationInput,
   type DurableWalletReceiveOperation,
 } from "@bitcaster/client-sdk/durableWalletOperation";
-import { bindDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
+import { bindNewDurableCustodyProofOperation } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { classifyExactInputStates } from "@bitcaster/client-sdk/exactInputStates";
 import { decodeDurableOutgoingCashuTransfer } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import { withWalletProfileLock } from "./walletProfileLock";
@@ -1013,7 +1013,7 @@ async function bindReceiveOperation(
     ) => unknown
       ? T
       : never,
-  ) => bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts);
+  ) => bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts);
   const selection = {
     scope,
     owner,

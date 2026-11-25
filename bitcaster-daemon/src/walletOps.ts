@@ -52,7 +52,7 @@ import {
 } from '@bitcaster-market/client-sdk/ctfRangeRecoveryTransport'
 import {
   createDurableCustodyProofOperation,
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
   prepareDurableCustodyMintOperationAuthority,
@@ -1685,7 +1685,7 @@ async function executePreparedCtfConsolidationPlan(
           new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
           custodySelection(binding.record, custodyOwner(fence, observedAtMs), null),
           (transaction) =>
-            bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+            bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
         )
       } else {
         assertDurableCustodyMintOperationAuthority(existing, binding.artifacts.privateMaterial)

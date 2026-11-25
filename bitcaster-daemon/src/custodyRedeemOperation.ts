@@ -18,7 +18,7 @@ import {
   type DurableCustodyRecord,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import {
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
@@ -244,7 +244,7 @@ export function createCustodyRedeemOperationStore(
               ],
             },
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, record, {
+              bindNewDurableCustodyProofOperation(transaction, record, {
                 requestBody: mintAuthority.exactRequest,
                 output: mintAuthority.exactOutput,
                 privateMaterial: mintAuthority.exactAuthority,

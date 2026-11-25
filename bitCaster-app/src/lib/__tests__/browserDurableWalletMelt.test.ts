@@ -1,5 +1,6 @@
 // @vitest-environment node
 import "fake-indexeddb/auto";
+import { NEW_WALLET_OPERATION_INPUT_LIMIT } from "@bitcaster/client-sdk/walletOperationSize";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   Amount,
@@ -182,6 +183,58 @@ describe("browser durable wallet melt", () => {
       "reconciled",
     );
     expect(wallet.completeMelt).toHaveBeenCalledOnce();
+  });
+
+  it("pays with the selected proofs and leaves the rest of the wallet selectable", async () => {
+    const database = createDatabase();
+    const input = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "pays", 7n));
+    const other = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "stays", 8n));
+    await seedInput(database, input);
+    await seedInput(database, other);
+    const quote = meltQuote("quote-selected");
+    const wallet = meltWallet(meltPreview(quote, input), { state: "PAID", change: [] });
+    vi.mocked(wallet.selectProofsToSend).mockReturnValue({ send: [input] });
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: [input, other],
+        wallet,
+        context: meltContext(database),
+      }),
+    ).resolves.toMatchObject({ paid: true });
+    expect(
+      (await getCanonicalSelectableProofs(browserWalletScope(SEED).scopeId, database))?.map(
+        ({ secret }) => secret,
+      ),
+    ).toEqual([other.secret]);
+  });
+
+  it("refuses a payment with too many inputs before it reserves or pays", async () => {
+    const database = createDatabase();
+    const input = proofForOutput(OutputData.createSingleData(2, KEYSET_ID, "too-many", 7n));
+    const inputProofId = await seedInput(database, input);
+    const quote = meltQuote("quote-too-many");
+    const wallet = meltWallet(meltPreview(quote, input), { state: "PAID", change: [] });
+    vi.mocked(wallet.selectProofsToSend).mockReturnValue({
+      send: Array<Proof>(NEW_WALLET_OPERATION_INPUT_LIMIT + 1).fill(input),
+    });
+    await expect(
+      meltBrowserDurableWallet({
+        quote,
+        mintUrl: MINT,
+        proofs: [input],
+        wallet,
+        context: meltContext(database),
+      }),
+    ).rejects.toMatchObject({ code: "wallet-operation-too-large" });
+    expect(wallet.prepareMelt).not.toHaveBeenCalled();
+    expect(wallet.completeMelt).not.toHaveBeenCalled();
+    expect(await database.custodyOperations.count()).toBe(0);
+    expect((await database.custodyProofs.toArray())[0]).toMatchObject({
+      proofId: inputProofId,
+      selectability: "selectable",
+    });
   });
 
   it("keeps a lost-response reservation and retries the exact persisted preview", async () => {
@@ -840,6 +893,7 @@ describe("browser melt real private counter preparation", () => {
 
   it("uses no counter association for inactive V2 no-change withdrawal", async () => {
     const f = await realMeltFixture({ noChange: true });
+    f.quote.fee_reserve = Amount.from(0);
     await f.database.walletCounterAssociations.clear();
     await f.database.walletCounterCursors.clear();
     await expect(f.run()).resolves.toMatchObject({ paid: true, change: [] });
@@ -1178,6 +1232,7 @@ function meltWallet(
   response: { state: string; change: Proof[]; quote?: string },
 ): BrowserDurableWalletMeltWallet {
   const wallet: BrowserDurableWalletMeltWallet = {
+    selectProofsToSend: vi.fn((proofs: Proof[]) => ({ send: proofs })),
     prepareMelt: vi.fn(async () => preview),
     completeMelt: vi.fn(async () => ({
       quote: { quote: response.quote ?? preview.quote.quote, state: response.state },

@@ -1,5 +1,5 @@
 import type { OperationCounters, OutputData, Proof, SwapPreview } from '@cashu/cashu-ts'
-import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from './durableCustody.ts'
+import { assertNewWalletOperationFits } from './walletOperationSize.ts'
 import { locateSeedDerivedProofLineage } from './durableSeedDerivedProofLineage.ts'
 import type { DurableWalletProofDerivationLocator } from './durableWalletProofDerivationLocator.ts'
 
@@ -48,9 +48,10 @@ export async function prepareOutgoingCashuSwap<Config, OutputConfig>(
   outputConfig: OutputConfig,
 ): Promise<SwapPreview> {
   const preview = await wallet.prepareSwapToSend(amount, [...proofs], config, outputConfig)
-  if (preview.inputs.length > DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX) {
-    throw new Error('outgoing Cashu payment needs more inputs than one operation accepts')
-  }
+  assertNewWalletOperationFits(
+    preview.inputs,
+    (preview.sendOutputs?.length ?? 0) + (preview.keepOutputs?.length ?? 0),
+  )
   return { ...preview, unselectedProofs: [] }
 }
 

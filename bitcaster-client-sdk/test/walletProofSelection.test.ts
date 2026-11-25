@@ -7,7 +7,7 @@ import {
   type ProofLike,
   type SendResponse,
 } from '@cashu/cashu-ts'
-import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from '../src/durableCustody.ts'
+import { NEW_WALLET_OPERATION_INPUT_LIMIT } from '../src/walletOperationSize.ts'
 import { selectWalletProofs } from '../src/walletProofSelection.ts'
 
 const MINT_URL = 'https://mint.example'
@@ -103,31 +103,69 @@ test('a wallet of many small receipts keeps its payments and holdings bounded', 
       receive(netOf(result.send, 1_000, true) - target)
     }
     assert.equal(payments, 100)
-    assert.ok(maxInputs <= DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX, `${maxInputs} inputs`)
+    assert.ok(maxInputs <= NEW_WALLET_OPERATION_INPUT_LIMIT, `${maxInputs} inputs`)
     // The random cashu-ts selection holds at most about 1100 proofs here.
     assert.ok(maxHeld <= 1_500, `${maxHeld} held proofs`)
   }
 })
 
-test('a payment that fits the custody input limit uses the fewest inputs when it must', () => {
+test('a payment that fits the input limit is selected within it', () => {
   const chain = keyChain({ [ACTIVE]: 1_000, [OLD_VERSION]: 0 }, [OLD_VERSION])
   const many = [
     ...Array.from({ length: 1_000 }, (_, index) => proof(ACTIVE, 3, `small${index}`)),
     ...Array.from({ length: 20 }, (_, index) => proof(ACTIVE, 65, `large${index}`)),
   ]
-  // The net values are 2 and 64, so 18 large proofs give 1152 and one more gives 1216.
+  // The net values are 2 and 64, so a close match has several hundred inputs.
   const result = selectWalletProofs(many, 1_200, chain, true)
   assertPartition(result, many)
-  assert.equal(result.send.length, 19)
-  assert.equal(netOf(result.send, 1_000, true), 1_216)
+  assert.ok(result.send.length <= NEW_WALLET_OPERATION_INPUT_LIMIT)
+  assert.ok(netOf(result.send, 1_000, true) >= 1_200)
   const reversed = selectWalletProofs([...many].reverse(), 1_200, chain, true)
   assert.deepEqual(secretsOf(reversed), secretsOf(result))
 
   // The forced stale proofs count against the limit and stay selected.
   const stale = Array.from({ length: 100 }, (_, index) => proof(OLD_VERSION, 1, `stale${index}`))
   const rotated = selectWalletProofs([...many, ...stale], 1_300, chain, true)
-  assert.equal(rotated.send.length, 119)
+  assert.ok(rotated.send.length <= NEW_WALLET_OPERATION_INPUT_LIMIT)
   assert.equal(rotated.send.filter(({ id }) => id === OLD_VERSION).length, 100)
+})
+
+test('a payment at the input limit uses the closest match, and above it a set within it', () => {
+  const chain = keyChain({ [ACTIVE]: 1_000 })
+  const limit = NEW_WALLET_OPERATION_INPUT_LIMIT
+  // The net value of each small proof is 1, so a close match has as many inputs as the amount.
+  const small = Array.from({ length: limit + 1 }, (_, index) => proof(ACTIVE, 2, `s${index}`))
+  const large = Array.from({ length: 2 }, (_, index) => proof(ACTIVE, 65, `l${index}`))
+  for (const target of [limit - 1, limit, limit + 1]) {
+    // Only small proofs: the one possible set is found, and the caller checks its size.
+    assert.equal(selectWalletProofs(small, target, chain, true).send.length, target)
+    const mixed = selectWalletProofs([...small, ...large], target, chain, true)
+    assert.ok(mixed.send.length <= limit, `${mixed.send.length} inputs for ${target}`)
+    assert.ok(netOf(mixed.send, 1_000, true) >= target)
+  }
+})
+
+test('a fitting set is found whenever one exists', () => {
+  const random = generator(61)
+  const chain = keyChain({ [ACTIVE]: 1_000 })
+  let fallbacks = 0
+  for (let round = 0; round < 150; round += 1) {
+    const proofs = [
+      ...wallet(random, ACTIVE, 300, 3),
+      ...wallet(random, ACTIVE, round % 40, 10, 'l'),
+    ]
+    const target = 1 + Math.floor(random() * 900)
+    const byNet = proofs.map(({ amount }) => Number(String(amount)) - 1).sort((a, b) => b - a)
+    let covered = 0
+    const fewest = byNet.findIndex((net) => (covered += net) >= target) + 1
+    const { send } = selectWalletProofs(proofs, target, chain, true)
+    if (fewest === 0) assert.equal(send.length, 0)
+    else if (fewest <= NEW_WALLET_OPERATION_INPUT_LIMIT)
+      assert.ok(send.length > 0 && send.length <= NEW_WALLET_OPERATION_INPUT_LIMIT)
+    else assert.equal(send.length, fewest)
+    if (send.length === fewest) fallbacks += 1
+  }
+  assert.ok(fallbacks > 0)
 })
 
 test('stale keysets that alone exceed the input limit stay selected, as in cashu-ts', () => {

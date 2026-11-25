@@ -1,5 +1,6 @@
 // Canonical generic proof-operation record re-authored from 7e1385c.
 import {
+  DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
   DURABLE_CUSTODY_RECORD_BYTES_MAX,
   assertDurableCustodyImmutableAuthorityMatches,
   createDurableCustodyDispatchIntent,
@@ -20,6 +21,7 @@ import {
 } from './durableCustodyProofOperation.ts'
 import { requireDurableWalletProofTransition } from './durableWalletProofTransition.ts'
 import { amountToNumber } from './proofSelection.ts'
+import { LATER_RECORD_TEXT_BYTES, WalletOperationTooLargeError } from './walletOperationSize.ts'
 
 export function createDurableCustodyProofOperation(input: {
   scope: DurableCustodyScope
@@ -128,23 +130,70 @@ export function createDurableCustodyProofOperation(input: {
   })
 }
 
-/** What the mint result adds to a record: its references, and one row for each planned output. */
-const RESULT_BYTES = 1_024
-const RESULT_BYTES_PER_OUTPUT = 256
-
 /**
  * Refuse a new operation whose record cannot also hold its result. Call this before the first
  * effect. After the mint spends the inputs, the result must fit, or no recovery can complete it.
  */
 export function assertDurableCustodyRecordCanHoldResult(record: DurableCustodyRecord): void {
-  const outputs = record.operation.proofStorage.lineage.successorProofIds.length
-  const resultBytes = RESULT_BYTES + outputs * RESULT_BYTES_PER_OUTPUT
-  const recordBytes = encodeBoundedDurableArtifact(
-    record,
-    DURABLE_CUSTODY_RECORD_BYTES_MAX,
+  const bytes = encodeBoundedDurableArtifact(
+    recordWithLargestResult(record),
+    DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
   ).byteLength
-  if (recordBytes + resultBytes > DURABLE_CUSTODY_RECORD_BYTES_MAX)
-    throw new Error('custody record cannot hold the result of this operation')
+  if (bytes + LATER_RECORD_TEXT_BYTES > DURABLE_CUSTODY_RECORD_BYTES_MAX)
+    throw new WalletOperationTooLargeError()
+}
+
+/** The record after the mint answer, with every planned output admitted. */
+function recordWithLargestResult(record: DurableCustodyRecord): DurableCustodyRecord {
+  const { operation } = record
+  const { lineage } = operation.proofStorage
+  const fingerprint = operation.outputPlan.outputPlanFingerprint
+  return {
+    ...record,
+    revision: Number.MAX_SAFE_INTEGER,
+    operation: {
+      ...operation,
+      state: 'transport-attempted',
+      result: {
+        state: 'verified-staged',
+        resultHandle: `mint-result:${fingerprint}`,
+        resultFingerprint: fingerprint,
+        outputPlanFingerprint: fingerprint,
+        exactResult: {
+          ...operation.privateMaterial.exactPrivateMaterial,
+          byteLength: DURABLE_CUSTODY_ARTIFACT_BYTES_MAX,
+        },
+      },
+      proofStorage: {
+        ...operation.proofStorage,
+        pinReasons: [
+          'active-reservation',
+          'pending-outbox',
+          'active-retry-cursor',
+          'replay-tombstone',
+        ],
+        lineage: {
+          ...lineage,
+          selectedSuccessorProofIds: [...lineage.successorProofIds],
+          successorAdmission: {
+            scopeId: lineage.scopeId,
+            operationId: lineage.operationId,
+            admissionId: fingerprint,
+            proofRows: lineage.successorProofIds.map((proofId) => ({
+              proofId,
+              expectedRevision: null,
+              admittedRevision: 0,
+            })),
+          },
+        },
+      },
+      retry: {
+        attempt: Number.MAX_SAFE_INTEGER,
+        nextAttemptAtMs: Number.MAX_SAFE_INTEGER,
+        reason: 'mint-response-unknown',
+      },
+    },
+  }
 }
 
 export function deriveDurableCustodyProofOperationFingerprints(
@@ -183,6 +232,21 @@ export function deriveDurableCustodyProofResultFingerprint(
   )
 }
 
+/** Bind a new operation before its first effect. A record without room for its result is refused. */
+export function bindNewDurableCustodyProofOperation(
+  transaction: DurableCustodyTransaction,
+  expected: DurableCustodyRecord,
+  artifacts: Parameters<typeof bindDurableCustodyProofOperation>[2],
+): void {
+  if (transaction.getOperation(expected.operation.operationId) === null)
+    assertDurableCustodyRecordCanHoldResult(expected)
+  bindDurableCustodyProofOperation(transaction, expected, artifacts)
+}
+
+/**
+ * Bind an operation that follows an effect, or an operation without a mint request. After an effect
+ * a refusal would block the result of that effect.
+ */
 export function bindDurableCustodyProofOperation(
   transaction: DurableCustodyTransaction,
   expected: DurableCustodyRecord,

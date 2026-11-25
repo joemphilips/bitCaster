@@ -27,7 +27,7 @@ import {
   type DurableCustodyMintOperationAuthority,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import { deserializeDurableCustodyProofArtifact } from '@bitcaster-market/client-sdk/durableCustodyProofMaterial'
@@ -281,7 +281,7 @@ export class NativeWalletMeltCoordinator {
             new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
             selection(record, owner(fence, observedAtMs), null),
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, record, {
+              bindNewDurableCustodyProofOperation(transaction, record, {
                 requestBody: authority.exactRequest,
                 output: authority.exactOutput,
                 privateMaterial: authority.exactAuthority,

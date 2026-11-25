@@ -38,7 +38,7 @@ import {
 } from "@bitcaster/client-sdk/durableCustody";
 import {
   createDurableCustodyProofOperation,
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
   requireDurableWalletOperationFromCustody,
@@ -57,6 +57,7 @@ import {
   BrowserDurableCustodyAdapter,
   createBrowserCustodyProofRow,
 } from "../stores/durable-custody-db";
+import { assertNewWalletOperationFits } from "@bitcaster/client-sdk/walletOperationSize";
 import { db, type BitcasterDB, type StoredProof } from "../stores/proof-db";
 
 const SCOPE_LEASE_MS = 10 * 60 * 1_000;
@@ -79,6 +80,11 @@ interface BrowserMeltProtocolInput {
 }
 
 export interface BrowserDurableWalletMeltWallet {
+  selectProofsToSend(
+    proofs: Proof[],
+    amountToSend: Amount,
+    includeFees: boolean,
+  ): { readonly send: Proof[] };
   prepareMelt(
     method: string,
     quote: MeltQuoteResponse,
@@ -277,7 +283,10 @@ async function runMeltWithOwner(
 
   if (snapshot === null) {
     const database = input.context.database ?? db;
-    const canonicalProofs = await canonicalMeltProofs(adapter, scope, input);
+    const canonicalProofs = selectMeltProofs(
+      input,
+      await canonicalMeltProofs(adapter, scope, input),
+    );
     const selected = input.wallet.getKeyset();
     const hasChange =
       canonicalProofs.reduce((sum, proof) => sum + Amount.from(proof.amount).toBigInt(), 0n) >
@@ -508,7 +517,7 @@ async function persistMeltPreparation(input: {
           ],
         },
         (transaction) =>
-          bindDurableCustodyProofOperation(
+          bindNewDurableCustodyProofOperation(
             transaction,
             input.binding.record,
             input.binding.artifacts,
@@ -688,6 +697,21 @@ async function canonicalMeltProofs(
       return deserializeDurableCustodyProofArtifact({ schemaVersion: 1, ...material });
     }),
   );
+}
+
+/** Pay with the proofs that the invoice needs. The rest of the wallet stays selectable. */
+function selectMeltProofs(input: BrowserDurableWalletMeltInput, proofs: Proof[]): Proof[] {
+  const target = Amount.from(input.quote.amount).add(Amount.from(input.quote.fee_reserve));
+  const selected = input.wallet.selectProofsToSend(proofs, target, true).send;
+  if (selected.length === 0) throw new Error("Not enough proofs to cover amount + fee");
+  const overage = selected.reduce(
+    (sum, proof) => sum + Amount.from(proof.amount).toBigInt(),
+    -Amount.from(input.quote.amount).toBigInt(),
+  );
+  // The mint returns an unused reserve in at most one blank output for each bit of the overage.
+  assertNewWalletOperationFits(selected, overage.toString(2).length);
+  const secrets = new Set(selected.map(({ secret }) => secret));
+  return proofs.filter(({ secret }) => secrets.has(secret));
 }
 
 function createMeltBinding(

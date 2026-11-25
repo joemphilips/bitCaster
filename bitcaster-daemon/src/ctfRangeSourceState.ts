@@ -9,7 +9,7 @@ import {
   type DurableCustodyArtifactReference,
 } from '@bitcaster-market/client-sdk/durableCustody'
 import {
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
@@ -215,7 +215,7 @@ function bindDaemonRangeSourceInputsInTransaction(
       ],
     },
     (transaction) =>
-      bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+      bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
   )
 }
 

@@ -14,7 +14,7 @@ import {
   stageDurableCustodyPreparedMintResult,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
@@ -394,7 +394,7 @@ export class NativeBolt11MintQuoteCoordinator {
                 transaction,
                 selection(record, owner(fence, observedAtMs), null),
                 (selected) =>
-                  bindDurableCustodyProofOperation(selected, record, {
+                  bindNewDurableCustodyProofOperation(selected, record, {
                     requestBody: authority.exactRequest,
                     output: authority.exactOutput,
                     privateMaterial: authority.exactAuthority,

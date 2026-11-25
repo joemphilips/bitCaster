@@ -363,6 +363,10 @@
       "types": "./dist/walletProofSelection.d.ts",
       "import": "./dist/walletProofSelection.js"
     },
+    "./walletOperationSize": {
+      "types": "./dist/walletOperationSize.d.ts",
+      "import": "./dist/walletOperationSize.js"
+    },
     "./boundedProofConsolidation": {
       "types": "./dist/boundedProofConsolidation.d.ts",
       "import": "./dist/boundedProofConsolidation.js"

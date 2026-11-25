@@ -19,9 +19,8 @@ import {
   type DurableOutgoingCashuRecipientAcknowledgement,
 } from "@bitcaster/client-sdk/durableOutgoingCashuTransfer";
 import {
-  assertDurableCustodyRecordCanHoldResult,
   createDurableCustodyProofOperation,
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import {
   assertDurableCustodyMintOperationAuthority,
@@ -681,7 +680,6 @@ async function prepareBrowserOutgoingTransfer(input: {
   });
   verifyOutgoingKeepOutputLocators(request.context.seed, transfer);
   const binding = outgoingBinding(scope, operation, request.wallet);
-  assertDurableCustodyRecordCanHoldResult(binding.record);
   const predecessors = await outgoingPredecessorRows(adapter, scope.scopeId, operation);
   await adapter.transactAtomic(
     {
@@ -692,7 +690,7 @@ async function prepareBrowserOutgoingTransfer(input: {
       ],
     },
     (transaction) =>
-      bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+      bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
     {
       predecessorProofs: { [binding.record.operation.operationId]: predecessors },
       outgoingTransfer: browserOutgoingCashuTransferRow(scope.scopeId, transfer, "reserved"),

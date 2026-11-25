@@ -39,7 +39,7 @@ import {
   type ConditionOracleEvidenceSummary,
 } from "@bitcaster/client-sdk/conditionOracleEvidence";
 import {
-  bindDurableCustodyProofOperation,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from "@bitcaster/client-sdk/durableCustodyProofOperationRecord";
 import { deriveRootCtfOutcomeCollectionId } from "@bitcaster/client-sdk/durableCtfRangeOperation";
@@ -483,7 +483,7 @@ export async function bindBrowserCanonicalCtfRedeemLeg(
               operationRows: [{ operationId: custodyOperationId, expectedRevision: null }],
             },
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, record, {
+              bindNewDurableCustodyProofOperation(transaction, record, {
                 requestBody: authority.exactRequest,
                 output: authority.exactOutput,
                 privateMaterial: authority.exactAuthority,

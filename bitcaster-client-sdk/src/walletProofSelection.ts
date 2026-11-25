@@ -2,7 +2,7 @@ import { Amount, normalizeProofAmounts, selectProofsRotating } from '@cashu/cash
 import type { Proof, SelectProofs } from '@cashu/cashu-ts'
 import { sha256 } from '@noble/hashes/sha2.js'
 import { utf8ToBytes } from '@noble/hashes/utils.js'
-import { DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX } from './durableCustody.ts'
+import { NEW_WALLET_OPERATION_INPUT_LIMIT } from './walletOperationSize.ts'
 
 type KeyChainReader = Parameters<SelectProofs>[2]
 
@@ -23,8 +23,8 @@ interface Candidate {
  *
  * The selector keeps the cashu-ts keyset rotation: it spends the stale keysets first (older
  * versions, inactive before active). It selects the closest match within the last keyset that it
- * needs. It selects a set whenever one exists. It uses the fewest inputs when a closer match has
- * more inputs than custody accepts. Stale keysets that it must spend whole can still exceed that
+ * needs. It selects a set whenever one exists, and a set within the input limit of one operation
+ * whenever one exists. Stale keysets that it must spend whole can still exceed that
  * limit, as in the cashu-ts rotation.
  *
  * An exact match has no quote and no execution fee here. It stays with the cashu-ts selector.
@@ -114,16 +114,37 @@ function stalenessBuckets(
   return [...buckets.entries()].sort(([a], [b]) => a - b).map(([, bucket]) => bucket)
 }
 
-/** Select the closest match, or the fewest inputs when the closest match exceeds the input limit. */
+/** Select the closest match, or a set within the input limit when the closest match exceeds it. */
 function selectBounded(
   candidates: readonly Candidate[],
   target: bigint,
   forcedInputs: number,
 ): Candidate[] | null {
   const closest = selectClosest(candidates, target)
-  if (closest === null || forcedInputs + closest.length <= DURABLE_CUSTODY_INPUT_PROOF_LIMIT_MAX)
-    return closest
-  return selectFewest(candidates, target)
+  const room = NEW_WALLET_OPERATION_INPUT_LIMIT - forcedInputs
+  if (closest === null || closest.length <= room) return closest
+  return selectWithin(candidates, target, room) ?? selectFewest(candidates, target)
+}
+
+/**
+ * Use only as many of the largest candidates as the input limit requires, and fill the rest in the
+ * mixed order. So small proofs stay in use. A set is found whenever the largest candidates fit.
+ */
+function selectWithin(
+  candidates: readonly Candidate[],
+  target: bigint,
+  room: number,
+): Candidate[] | null {
+  const economical = largestFirst(candidates.filter(({ net }) => net > 0n))
+  const [mixed = []] = mixedOrders(economical, target)
+  for (let largest = 0; largest <= room; largest += 1) {
+    const head = economical.slice(0, largest)
+    const used = new Set(head)
+    const rest = mixed.filter((candidate) => !used.has(candidate)).slice(0, room - largest)
+    const selected = [...head, ...rest]
+    if (totalNet(selected) >= target) return dropRedundant(selected, target)
+  }
+  return null
 }
 
 /**
@@ -151,7 +172,7 @@ function selectClosest(candidates: readonly Candidate[], target: bigint): Candid
 
 /**
  * Repeatable orders that mix small and large candidates. Largest first would leave the small proofs
- * in the wallet until a payment needs more of them than custody accepts. The digest includes the
+ * in the wallet until a payment needs more of them than one operation accepts. The digest includes the
  * target, so no proof stays last for every payment. It does not leave this function.
  */
 function* mixedOrders(candidates: readonly Candidate[], target: bigint): Generator<Candidate[]> {

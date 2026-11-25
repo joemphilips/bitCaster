@@ -29,8 +29,7 @@ import {
   stageDurableCustodyPreparedMintResult,
 } from '@bitcaster-market/client-sdk/durableCustodyMintResult'
 import {
-  bindDurableCustodyProofOperation,
-  assertDurableCustodyRecordCanHoldResult,
+  bindNewDurableCustodyProofOperation,
   createDurableCustodyProofOperation,
 } from '@bitcaster-market/client-sdk/durableCustodyProofOperationRecord'
 import {
@@ -1109,7 +1108,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
             new DurableCustodyTransactionSqlite(database, fence.scopeId, nowMs),
             selection(record, owner(fence, nowMs), null),
             (transaction) =>
-              bindDurableCustodyProofOperation(transaction, record, {
+              bindNewDurableCustodyProofOperation(transaction, record, {
                 requestBody: authority.exactRequest,
                 output: authority.exactOutput,
                 privateMaterial: authority.exactAuthority,
@@ -1578,7 +1577,6 @@ export class DaemonDurableOutgoingCashuCoordinator {
     })
     const reservationId = `wallet-send:${input.transferId}`
     const binding = outgoingBinding(walletScope(fence), operation, wallet, reservationId)
-    assertDurableCustodyRecordCanHoldResult(binding.record)
     const targetInput: Parameters<typeof prepareProofOperationWithExactReservationFromDatabase>[1] =
       {
         operationId: input.transferId,
@@ -1627,7 +1625,7 @@ export class DaemonDurableOutgoingCashuCoordinator {
         new DurableCustodyTransactionSqlite(database, fence.scopeId, observedAtMs),
         selection(binding.record, owner(fence, observedAtMs), null),
         (transaction) =>
-          bindDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
+          bindNewDurableCustodyProofOperation(transaction, binding.record, binding.artifacts),
       )
       this.#deps.injectSendFault?.('journal-bound')
       const selected =

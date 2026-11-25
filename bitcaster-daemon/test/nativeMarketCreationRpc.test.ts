@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
+import { WalletOperationTooLargeError } from '@bitcaster-market/client-sdk/walletOperationSize'
 import { ApprovedWalletDebitExceededError } from '../src/approvedWalletDebit.ts'
 import { bootstrapFreshDaemonProfile } from '../src/profileBootstrap.ts'
 import { createNativeOracleCreationStore } from '../src/nativeOracleCreationStore.ts'
@@ -152,6 +153,64 @@ test('a fee above the approved debit has its own code and exposes no downstream 
     assert.equal(response.ok, false)
     assert.equal('code' in response && response.code, 'market-creation-debit-exceeded')
     assert.equal(JSON.stringify(response).includes('private-debit-marker'), false)
+  })
+})
+
+test('a fee that needs too many proofs has its own code', async () => {
+  await withProfile(async (directory) => {
+    const market = {
+      title: 'Saved creation',
+      description: 'Same request',
+      outcomeType: 'yesno',
+      outcomeDetails: [{ name: 'Yes' }, { name: 'No' }],
+      maturityEpoch: 2_000_000_000,
+      categoryTags: [],
+      baseAsset: 'sat',
+    } as const
+    await createNativeOracleCreationStore(directory).reserveCreation({
+      creationId: 'saved',
+      eventId: 'saved-event',
+      canonicalInput: JSON.stringify({
+        market,
+        registration: { requiredFeeMsat: 7 },
+        destination: {
+          engineBaseUrl: 'https://engine.example',
+          mintUrl: 'https://mint.example',
+          relayUrls: ['wss://relay.example/'],
+        },
+      }),
+    })
+    const response = await dispatch(
+      { method: 'market.creation-resume', params: { creationId: 'saved' } },
+      {
+        getCustodyFence() {
+          throw new Error('fixture stops before custody access')
+        },
+        createCashuWallet() {
+          throw new WalletOperationTooLargeError()
+        },
+      },
+    )
+    assert.equal(response.ok, false)
+    assert.equal('code' in response && response.code, 'wallet-operation-too-large')
+  })
+})
+
+test('a payment that needs too many proofs has its own code', async () => {
+  await withProfile(async () => {
+    const refuse = async () => {
+      throw new WalletOperationTooLargeError()
+    }
+    const response = await dispatch(
+      { method: 'wallet.pay.quote', params: { invoice: 'lnbc1invoice' } },
+      { nativeWalletPaymentOps: { quote: refuse, pay: refuse, status: refuse } as never },
+    )
+    assert.deepEqual(response, {
+      ok: false,
+      code: 'wallet-operation-too-large',
+      error:
+        'The operation needs more proofs than one operation can hold. Nothing was sent. Use a smaller amount.',
+    })
   })
 })
 

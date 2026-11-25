@@ -43,6 +43,7 @@ import {
   readDaemonCounterSnapshots,
   DaemonCounterSnapshotConflictError,
 } from './state.ts'
+import { assertNewWalletOperationFits } from '@bitcaster-market/client-sdk/walletOperationSize'
 import { createSpeculativeCounterTranscript } from '@bitcaster-market/client-sdk/speculativeCounterTranscript'
 import type { StateSqliteFaultPhase } from './stateSqlite.ts'
 import { createDaemonStateSqliteSession } from './stateSqlite.ts'
@@ -533,6 +534,9 @@ async function selectCanonicalInputs(input: {
       throw new CustodyRepairRequiredError()
     throw new Error('native wallet payment has insufficient msat proofs')
   }
+  // The mint returns an unused reserve in at most one blank output for each bit of the overage.
+  const overage = BigInt(sumProofs(selected)) - BigInt(amountMsat)
+  assertNewWalletOperationFits(selected, overage.toString(2).length)
   const fees: Record<string, number> = {}
   for (const keysetId of new Set(selected.map(({ id }) => id))) {
     const keyset = input.wallet.getKeyset(keysetId)
