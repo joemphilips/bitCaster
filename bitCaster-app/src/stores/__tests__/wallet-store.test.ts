@@ -25,6 +25,7 @@ import {
 import { activateBrowserWalletDatabase, BitcasterDB, db } from "../proof-db";
 import { browserSeedOrigin, recordGeneratedBrowserSeed } from "../seed-restore-db";
 import { useToastStore } from "../toast";
+import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
 import { usePendingTradesStore } from "../pendingTrades";
 import i18n from "@/i18n";
 
@@ -854,6 +855,14 @@ describe("useWalletStore", () => {
         "msat",
         "sat",
       ]);
+    });
+
+    it("gives every wallet the shared repeatable proof selection", async () => {
+      useWalletStore.getState().generateMnemonic();
+      await useWalletStore.getState().getWalletForUnit("http://localhost:8085", "msat");
+      expect(cashuMocks.walletConstructor.mock.calls.at(-1)?.[1]?.selectProofs).toBe(
+        selectWalletProofs,
+      );
     });
 
     it("rejects counter mutation through a wallet from the previous seed", async () => {

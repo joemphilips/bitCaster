@@ -44,6 +44,7 @@ import {
   type CtfConversionStrategy,
 } from '@bitcaster-market/client-sdk/ctfConsolidation'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { selectWalletProofs } from '@bitcaster-market/client-sdk/walletProofSelection'
 import { classifyCtfRangeSourceRecovery } from '@bitcaster-market/client-sdk/ctfRangeSourceRecovery'
 import {
   CtfRangeRecoveryTransportError,
@@ -2668,6 +2669,7 @@ export function createWallet(
     bip39seed: Buffer.from(secrets.walletSeedHex, 'hex'),
     counterSource:
       counterSource ?? createDaemonCounterSource(mutation, { normalizedMint: mintUrl, unit }),
+    selectProofs: selectWalletProofs,
   }) as CashuWalletLike
 }
 

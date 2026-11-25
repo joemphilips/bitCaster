@@ -359,6 +359,10 @@
       "types": "./dist/proofSelection.d.ts",
       "import": "./dist/proofSelection.js"
     },
+    "./walletProofSelection": {
+      "types": "./dist/walletProofSelection.d.ts",
+      "import": "./dist/walletProofSelection.js"
+    },
     "./boundedProofConsolidation": {
       "types": "./dist/boundedProofConsolidation.d.ts",
       "import": "./dist/boundedProofConsolidation.js"

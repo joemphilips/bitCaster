@@ -38,6 +38,7 @@ import { createActiveBrowserWalletCounterSource } from "./browser-wallet-counter
 import { recordEnteredBrowserSeed, recordGeneratedBrowserSeed } from "./seed-restore-db";
 import type { MintConnectionTestStatus } from "@/types/wallet";
 import { amountToNumber } from "@bitcaster/client-sdk/proofSelection";
+import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
 import { readPublicMintMetadata } from "@bitcaster/client-sdk";
 import {
   cashuAmountToMarketSubunits,
@@ -163,6 +164,7 @@ async function createSeedWallet(
     unit,
     bip39seed: seed.slice(),
     counterSource,
+    selectProofs: selectWalletProofs,
   });
   await wallet.loadMint();
   return wallet;

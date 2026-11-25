@@ -116,6 +116,7 @@ import {
   type ValidatedTokenImport,
 } from "@bitcaster/client-sdk/tokenImportValidation";
 import type { CtfRangeConditionalMintKeyset } from "@bitcaster/client-sdk/ctfRangeOrderProtocol";
+import { selectWalletProofs } from "@bitcaster/client-sdk/walletProofSelection";
 import {
   listBrowserDurableOutgoingCashuDueMints,
   recoverBrowserDurableOutgoingCashuDuePage,
@@ -175,7 +176,7 @@ export async function getWallet(
     _mintUrl = url;
     _walletUnit = unit;
     const mint = new CashuMint(url);
-    _wallet = new CashuWallet(mint, { unit });
+    _wallet = new CashuWallet(mint, { unit, selectProofs: selectWalletProofs });
     await _wallet.loadMint();
   }
 
@@ -199,7 +200,7 @@ export async function getWalletForUnit(
     _mintUrl = url;
     _walletUnit = normalizedUnit;
     const mint = new CashuMint(url);
-    _wallet = new CashuWallet(mint, { unit: normalizedUnit });
+    _wallet = new CashuWallet(mint, { unit: normalizedUnit, selectProofs: selectWalletProofs });
     await _wallet.loadMint();
   }
 

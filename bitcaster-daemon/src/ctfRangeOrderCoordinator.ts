@@ -126,6 +126,7 @@ import {
   type CtfRangeMintMetadataClient,
 } from '@bitcaster-market/client-sdk/ctfRangeMintMetadata'
 import { amountToNumber } from '@bitcaster-market/client-sdk/proofSelection'
+import { selectWalletProofs } from '@bitcaster-market/client-sdk/walletProofSelection'
 import {
   MINT_OUTPUT_REUSE_REFUSAL_CODES,
   classifyCashuMintFailure,
@@ -2870,6 +2871,7 @@ async function loadSourceWallet(
     (new CashuWallet(new CashuMint(authority.preparation.mintUrl), {
       unit: 'msat',
       bip39seed: walletSeed(walletSeedHex),
+      selectProofs: selectWalletProofs,
     }) as CtfRangeWalletLike)
   await wallet.loadMint()
   return wallet
