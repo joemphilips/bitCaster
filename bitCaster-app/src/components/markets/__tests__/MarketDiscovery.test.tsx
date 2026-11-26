@@ -458,7 +458,7 @@ describe("MarketDiscovery", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("The catalogue is unavailable.");
   });
 
-  it("shows the page-local scope notice when advanced filters are active without tags", async () => {
+  it("shows no page scope sentence and clears advanced filters without tags", async () => {
     const user = userEvent.setup();
     const onClearAll = vi.fn();
     render(
@@ -475,11 +475,24 @@ describe("MarketDiscovery", () => {
     await user.click(screen.getByTitle("Show filters"));
     await user.click(screen.getByRole("button", { name: "Yes/No" }));
 
-    expect(
-      screen.getByText("Tag counts and advanced filters apply only to the currently loaded page."),
-    ).toBeInTheDocument();
+    expect(screen.queryByText(/currently loaded page/)).not.toBeInTheDocument();
     await user.click(screen.getByTestId("market-discovery-clear-all"));
     expect(onClearAll).toHaveBeenCalledOnce();
+  });
+
+  it("shows no page scope sentence with category tags", () => {
+    render(
+      <MarketDiscovery
+        categoryTags={testCategoryTags}
+        markets={testMarkets}
+        selectedTags={[]}
+        sort="trending"
+        onSortChange={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText("Sports")).toBeInTheDocument();
+    expect(screen.queryByText(/currently loaded page/)).not.toBeInTheDocument();
   });
 
   it("renders sort pills and category chips on a single discovery row (Issue 5.1)", () => {

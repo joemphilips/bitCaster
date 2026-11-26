@@ -462,12 +462,6 @@ export function MarketDiscovery({
           </div>
         )}
 
-        {(categoryTags.length > 0 || activeFilterCount > 0) && (
-          <p className="mt-4 text-center text-xs text-slate-500 dark:text-slate-400">
-            {t("market.discoveryScopeNotice")}
-          </p>
-        )}
-
         {/* Sentinel: only mount/show when there are more pages to load so it
             never stays visible after the last page is reached. The
             IntersectionObserver fires onLoadMore when it enters the viewport;
