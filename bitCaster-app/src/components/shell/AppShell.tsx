@@ -37,10 +37,13 @@ export function AppShell({
   onCreateClick,
 }: AppShellProps) {
   const { t, i18n } = useTranslation();
-  // BrowserRouter commits navigation in a transition. Keep one shared draft
-  // so rapid typing does not lose characters. External URL changes replace it.
+  // BrowserRouter commits navigation in a transition, so the URL value of a
+  // keystroke can commit after the user typed more characters. Keep one
+  // shared draft. A URL value that this box wrote must not replace newer
+  // typed text. Any other URL change, such as Clear all, replaces the draft.
   const [searchDraft, setSearchDraft] = useState(searchQuery);
   const lastUrlSearchQuery = useRef(searchQuery);
+  const uncommittedSearchWrites = useRef<string[]>([]);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
   const [mobileUserMenuOpen, setMobileUserMenuOpen] = useState(false);
   const mobileUserTabRef = useRef<HTMLButtonElement>(null);
@@ -48,11 +51,20 @@ export function AppShell({
   useEffect(() => {
     if (lastUrlSearchQuery.current === searchQuery) return;
     lastUrlSearchQuery.current = searchQuery;
+    const writes = uncommittedSearchWrites.current;
+    const ownWrite = writes.indexOf(searchQuery);
+    if (ownWrite >= 0) {
+      // The router can skip intermediate values, so drop every older write too.
+      writes.splice(0, ownWrite + 1);
+      return;
+    }
+    writes.length = 0;
     setSearchDraft(searchQuery);
   }, [searchQuery]);
 
   const handleSearchChange = (query: string) => {
     setSearchDraft(query);
+    uncommittedSearchWrites.current.push(query);
     onSearchChange?.(query);
   };
 
