@@ -121,11 +121,43 @@ describe("StoppedPage", () => {
 
     it("keeps other clipboard text that the user copied later", async () => {
       await showAndCopy();
+      fireEvent.click(screen.getByRole("button", { name: "Hide recovery phrase" }));
       held = "other text";
       await act(async () => {
         await vi.advanceTimersByTimeAsync(60_000);
       });
       expect(held).toBe("other text");
+    });
+
+    it("clears the copied phrase after the user hides it", async () => {
+      await showAndCopy();
+      fireEvent.click(screen.getByRole("button", { name: "Hide recovery phrase" }));
+      expect(screen.queryAllByTestId("seed-word")).toEqual([]);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(59_000);
+      });
+      expect(held).toBe(SEED);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1_000);
+      });
+      expect(held).toBe("");
+    });
+
+    it("clears a recent copy after the phrase automatically hides", async () => {
+      await showAndCopy();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(4 * 60_000 + 30_000);
+        fireEvent.click(screen.getByRole("button", { name: "Copied" }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(screen.queryAllByTestId("seed-word")).toEqual([]);
+      expect(held).toBe(SEED);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(30_000);
+      });
+      expect(held).toBe("");
     });
 
     it("says that the copy failed when the browser refuses the clipboard", async () => {

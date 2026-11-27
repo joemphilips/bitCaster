@@ -8,14 +8,8 @@ const CLIPBOARD_CLEAR_MS = 60_000;
 // A shown secret hides again after this time, so that it does not stay on an unattended screen.
 const SECRET_DISPLAY_MS = 5 * 60_000;
 
-function CopyButton({
-  value,
-  text,
-}: {
-  value: string;
-  text: { copy: string; copied: string; copyFailed: string };
-}) {
-  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
+/** The page owns this timer, so hiding the phrase does not cancel clipboard cleanup. */
+function useClipboardClear() {
   const clearTimer = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -23,6 +17,28 @@ function CopyButton({
     },
     [],
   );
+  return (value: string) => {
+    if (clearTimer.current !== null) window.clearTimeout(clearTimer.current);
+    clearTimer.current = window.setTimeout(() => {
+      // Keep text that the user copied later.
+      void navigator.clipboard
+        .readText()
+        .then((current) => (current === value ? navigator.clipboard.writeText("") : undefined))
+        .catch(() => undefined);
+    }, CLIPBOARD_CLEAR_MS);
+  };
+}
+
+function CopyButton({
+  value,
+  text,
+  onCopied,
+}: {
+  value: string;
+  text: { copy: string; copied: string; copyFailed: string };
+  onCopied: (value: string) => void;
+}) {
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
   const copy = () => {
     if (!navigator.clipboard) {
       setState("failed");
@@ -31,14 +47,7 @@ function CopyButton({
     navigator.clipboard.writeText(value).then(
       () => {
         setState("copied");
-        if (clearTimer.current !== null) window.clearTimeout(clearTimer.current);
-        clearTimer.current = window.setTimeout(() => {
-          // Keep text that the user copied later.
-          void navigator.clipboard
-            .readText()
-            .then((current) => (current === value ? navigator.clipboard.writeText("") : undefined))
-            .catch(() => undefined);
-        }, CLIPBOARD_CLEAR_MS);
+        onCopied(value);
       },
       () => setState("failed"),
     );
@@ -83,6 +92,7 @@ export function StoppedPage() {
     initialStoppedPageLanguage(window.localStorage, navigator.language),
   );
   const [showPhrase, toggleShowPhrase] = useShownSecret();
+  const scheduleClipboardClear = useClipboardClear();
   const text = STOPPED_PAGE_TEXT[language];
 
   useEffect(() => {
@@ -117,7 +127,13 @@ export function StoppedPage() {
             <button type="button" className={button} onClick={toggleShowPhrase}>
               {showPhrase ? text.hidePhrase : text.showPhrase}
             </button>
-            {showPhrase && <CopyButton value={secrets.seedWords.join(" ")} text={text} />}
+            {showPhrase && (
+              <CopyButton
+                value={secrets.seedWords.join(" ")}
+                text={text}
+                onCopied={scheduleClipboardClear}
+              />
+            )}
           </div>
           {showPhrase && <SeedPhraseWords words={secrets.seedWords} />}
         </section>
