@@ -899,7 +899,9 @@ export async function signTradeComment(
   const event = new NDKEvent(ndk);
   const template = createTradeCommentTemplate({
     conditionId,
-    marketUrl: `${window.location.origin}/markets/${encodeURIComponent(conditionId)}`,
+    // A comment is public. VITE_MARKET_LINK_ORIGIN keeps its link on the public market host
+    // when this app runs on another host. The engine checks the same origin.
+    marketUrl: `${import.meta.env.VITE_MARKET_LINK_ORIGIN || window.location.origin}/markets/${encodeURIComponent(conditionId)}`,
     content,
     createdAt: Math.floor(Date.now() / 1000),
   });

@@ -1658,6 +1658,17 @@ describe("trade comment signing", () => {
       now.mockRestore();
     }
   });
+
+  it("signs the public market link origin of the build, not the origin of this host", async () => {
+    // A comment is public. Its link names the public market host, not the host that serves the app.
+    vi.stubEnv("VITE_MARKET_LINK_ORIGIN", "https://market.example");
+    try {
+      const comment = await signTradeComment("condition A", "My trade reason");
+      expect(comment.tags).toEqual([["r", "https://market.example/markets/condition%20A"]]);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
 });
 
 describe("NIP-98 signer binding", () => {
