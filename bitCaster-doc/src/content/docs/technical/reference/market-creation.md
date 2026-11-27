@@ -130,6 +130,11 @@ If you supply that option, the file must match the original thumbnail.
 
 ## Keep and restore your oracle backup
 
+Back up the original Nostr private key separately from the wallet recovery phrase.
+The wallet recovery phrase does not restore this key. To resolve a market from
+a new browser origin, you need this key and a recoverable oracle record.
+Without a retained key, you can lose the ability to resolve the market.
+
 After creation finishes, the client sends an encrypted oracle backup to
 the original relays. Backup failure does not undo creation or charge another fee.
 Delivery runs automatically. The market row shows a message only when you must act:
@@ -159,6 +164,8 @@ encryption, and oracle binding before import.
 The browser and native client use the same portable backup format.
 Restore retains the original announcement, signing authority, mint, engine,
 and relay destinations. It restores an oracle record, not a paid creation record.
+For a configured host migration, the browser sends engine requests for the former
+origin to the current origin. The saved destination remains unchanged.
 NIP-07 extension signing does not support this private recovery path. It needs
 the matching local Nostr key.
 

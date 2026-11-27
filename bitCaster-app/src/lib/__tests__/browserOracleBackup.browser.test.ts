@@ -77,6 +77,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
 });
 
 it.each(["metadata-write", "private-import", "completion-write"] as const)(
@@ -456,6 +457,71 @@ it("restores encrypted authority into empty IndexedDB and retains only public me
     f.record.authority.announcementEventJson,
   );
   expect(signed.artifactHex.length > 0).toBe(true);
+});
+
+it("publishes restored encrypted authority with the original Nostr key through the moved engine origin", async () => {
+  const f = await fixture();
+  const encrypted = await createOracleBackupEvent({
+    record: f.record,
+    privateKey: new Uint8Array(32).fill(0x11),
+    createdAt: 1_800_000_001,
+    validator: browserOracleBackupValidator,
+  });
+  await emptyPrivateTestStore();
+  localStorage.clear();
+  // The new browser origin has the creator's separately saved original key.
+  useSettingsStore.setState({ nostrSignerMode: "nsec", nsecSecret: "11".repeat(32) });
+  vi.stubEnv("VITE_FORMER_ENGINE_ORIGINS", f.record.destinations.engineUrl);
+  const owner = createCreatorMarketsStore();
+  await importBrowserOracleBackupEnvelope(encrypted, "wss://source.example", owner);
+  resetKormir();
+  const reopened = createCreatorMarketsStore();
+  const publicAuthority = await retainedOracleAuthority(f.binding, {
+    announcementTlvHex: f.prepared.artifactHex,
+  });
+  const network = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+    Response.json({}),
+  );
+  vi.stubGlobal("fetch", network);
+  const result = await publishBrowserOracleOutcome(
+    f.record.conditionId,
+    "YES",
+    undefined,
+    [],
+    reopened,
+    async () => {
+      // The controlled engine is initially unresolved, then reports the submitted event.
+      if (network.mock.calls.length === 0) return null;
+      const publication = await reopened.getState().readOraclePublication(f.record.conditionId);
+      if (!publication?.attestation) throw new Error("Signed attestation required.");
+      return {
+        conditionId: f.record.conditionId,
+        attestedOutcome: "YES",
+        oracleWitness: {},
+        registeredAuthority: {
+          eventId: f.record.oracleEventId,
+          outcomes: ["YES", "NO"],
+          threshold: 1,
+          oracles: publicAuthority.oracles,
+        },
+        attestationEvent: oracleEventToWire(publication.attestation.eventJson),
+      };
+    },
+  );
+  expect(result.failures).toHaveLength(0);
+  expect(result.record.relayPublished).toBe(true);
+  expect(result.record.engineEvidence?.outcome).toBe("YES");
+  expect(network).toHaveBeenCalledTimes(1);
+  expect(String(network.mock.calls[0][0])).toBe(
+    `${window.location.origin}/api/v1/markets/${encodeURIComponent(f.record.conditionId)}/oracle-attestation`,
+  );
+  expect(network.mock.calls[0][1]?.method).toBe("POST");
+  expect(JSON.parse(String(network.mock.calls[0][1]?.body))).toEqual(
+    oracleEventToWire(result.record.attestation!.eventJson),
+  );
+  const saved = await reopened.getState().readOracleOwner(f.record.conditionId);
+  if (saved?.kind !== "imported") throw new Error("Imported owner required.");
+  expect(saved.oracle.destinations.engineUrl).toBe(f.record.destinations.engineUrl);
 });
 
 it("allocates a distinct unrelated nonce after encrypted restore without changing imported authority", async () => {
