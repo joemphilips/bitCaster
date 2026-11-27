@@ -19,6 +19,7 @@ import {
   browserWalletDatabaseName,
 } from "@/lib/browserWalletProfile";
 import { normalizeUrl } from "@/lib/url";
+import { WALLET_STORAGE_KEY } from "@/lib/persistedWalletSecrets";
 import { requestBrowserWalletStoragePersistence } from "@/lib/browserWalletStoragePersistence";
 import i18n from "@/i18n";
 import {
@@ -569,7 +570,7 @@ export const useWalletStore = create<WalletState>()(
       },
     }),
     {
-      name: "bitcaster-wallet",
+      name: WALLET_STORAGE_KEY,
       partialize: (state) => ({
         mnemonic: state.mnemonic,
         setupComplete: state.setupComplete,

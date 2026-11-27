@@ -34,6 +34,7 @@ import { getRelayUrlValidationError } from "@/lib/walletOps";
 import { safeHostname } from "@/lib/url";
 import { AddMintForm } from "@/components/shared/AddMintForm";
 import { NativeDialog } from "@/components/shared/NativeDialog";
+import { SeedPhraseWords } from "@/components/shared/SeedPhraseWords";
 import { NostrProfilePanel } from "./NostrProfilePanel";
 import { ParticipationScoreHistory } from "./ParticipationScoreHistory";
 import { PrimaryGradientButton } from "@/components/shared/PrimaryGradientButton";
@@ -1026,21 +1027,7 @@ export function Settings({
                   </div>
                 ) : (
                   <>
-                    <div className="mb-4 grid grid-cols-3 gap-2">
-                      {displaySeedPhrase.split(" ").map((word, i) => (
-                        <div
-                          key={i}
-                          className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-600 dark:bg-slate-700/50"
-                        >
-                          <span className="w-4 text-right text-xs text-slate-400 dark:text-slate-500">
-                            {i + 1}
-                          </span>
-                          <span className="font-mono text-sm text-slate-900 dark:text-white">
-                            {word}
-                          </span>
-                        </div>
-                      ))}
-                    </div>
+                    <SeedPhraseWords words={displaySeedPhrase.split(" ")} />
                     <div className="flex gap-3">
                       <button
                         onClick={handleCopySeed}

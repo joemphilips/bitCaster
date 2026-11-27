@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
+    "build:stopped": "vite build --config vite.stopped.config.ts",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "lint:enum-discipline": "bash scripts/check-enum-discipline.sh",
