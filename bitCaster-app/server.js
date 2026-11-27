@@ -1,13 +1,17 @@
 // Production server for Azure App Service.
 // Mirrors Vite dev proxy (vite.config.ts) so frontend code uses relative URLs everywhere.
-import { CONTENT_SECURITY_POLICY } from "./content-security-policy.js";
+import {
+  CONTENT_SECURITY_POLICY,
+  STOPPED_CONTENT_SECURITY_POLICY,
+} from "./content-security-policy.js";
 import { captureDeploymentIdentity, deploymentIdentityHandler } from "./deployment-identity.js";
 import compression from "compression";
 import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
+import { existsSync } from "node:fs";
 import { isIP } from "node:net";
 import { fileURLToPath } from "node:url";
-import { dirname } from "node:path";
+import { dirname, join } from "node:path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -20,6 +24,57 @@ const BACKEND_URL = process.env.BACKEND_URL;
 
 app.disable("x-powered-by");
 app.use(compression());
+
+// Search engines do not index any host of this server.
+app.use((_req, res, next) => {
+  res.setHeader("X-Robots-Tag", "noindex");
+  next();
+});
+
+const firstHeaderValue = (value) => {
+  const raw = Array.isArray(value) ? value[0] : value;
+  return raw?.split(",")[0]?.trim();
+};
+
+// A stopped host serves only the stopped page (src/stopped, built into ./stopped). It
+// forwards nothing to the backend or the mint, and its responses name no other host of
+// this site. STOPPED_HOST_NAMES is a comma-separated list of host names without a port.
+const STOPPED_HOST_NAMES = new Set(
+  (process.env.STOPPED_HOST_NAMES ?? "")
+    .split(",")
+    .map((host) => host.trim().toLowerCase())
+    .filter(Boolean),
+);
+const STOPPED_ROOT = join(__dirname, "stopped");
+if (STOPPED_HOST_NAMES.size > 0 && !existsSync(join(STOPPED_ROOT, "index.html"))) {
+  throw new Error(
+    `STOPPED_HOST_NAMES is set, but the stopped page ${STOPPED_ROOT}/index.html is missing.`,
+  );
+}
+const isStoppedHost = (req) => {
+  const host = firstHeaderValue(req.headers.host)?.toLowerCase().replace(/:\d+$/, "");
+  return host !== undefined && STOPPED_HOST_NAMES.has(host);
+};
+
+const stopped = express.Router();
+stopped.use((_req, res, next) => {
+  res.setHeader("Content-Security-Policy", STOPPED_CONTENT_SECURITY_POLICY);
+  res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
+// A cached app can still call the backend and the mint until its service worker updates.
+// An empty 503 tells it that the service is unavailable, and it reaches no upstream.
+stopped.use(["/api", "/hubs", "/v1"], (_req, res) => res.status(503).end());
+stopped.get("/deployment-identity", deploymentIdentityHandler(identity));
+stopped.use(express.static(STOPPED_ROOT));
+stopped.get("/{*path}", (_req, res) => res.sendFile("index.html", { root: STOPPED_ROOT }));
+// No request of a stopped host continues to the app routes.
+stopped.use((_req, res) => res.status(404).end());
+app.use((req, res, next) => (isStoppedHost(req) ? stopped(req, res, next) : next()));
 
 // Security headers
 app.use((_req, res, next) => {
@@ -60,11 +115,6 @@ export const clientAddressFromForwardedFor = (forwardedFor) => {
 const proxyErrorHandler = (err, _req, res) => {
   console.error("Proxy error:", err.message);
   if (!res.headersSent) res.status(502).json({ error: "Bad Gateway" });
-};
-
-const firstHeaderValue = (value) => {
-  const raw = Array.isArray(value) ? value[0] : value;
-  return raw?.split(",")[0]?.trim();
 };
 
 const isAzurePublicHost = (host) => host?.endsWith(".azurewebsites.net");
@@ -163,7 +213,10 @@ if (BACKEND_URL) {
     target: BACKEND_URL,
     changeOrigin: true,
     xfwd: true,
-    pathFilter: "/hubs/**",
+    // The proxy library also listens for upgrades on its own after its first request. This
+    // filter keeps that listener from forwarding an upgrade of a stopped host.
+    // "/hubs/**" matches "/hubs" and every path below it, as this prefix test does.
+    pathFilter: (pathname, req) => !isStoppedHost(req) && isPathUnder(pathname, ["/hubs"]),
     ws: true,
     on: { error: proxyErrorHandler },
   });
@@ -203,8 +256,8 @@ if (hubsProxy) {
   // adds its own upgrade listener on its first HTTP request, and then its upgrade() does
   // nothing. A prepended listener sets the headers before that listener runs.
   server.prependListener("upgrade", (req, socket, head) => {
-    // Only the hub proxy accepts an upgrade. Close any other upgrade socket.
-    if (!isPathUnder(req.url, ["/hubs"])) {
+    // Only the hub proxy of an app host accepts an upgrade. Close any other upgrade socket.
+    if (isStoppedHost(req) || !isPathUnder(req.url, ["/hubs"])) {
       socket.destroy();
       return;
     }

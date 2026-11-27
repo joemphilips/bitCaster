@@ -26,6 +26,17 @@ export const CONTENT_SECURITY_POLICY = [
   "form-action 'self'",
 ].join("; ");
 
+// The policy of a stopped host (server.js). The stopped page (src/stopped) loads only its own
+// script and style, and the browser refuses every network call of the page.
+export const STOPPED_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "base-uri 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'none'",
+].join("; ");
+
 // The service worker serves the precached index.html with the response headers that it
 // cached. The build writes this digest into index.html (vite.config.ts), so a policy change
 // also changes index.html and its precache revision.

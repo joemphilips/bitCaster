@@ -17,6 +17,7 @@
     "lint:wallet-ops": "bash scripts/check-wallet-ops-boundary.sh",
     "test": "vitest run",
     "test:server": "node --test server-tests/*.node-test.mjs",
+    "test:stopped-host:browser": "npm run build && npm run build:stopped && node --test server-tests/stopped-service-worker.browser-test.mjs",
     "test:browser": "vitest run --config vitest.browser.config.ts",
     "test:browser:chart-geometry": "vitest run --config vitest.chart-geometry.config.ts",
     "test:browser:shell": "vitest run --config vitest.shell.config.ts",
