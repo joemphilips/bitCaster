@@ -2053,16 +2053,46 @@ describe("browser CTF range order coordinator", () => {
   });
 
   it.each([
-    ["only non-committing refusals", true, "order-request-rejected", "order-submission-rejected"],
-    ["an attempt in flight", false, "order-requested", "order-submission-uncertain"],
+    [
+      "only non-committing refusals",
+      true,
+      "order-request-rejected",
+      "order-submission-rejected",
+      "cancelled",
+      "user-cancelled",
+    ],
+    [
+      "an attempt in flight",
+      false,
+      "order-requested",
+      "order-submission-uncertain",
+      "cancelled",
+      null,
+    ],
+    [
+      "budget exhaustion",
+      true,
+      "order-request-rejected",
+      "order-submission-rejected",
+      "budget",
+      null,
+    ],
+    [
+      "authorization expiry",
+      true,
+      "order-request-rejected",
+      "order-submission-rejected",
+      "expired",
+      null,
+    ],
   ] as const)(
     "records a stopped resend after %s",
-    async (_label, allAttemptsRefused, lifecycle, code) => {
+    async (_label, allAttemptsRefused, lifecycle, code, reason, stopCause) => {
       const database = createDatabase();
       const preparation = persistedPreparation(`range-stopped-${lifecycle}`);
       const engine = engineMock({
         onSubmit: async () => {
-          throw new OrderQuoteRefreshWaitStopped("cancelled", allAttemptsRefused, null);
+          throw new OrderQuoteRefreshWaitStopped(reason, allAttemptsRefused, null);
         },
       });
       const coordinator = createCoordinator(database, sourceWallet(), engine);
@@ -2072,7 +2102,7 @@ describe("browser CTF range order coordinator", () => {
           preparation,
           candidates: [sourceProof(preparation.offerKeyset.id)],
         }),
-      ).rejects.toMatchObject({ code });
+      ).rejects.toMatchObject({ code, stopCause });
       expect(
         (await readCtfRangePreparation(walletScopeId(), preparation.operationId, database))
           ?.lifecycleState,

@@ -363,7 +363,7 @@ export async function submitBrowserCtfRangeOrder(
     // A refused second sell locked nothing, so it needs no durable alert.
     if (durableCode !== null && durableCode !== "source-preparation-pending") {
       const record = await readCtfRangePreparation(scopeId, preparation.operationId);
-      if (record !== null && stoppedByUser(input.signal, record.lifecycleState)) {
+      if (record !== null && stoppedByUser(error, record.lifecycleState)) {
         // The user stopped the wait, left the page, or changed the preview.
         // The coordinator records that as a refused request because no
         // attempt committed, but the engine refused nothing. The progress
@@ -1270,12 +1270,13 @@ function mintErrorField(mintError: BrowserCtfRangeMintError | null): {
   return mintError === null ? {} : { mintError };
 }
 
-/** Only the user's own signal ends a wait as a refused request. */
-function stoppedByUser(
-  signal: AbortSignal | undefined,
-  lifecycleState: CtfRangeOrderPreparationLifecycle,
-): boolean {
-  return signal?.aborted === true && isLocalCtfRangeOrderRefusal(lifecycleState);
+/** Only an accepted user cancellation suppresses a local-refusal alert. */
+function stoppedByUser(error: unknown, lifecycleState: CtfRangeOrderPreparationLifecycle): boolean {
+  return (
+    error instanceof BrowserCtfRangeOrderError &&
+    error.stopCause === "user-cancelled" &&
+    isLocalCtfRangeOrderRefusal(lifecycleState)
+  );
 }
 
 async function persistRangeMessages(input: {

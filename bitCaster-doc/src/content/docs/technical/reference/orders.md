@@ -171,8 +171,9 @@ or device at the same time shows no **Retry**, because a retry can fail in the
 same way and charge the penalty again.
 
 When bitCaster refuses the order request itself, the wallet alert
-**Trade failed** shows the refusal and the market of the order. The
-alert also shows the locked funds and the time when the lock ends, and that
+**Trade failed** shows the refusal and the market of the order.
+A later cancellation does not hide a refusal that the wallet already received.
+The alert also shows the locked funds and the time when the lock ends, and that
 they were returned after the refund. The order does not
 show in either list. When you select **Stop waiting**, leave the market, or change the
 trade while the order waits between two attempts, that is not a failure. Until

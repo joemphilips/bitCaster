@@ -174,6 +174,7 @@ import {
 } from "@bitcaster/client-sdk/ctfRangeOrderAdmission";
 import {
   classifyOrderSubmissionFailure,
+  OrderQuoteRefreshWaitStopped,
   type CreateSettlementCapabilityRequest,
   type OrderLookupResponse,
   type NostrKind1Event,
@@ -581,6 +582,8 @@ export class BrowserCtfRangeOrderError extends Error {
   readonly retryAfterMs: number | null;
   /** True when the wallet released the inputs and ended the order attempt. */
   readonly released: boolean;
+  /** The accepted stop cause, fixed before asynchronous journal updates. */
+  readonly stopCause: "user-cancelled" | null;
   /** A halted earlier operation that the user can retry from this refusal. */
   readonly retry: { readonly scopeId: string; readonly operationId: string } | null;
 
@@ -594,6 +597,7 @@ export class BrowserCtfRangeOrderError extends Error {
       readonly halt?: boolean;
       readonly retryAfterMs?: number | null;
       readonly released?: boolean;
+      readonly stopCause?: "user-cancelled" | null;
       readonly retry?: { readonly scopeId: string; readonly operationId: string } | null;
     } = {},
   ) {
@@ -606,6 +610,7 @@ export class BrowserCtfRangeOrderError extends Error {
     this.halt = details.halt === true;
     this.retryAfterMs = details.retryAfterMs ?? null;
     this.released = details.released === true;
+    this.stopCause = details.stopCause ?? null;
     this.retry = details.retry ?? null;
   }
 }
@@ -3117,6 +3122,10 @@ export class BrowserCtfRangeOrderCoordinator {
       );
     } catch (error) {
       const failure = classifyOrderSubmissionFailure(error);
+      const stopCause =
+        error instanceof OrderQuoteRefreshWaitStopped && error.reason === "cancelled"
+          ? "user-cancelled"
+          : null;
       switch (failure.kind) {
         case "uncertain":
           throw rangeError("order-submission-uncertain");
@@ -3136,7 +3145,9 @@ export class BrowserCtfRangeOrderCoordinator {
           } catch {
             throw rangeError("order-submission-uncertain");
           }
-          throw rangeError(rejectedOrderErrorCode(failure.code));
+          throw rangeError(rejectedOrderErrorCode(failure.code), undefined, {
+            stopCause,
+          });
         default:
           return assertNever(failure);
       }
@@ -4397,6 +4408,7 @@ function rangeError(
     readonly released?: boolean;
     readonly message?: string;
     readonly refusedRequest?: CtfRangeRefusedRequest;
+    readonly stopCause?: "user-cancelled" | null;
   } = {},
 ): BrowserCtfRangeOrderError {
   const failure = cause === undefined ? null : classifyCashuMintFailure(cause);
@@ -4412,6 +4424,7 @@ function rangeError(
       refusedRequest: options.refusedRequest ?? null,
       retryAfterMs: failure?.kind === "transient" ? failure.retryAfterMs : null,
       released: options.released === true,
+      stopCause: options.stopCause ?? null,
     },
   );
   if (cause !== undefined) Object.defineProperty(error, "cause", { value: cause });

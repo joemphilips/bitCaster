@@ -165,12 +165,15 @@ vi.mock("../browserCtfRangeOrderCoordinator", () => ({
   buildBrowserCtfRangeOrderPreparation: mocks.buildPreparation,
   browserCtfRangeOrderErrorMessage: (code: string) => `message for ${code}`,
   BrowserCtfRangeOrderError: class extends Error {
+    readonly stopCause: "user-cancelled" | null;
     constructor(
       readonly code: string,
       message: string,
       readonly shortfall: string | null = null,
+      details: { readonly stopCause?: "user-cancelled" | null } = {},
     ) {
       super(message);
+      this.stopCause = details.stopCause ?? null;
     }
   },
   BrowserCtfRangeOrderCoordinator: class {
@@ -1687,6 +1690,8 @@ describe("submitBrowserCtfRangeOrder", () => {
     const stopped = new BrowserCtfRangeOrderError(
       "order-submission-rejected",
       "The engine rejected the order. It will not retry.",
+      null,
+      { stopCause: "user-cancelled" },
     );
     mocks.readPreparation.mockResolvedValue({
       revision: 3,
@@ -1716,6 +1721,25 @@ describe("submitBrowserCtfRangeOrder", () => {
 
     expect(mocks.recordMessage).toHaveBeenCalledWith(
       expect.objectContaining({ revision: 3, code, kind: "order" }),
+    );
+  });
+
+  it("keeps a definitive refusal when the user aborts during the journal read", async () => {
+    const control = new AbortController();
+    const error = new BrowserCtfRangeOrderError("order-submission-rejected", "refused");
+    mocks.prepareAndSubmit.mockRejectedValueOnce(error);
+    mocks.readPreparation.mockImplementationOnce(async () => {
+      // This read occurs after the coordinator has already selected the failure.
+      control.abort();
+      return { revision: 3, lifecycleState: "order-request-rejected" };
+    });
+
+    await expect(submitRangeOrder("refused-before-abort", 0, "1", control.signal)).rejects.toBe(
+      error,
+    );
+    expect(control.signal.aborted).toBe(true);
+    expect(mocks.recordMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ revision: 3, code: "order-submission-rejected", kind: "order" }),
     );
   });
 
