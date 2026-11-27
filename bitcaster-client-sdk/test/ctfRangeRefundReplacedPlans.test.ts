@@ -9,7 +9,7 @@ import {
 
 class TransportFailure extends Error {}
 
-type PlanState = 'signed' | 'unsigned' | 'partial' | 'transport'
+type PlanState = 'signed' | 'unsigned' | 'partial' | 'invalid' | 'transport'
 
 /** A restore port that answers each plan with its named state, and records each request. */
 function restorePort(states: Readonly<Record<string, PlanState>>) {
@@ -24,7 +24,9 @@ function restorePort(states: Readonly<Record<string, PlanState>>) {
         case 'unsigned':
           return { kind: 'unsigned' as const }
         case 'partial':
-          throw new Error(`plan ${plan} is partly signed`)
+          return { kind: 'incomplete' as const }
+        case 'invalid':
+          throw new Error(`plan ${plan} is invalid`)
         case 'transport':
           throw new TransportFailure(`no answer for ${plan}`)
       }
@@ -95,20 +97,33 @@ test('an unsigned current plan without a complete replaced plan is unsigned', as
   }
 })
 
-test('a partly signed current plan keeps its error', async () => {
+test('an incomplete current plan continues reconciliation without refund proofs', async () => {
   for (const replaced of ['unsigned', 'partial'] as const) {
     const port = restorePort({ current: 'partial', 'replaced-1': replaced })
-
-    await assert.rejects(
-      restoreSpentCtfRangeRefund({
+    assert.deepEqual(
+      await restoreSpentCtfRangeRefund({
         currentPlan: 'current',
         replacedPlans: ['replaced-1'],
         restore: port.restore,
         isTransportFailure,
       }),
-      /plan current is partly signed/,
+      { kind: 'incomplete' },
     )
+    assert.deepEqual(port.requests, ['current', 'replaced-1'])
   }
+})
+
+test('an invalid current plan keeps its error', async () => {
+  const port = restorePort({ current: 'invalid', 'replaced-1': 'partial' })
+  await assert.rejects(
+    restoreSpentCtfRangeRefund({
+      currentPlan: 'current',
+      replacedPlans: ['replaced-1'],
+      restore: port.restore,
+      isTransportFailure,
+    }),
+    /plan current is invalid/,
+  )
 })
 
 test('a transport failure on any plan keeps the refund pending', async () => {

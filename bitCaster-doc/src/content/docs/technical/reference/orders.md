@@ -205,6 +205,12 @@ which stage is confirmed. A prepared payment does not prove that the engine
 accepted an order. A rejected order can still need funds recovery. An accepted
 order is not a completed trade until settlement is confirmed.
 
+During refund recovery, a valid response containing only some planned outputs
+is not a completed refund. The wallet credits none of those outputs. If every
+refund input is spent, it continues settlement reconciliation and retains the
+recovery records until an exact result is verified. A complete response for a
+replaced refund plan still halts recovery without crediting that plan.
+
 ## What the engine can see
 
 Your wallet sends the ecash records, called proofs, that authorize this order.

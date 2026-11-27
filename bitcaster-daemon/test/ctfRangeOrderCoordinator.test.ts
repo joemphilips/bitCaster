@@ -5915,92 +5915,115 @@ test('daemon halts a refund whose spent inputs match only a replaced plan, and a
   )
 })
 
-test('daemon classifies the settlement when only a replaced refund plan is partly signed', async () => {
-  // The current plan has no signature, and the replaced plan is signed only
-  // in part, so no refund plan committed. The settlement spent the inputs.
-  const { state, dependencies } = replannedRefundMint(
-    () => new MintOperationError(11001, 'Token already spent'),
-  )
-  await withExpiredOrdinaryRefund(
-    dependencies,
-    async ({ coordinator, client, directory, fence, source, custodyOperationId, dependencies }) => {
-      const refused = await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.equal(refused.pending.length, 1)
-      assert.equal(state.swaps.length, 2)
+for (const partialPlan of ['current', 'replaced'] as const) {
+  test(`daemon classifies the settlement when the ${partialPlan} refund plan is partly signed`, async () => {
+    // One refund plan is only partly signed. No refund plan committed;
+    // the exact settlement result independently accounts for the spent inputs.
+    const { state, dependencies } = replannedRefundMint(
+      () => new MintOperationError(11001, 'Token already spent'),
+    )
+    await withExpiredOrdinaryRefund(
+      dependencies,
+      async ({
+        coordinator,
+        client,
+        directory,
+        fence,
+        source,
+        custodyOperationId,
+        dependencies,
+      }) => {
+        const refused = await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.equal(refused.pending.length, 1)
+        assert.equal(state.swaps.length, 2)
 
-      state.spent = true
-      state.signed = manifestSelectionOutputs(source)
-      state.signed.add(state.swaps[0]!.outputs[0]!.B_)
-      // A crash after the settlement result is applied, and before the order ends:
-      // the lease is lost at once, so the order journal cannot end.
-      let crashFence = fence()
-      const crashing = new DaemonCtfRangeOrderCoordinator(directory, () => crashFence, {
-        ...dependencies,
-        observeOrderTimeline: ({ phase, outcome }) => {
-          if (phase === 'result-application' && outcome === 'success') {
-            crashFence = { ...crashFence, fencingEpoch: crashFence.fencingEpoch + 1 }
-          }
-        },
-      })
-      await assert.rejects(crashing.recover(WALLET_SEED_HEX, client), /stale or expired authority/)
-      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
-        resultState: 'applied',
-        lifecycle: 'order-request-rejected',
-      })
-      assert.equal((await rangeRefundOperation()).state, 'Failed')
-      // The mint answer changes after the crash: another manifest output is now
-      // signed. The applied result stays the authority, so the order still ends.
-      const unselected = source.manifest.entries.find(({ B_ }) => !state.signed.has(B_))
-      assert.ok(unselected)
-      state.signed.add(unselected.B_)
+        state.spent = true
+        state.signed = manifestSelectionOutputs(source)
+        const partialOutputs = state.swaps[partialPlan === 'current' ? 1 : 0]!.outputs
+        assert.ok(partialOutputs.length > 1)
+        state.signed.add(partialOutputs[0]!.B_)
+        // A crash after the settlement result is applied, and before the order ends:
+        // the lease is lost at once, so the order journal cannot end.
+        let crashFence = fence()
+        const crashing = new DaemonCtfRangeOrderCoordinator(directory, () => crashFence, {
+          ...dependencies,
+          observeOrderTimeline: ({ phase, outcome }) => {
+            if (phase === 'result-application' && outcome === 'success') {
+              crashFence = { ...crashFence, fencingEpoch: crashFence.fencingEpoch + 1 }
+            }
+          },
+        })
+        await assert.rejects(
+          crashing.recover(WALLET_SEED_HEX, client),
+          /stale or expired authority/,
+        )
+        assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+          resultState: 'applied',
+          lifecycle: 'order-request-rejected',
+        })
+        assert.equal((await rangeRefundOperation()).state, 'Failed')
+        // The mint answer changes after the crash: another manifest output is now
+        // signed. The applied result stays the authority, so the order still ends.
+        const unselected = source.manifest.entries.find(({ B_ }) => !state.signed.has(B_))
+        assert.ok(unselected)
+        state.signed.add(unselected.B_)
 
-      const settled = await coordinator.recover(WALLET_SEED_HEX, client)
+        const settled = await coordinator.recover(WALLET_SEED_HEX, client)
 
-      assert.deepEqual(settled.pending, [])
-      assert.equal(settled.recovered.length, 1)
-      assert.equal(state.swaps.length, 2)
-      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
-        resultState: 'applied',
-        lifecycle: 'terminal',
-      })
-      const refund = await rangeRefundOperation()
-      assert.equal(refund.state, 'Failed')
-      assert.equal(refund.lastError, 'range settlement spent the refund inputs')
-      assert.equal(await completedRefundCount(), 0)
-    },
-  )
-})
+        assert.deepEqual(settled.pending, [])
+        assert.equal(settled.recovered.length, 1)
+        assert.equal(state.swaps.length, 2)
+        assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+          resultState: 'applied',
+          lifecycle: 'terminal',
+        })
+        const refund = await rangeRefundOperation()
+        assert.equal(refund.state, 'Failed')
+        assert.equal(refund.lastError, 'range settlement spent the refund inputs')
+        assert.equal(await completedRefundCount(), 0)
+      },
+    )
+  })
+}
 
-test('daemon neither ends nor credits a spent refund whose settlement stays reconciling', async () => {
-  // No refund plan and no settlement output is signed. The inputs read SPENT,
-  // so the refund did not commit, and the settlement result is not exact.
-  const { state, dependencies } = replannedRefundMint(
-    () => new MintOperationError(11001, 'Token already spent'),
-  )
-  await withExpiredOrdinaryRefund(
-    dependencies,
-    async ({ coordinator, client, directory, custodyOperationId }) => {
-      await coordinator.recover(WALLET_SEED_HEX, client)
-      assert.equal(state.swaps.length, 2)
+for (const partialRefund of [false, true]) {
+  test(`daemon neither ends nor credits an unresolved spent refund: partial=${partialRefund}`, async () => {
+    // No refund plan and no settlement output is signed. The inputs read SPENT,
+    // so the refund did not commit, and the settlement result is not exact.
+    const { state, dependencies } = replannedRefundMint(
+      () => new MintOperationError(11001, 'Token already spent'),
+    )
+    await withExpiredOrdinaryRefund(
+      dependencies,
+      async ({ coordinator, client, directory, custodyOperationId }) => {
+        await coordinator.recover(WALLET_SEED_HEX, client)
+        assert.equal(state.swaps.length, 2)
 
-      state.spent = true
-      const reconciling = await coordinator.recover(WALLET_SEED_HEX, client)
+        state.spent = true
+        if (partialRefund) {
+          assert.ok(state.swaps[1]!.outputs.length > 1)
+          state.signed.add(state.swaps[1]!.outputs[0]!.B_)
+        }
+        const before = await rangeRefundOperation()
+        const reconciling = await coordinator.recover(WALLET_SEED_HEX, client)
 
-      assert.deepEqual(reconciling.recovered, [])
-      assert.equal(reconciling.pending.length, 1)
-      assert.equal(
-        reconciling.pending[0]!.error,
-        'range refund inputs are spent, and the settlement remains reconciling',
-      )
-      assert.equal((await rangeRefundOperation()).state, 'prepared')
-      assert.equal(await completedRefundCount(), 0)
-      assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
-        resultState: 'none',
-        lifecycle: 'order-request-rejected',
-      })
-    },
-  )
-})
+        assert.deepEqual(reconciling.recovered, [])
+        assert.equal(reconciling.pending.length, 1)
+        assert.equal(
+          reconciling.pending[0]!.error,
+          'range refund inputs are spent, and the settlement remains reconciling',
+        )
+        assert.deepEqual(await rangeRefundOperation(), before)
+        assert.equal(before.state, 'prepared')
+        assert.equal(await completedRefundCount(), 0)
+        assert.deepEqual(await rangeCustodyResultState(custodyOperationId, directory), {
+          resultState: 'none',
+          lifecycle: 'order-request-rejected',
+        })
+      },
+    )
+  })
+}
 
 test('daemon refund keeps at most eight replaced plans', async () => {
   const swaps: SwapRequest[] = []

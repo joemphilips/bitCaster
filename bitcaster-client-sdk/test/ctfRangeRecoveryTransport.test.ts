@@ -1190,7 +1190,7 @@ test('NUT-09 refund restore uses persisted keys and rejects missing or invalid D
   )
 })
 
-test('one NUT-09 read of a refund plan is unsigned, exact, or invalid', async () => {
+test('one NUT-09 read of a refund plan distinguishes an incomplete valid subset', async () => {
   const fixture = await createRefundFixture()
   const outputs = fixture.outputs.map(({ blindedMessage }) => blindedMessage)
   assert.ok(outputs.length > 1)
@@ -1214,8 +1214,20 @@ test('one NUT-09 read of a refund plan is unsigned, exact, or invalid', async ()
     signed.kind === 'signed' ? signed.signatures.map(({ C_ }) => C_) : [],
     outputs.map((output) => signBlindedOutput(output).C_),
   )
+  assert.deepEqual(
+    await read({
+      outputs: outputs.slice(0, 1),
+      signatures: outputs.slice(0, 1).map(signBlindedOutput),
+    }),
+    { kind: 'incomplete' },
+  )
   for (const invalid of [
-    { outputs: outputs.slice(0, 1), signatures: outputs.slice(0, 1).map(signBlindedOutput) },
+    { outputs: outputs.slice(0, 1), signatures: [] },
+    { outputs: [], signatures: outputs.slice(0, 1).map(signBlindedOutput) },
+    {
+      outputs: outputs.slice(0, 1),
+      signatures: [{ ...signBlindedOutput(outputs[0]!), C_: 'invalid' }],
+    },
     {
       outputs,
       signatures: outputs.map((output, index) =>

@@ -3634,11 +3634,11 @@ export class BrowserCtfRangeOrderCoordinator {
         const restored = await this.#pendingOnRecoveryTransport(() =>
           this.#restoreSpentRefund(refund, record, operation, preparation.offerKeyset),
         );
-        // The current plan has zero signatures, and no replaced plan restores
+        // The current plan is empty or incomplete, and no replaced plan restores
         // completely and exactly. A swap signs all of its outputs when it
         // commits, so this refund did not commit: the settlement spent the
         // inputs. The refund admits nothing.
-        if (restored.kind === "unsigned") return "inputs-spent-elsewhere";
+        if (restored.kind !== "refunded") return "inputs-spent-elsewhere";
         proofs = restored.proofs;
       } else {
         throw rangeError("recovery-pending");

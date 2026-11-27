@@ -3617,14 +3617,23 @@ describe("browser CTF range order coordinator", () => {
     ).toBe("aborted");
   });
 
-  it.each([false, true])(
-    "classifies a settlement that wins the race against its refund swap: engineEnvelope=%s",
-    async (engineEnvelope) => {
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])(
+    "classifies a settlement that wins the race against its refund swap: engineEnvelope=%s partialRefund=%s",
+    async (engineEnvelope, partialRefund) => {
       const database = createRefundDatabase();
-      const preparation = persistedPreparation("range-refund-race");
+      const preparation = persistedPreparation("range-refund-race", "FOK", {
+        maxQuotePaymentSubunits: 3,
+        price: 3,
+      });
       let now = 20_000;
       let settled = false;
       let refundCalls = 0;
+      let restoredPlanSize = 0;
       let confirmed: ReturnType<typeof confirmedRangeRecovery> | undefined;
       const wallet = sourceWallet();
       answerInputStates(wallet, () => (settled ? "SPENT" : "UNSPENT"));
@@ -3672,13 +3681,15 @@ describe("browser CTF range order coordinator", () => {
           settled = true;
           throw new MintOperationError(11001, "Token already spent");
         },
-        // The production NUT-09 read of the refund plan. The mint never signed it.
+        // A valid partial plan is not an atomic refund result. It admits no proofs.
         restoreRefundOutputs: (input) =>
           restoreDurableCtfRangeRefundOutputs({
             ...input,
             mint: {
-              async restore() {
-                return { outputs: [], signatures: [] };
+              async restore({ outputs: planned }) {
+                restoredPlanSize = planned.length;
+                const outputs = partialRefund ? planned.slice(0, 1) : [];
+                return { outputs, signatures: outputs.map(signBlindedMessage) };
               },
               async check() {
                 throw new Error("unexpected refund proof-state request");
@@ -3692,7 +3703,7 @@ describe("browser CTF range order coordinator", () => {
       await coordinator.prepareAndSubmit({
         seed: SEED,
         preparation,
-        candidates: [sourceProof(preparation.offerKeyset.id)],
+        candidates: [sourceProof(preparation.offerKeyset.id, 8)],
       });
 
       now = preparation.expiry * 1_000;
@@ -3711,7 +3722,9 @@ describe("browser CTF range order coordinator", () => {
       expect(await seedHandoffRefusal(database)).toBe("active-wallet-work");
 
       now += 60 * 60 * 1_000;
-      expect(await coordinator.recoverPage({ seed: SEED, limit: 8 })).toMatchObject({
+      const recovered = await coordinator.recoverPage({ seed: SEED, limit: 8 });
+      if (partialRefund) expect(restoredPlanSize).toBeGreaterThan(1);
+      expect(recovered).toMatchObject({
         recoveredOperationIds: [preparation.operationId],
         pending: [],
       });
@@ -6860,7 +6873,13 @@ function persistedPreparation(
   order: Partial<
     Pick<
       CtfRangeOrderRequest,
-      "side" | "tokenSide" | "amountSubunits" | "minimumFillAmountSubunits" | "clientOrderId"
+      | "side"
+      | "tokenSide"
+      | "amountSubunits"
+      | "minimumFillAmountSubunits"
+      | "clientOrderId"
+      | "maxQuotePaymentSubunits"
+      | "price"
     >
   > = {},
   mintFacts = reviewedMintFacts(),
@@ -6869,7 +6888,7 @@ function persistedPreparation(
     request: {
       ...rangeRequest(timeInForce),
       ...order,
-      maxQuotePaymentSubunits: order.side === "Sell" ? null : 2,
+      maxQuotePaymentSubunits: order.side === "Sell" ? null : (order.maxQuotePaymentSubunits ?? 2),
       minQuotePaymentSubunits: order.side === "Sell" ? 2 : null,
     },
     coordinatorPublicKey: COORDINATOR_PUBLIC_KEY,

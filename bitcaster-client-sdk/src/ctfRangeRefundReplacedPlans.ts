@@ -17,7 +17,7 @@ import {
  * committed with it: another client with the same seed can have signed the
  * same counters with the same amounts. A spent refund completes only from its
  * current plan. A hit only on a replaced plan halts the refund, and the
- * client admits nothing from it. When the current plan has zero signatures
+ * client admits nothing from it. When the current plan is empty or incomplete
  * and no replaced plan restores completely and exactly, the refund did not
  * commit, and the client classifies the settlement again.
  */
@@ -83,6 +83,8 @@ export type CtfRangeRefundPlanRestore<Result> =
   | { readonly kind: 'signed'; readonly proofs: Result }
   /** The mint holds no signature for any output of the plan. */
   | { readonly kind: 'unsigned' }
+  /** A valid proper subset; it grants no refund proof authority. */
+  | { readonly kind: 'incomplete' }
 
 /** The result of a spent refund. */
 export type CtfRangeSpentRefundRestore<Result> =
@@ -94,6 +96,8 @@ export type CtfRangeSpentRefundRestore<Result> =
    * outputs when it commits, so another request spent the refund inputs.
    */
   | { readonly kind: 'unsigned' }
+  /** A valid proper subset; it grants no refund proof authority. */
+  | { readonly kind: 'incomplete' }
 
 /**
  * Decide a refund whose inputs are all SPENT. Read the current plan first,
@@ -103,11 +107,12 @@ export type CtfRangeSpentRefundRestore<Result> =
  * - A replaced plan restores completely and exactly: throw
  *   `CtfRangeRefundReplacedPlanSignedError`. The caller halts the refund and
  *   admits nothing.
- * - The current plan has zero signatures, and no replaced plan restores
- *   completely and exactly: `unsigned`.
+ * - The current plan is empty or incomplete, and no replaced plan restores
+ *   completely and exactly: return its no-proof observation.
  * - Otherwise throw the error of the current plan. The refund stays pending.
  *
- * `restore` throws for a partly signed or invalid answer. A restore that the
+ * `restore` validates the entire response before returning `incomplete`. It
+ * throws for an invalid answer. A restore that the
  * mint did not answer proves nothing, so a transport failure is thrown at once.
  */
 export async function restoreSpentCtfRangeRefund<Plan, Result>(input: {
@@ -136,6 +141,6 @@ export async function restoreSpentCtfRangeRefund<Plan, Result>(input: {
     }
     if (replaced.kind === 'signed') throw new CtfRangeRefundReplacedPlanSignedError()
   }
-  if (current?.kind === 'unsigned') return { kind: 'unsigned' }
+  if (current?.kind === 'unsigned' || current?.kind === 'incomplete') return current
   throw currentError
 }

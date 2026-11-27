@@ -2049,7 +2049,7 @@ export class DaemonCtfRangeOrderCoordinator {
       proofs = unblindRangeRefund(outputData, response.signatures, keyset)
     } else if (states.every(({ state }) => state === 'SPENT')) {
       const restored = await this.#restoreSpentRefund(refund, mint, keyset)
-      if (restored.kind === 'unsigned') return 'inputs-spent-elsewhere'
+      if (restored.kind !== 'refunded') return 'inputs-spent-elsewhere'
       proofs = restored.proofs
     } else {
       throw new Error('range refund remains pending at the mint')
@@ -2130,7 +2130,7 @@ export class DaemonCtfRangeOrderCoordinator {
           mint,
           outputs: outputs.map(({ blindedMessage }) => blindedMessage),
         })
-        return restored.kind === 'unsigned'
+        return restored.kind !== 'signed'
           ? restored
           : { kind: 'signed', proofs: unblindRangeRefund(outputs, restored.signatures, keyset) }
       },

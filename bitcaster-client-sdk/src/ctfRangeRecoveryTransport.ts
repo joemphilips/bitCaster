@@ -162,12 +162,14 @@ export class CtfRangeRecoveryResponseError extends Error {
 export type CtfRangeRefundPlanSignatures =
   | { readonly kind: 'signed'; readonly signatures: SerializedBlindedSignature[] }
   | { readonly kind: 'unsigned' }
+  | { readonly kind: 'incomplete' }
 
 /**
  * Read one refund output plan with one NUT-09 request. Return `unsigned` when
  * the mint holds no signature for any output of the plan. Return `signed`, in
- * plan order, when it signed every output exactly. Throw for a partly signed
- * plan, a foreign or malformed row, or a transport failure.
+ * plan order, when it signed every output exactly. Return `incomplete` for a
+ * valid proper subset, with no signatures or proofs to admit. Throw for a
+ * foreign or malformed row, or a transport failure.
  */
 export async function restoreCtfRangeRefundPlanSignatures(input: {
   readonly mint: Pick<CtfRangeMintClient, 'restore'>
@@ -190,7 +192,7 @@ export async function restoreCtfRangeRefundPlanSignatures(input: {
       return { kind: 'unsigned' }
     }
     if (
-      response.outputs.length !== input.outputs.length ||
+      response.outputs.length > input.outputs.length ||
       response.signatures.length !== response.outputs.length
     ) {
       throw new Error('CTF range refund restore response size is invalid')
@@ -205,6 +207,7 @@ export async function restoreCtfRangeRefundPlanSignatures(input: {
       }
       signatures.set(output.B_, signature)
     })
+    if (restored.size < input.outputs.length) return { kind: 'incomplete' }
     return {
       kind: 'signed',
       signatures: input.outputs.map((output) => {
@@ -247,7 +250,7 @@ export async function restoreDurableCtfRangeRefundOutputs(input: {
     mint: input.mint ?? createCtfRangeMintClient(mintUrl),
     outputs: outputData.map(({ blindedMessage }) => blindedMessage),
   })
-  if (restored.kind === 'unsigned') return restored
+  if (restored.kind !== 'signed') return restored
   try {
     return {
       kind: 'signed',
