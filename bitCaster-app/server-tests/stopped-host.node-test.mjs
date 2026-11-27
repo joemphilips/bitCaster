@@ -13,6 +13,7 @@ import { deadline, startFrontendServer } from './frontend-server.mjs'
 
 const STOPPED_HOST = 'old.market.test'
 const APP_HOST = 'app.market.test'
+const API_HOST = 'api.market.test'
 
 // The backend and the mint record each request that reaches them.
 const upstreamPaths = []
@@ -38,6 +39,7 @@ const upstreamUrl = `http://127.0.0.1:${upstream.address().port}`
   MINT_URL: upstreamUrl,
   // The operator value can have other case, spaces and an empty element.
   STOPPED_HOST_NAMES: ` OLD.market.test, ,other-old.market.test `,
+  API_HOST_NAMES: 'API.market.test',
 }))
 
 // fetch() does not send a chosen Host header. A user agent sends the host of the URL.
@@ -163,8 +165,28 @@ test('a stopped host sends a policy that admits only its own script and style, a
   assert.equal(headers['x-content-type-options'], 'nosniff')
 })
 
+test('the API host serves the API, and the stopped page for every other path', async () => {
+  upstreamPaths.length = 0
+  for (const path of ['/api/v1/markets/query', '/hubs/market/negotiate', '/v1/info'])
+    assert.equal((await get(path, API_HOST)).status, 200, path)
+  assert.deepEqual(upstreamPaths, ['/api/v1/markets/query', '/hubs/market/negotiate', '/v1/info'])
+  for (const path of ['/', '/index.html', '/markets/some-market', '/src/main.tsx', '/apix']) {
+    const document = await get(path, API_HOST)
+    assert.equal(document.status, 200, path)
+    assert.match(document.body, /src\/stopped\/main\.tsx/, path)
+    assert.match(document.headers['content-security-policy'], /^default-src 'none'/, path)
+    assert.equal(document.headers['referrer-policy'], 'no-referrer', path)
+  }
+  // The stopped page of the API host is not an API answer.
+  assert.equal(upstreamPaths.length, 3)
+})
+
+test('the app host sends no referrer', async () => {
+  assert.equal((await get('/', APP_HOST)).headers['referrer-policy'], 'no-referrer')
+})
+
 test('every host sends the noindex header', async () => {
-  for (const host of [STOPPED_HOST, APP_HOST])
+  for (const host of [STOPPED_HOST, APP_HOST, API_HOST])
     assert.equal((await get('/', host)).headers['x-robots-tag'], 'noindex', host)
 })
 

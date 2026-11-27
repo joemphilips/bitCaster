@@ -38,23 +38,30 @@ const firstHeaderValue = (value) => {
 
 // A stopped host serves only the stopped page (src/stopped, built into ./stopped). It
 // forwards nothing to the backend or the mint, and its responses name no other host of
-// this site. STOPPED_HOST_NAMES is a comma-separated list of host names without a port.
-const STOPPED_HOST_NAMES = new Set(
-  (process.env.STOPPED_HOST_NAMES ?? "")
-    .split(",")
-    .map((host) => host.trim().toLowerCase())
-    .filter(Boolean),
-);
+// this site. An API host serves the API paths, and the stopped page for every other path,
+// so that it does not serve the app. Both settings are comma-separated lists of host
+// names without a port.
+const hostNames = (value) =>
+  new Set(
+    (value ?? "")
+      .split(",")
+      .map((host) => host.trim().toLowerCase())
+      .filter(Boolean),
+  );
+const STOPPED_HOST_NAMES = hostNames(process.env.STOPPED_HOST_NAMES);
+const API_HOST_NAMES = hostNames(process.env.API_HOST_NAMES);
 const STOPPED_ROOT = join(__dirname, "stopped");
-if (STOPPED_HOST_NAMES.size > 0 && !existsSync(join(STOPPED_ROOT, "index.html"))) {
+if (
+  STOPPED_HOST_NAMES.size + API_HOST_NAMES.size > 0 &&
+  !existsSync(join(STOPPED_ROOT, "index.html"))
+) {
   throw new Error(
-    `STOPPED_HOST_NAMES is set, but the stopped page ${STOPPED_ROOT}/index.html is missing.`,
+    `STOPPED_HOST_NAMES or API_HOST_NAMES is set, but the stopped page ${STOPPED_ROOT}/index.html is missing.`,
   );
 }
-const isStoppedHost = (req) => {
-  const host = firstHeaderValue(req.headers.host)?.toLowerCase().replace(/:\d+$/, "");
-  return host !== undefined && STOPPED_HOST_NAMES.has(host);
-};
+const requestHost = (req) => firstHeaderValue(req.headers.host)?.toLowerCase().replace(/:\d+$/, "");
+const isStoppedHost = (req) => STOPPED_HOST_NAMES.has(requestHost(req));
+const isApiHost = (req) => API_HOST_NAMES.has(requestHost(req));
 
 const stopped = express.Router();
 stopped.use((_req, res, next) => {
@@ -74,7 +81,11 @@ stopped.use(express.static(STOPPED_ROOT));
 stopped.get("/{*path}", (_req, res) => res.sendFile("index.html", { root: STOPPED_ROOT }));
 // No request of a stopped host continues to the app routes.
 stopped.use((_req, res) => res.status(404).end());
-app.use((req, res, next) => (isStoppedHost(req) ? stopped(req, res, next) : next()));
+app.use((req, res, next) =>
+  isStoppedHost(req) || (isApiHost(req) && !isPathUnder(req.url, ["/api", "/hubs", "/v1"]))
+    ? stopped(req, res, next)
+    : next(),
+);
 
 // Security headers
 app.use((_req, res, next) => {
@@ -82,7 +93,8 @@ app.use((_req, res, next) => {
   res.setHeader("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  // A request to another site carries no referrer.
+  res.setHeader("Referrer-Policy", "no-referrer");
   // The deposit QR scanner reads the camera. Only this origin can use it.
   res.setHeader("Permissions-Policy", "camera=(self), microphone=(), geolocation=()");
   next();
