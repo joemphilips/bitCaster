@@ -8,20 +8,35 @@ export interface BrowserOraclePublicationRetry {
 }
 
 /**
+ * A former host of this site serves no API. Its engine is the engine of this host, so a record
+ * that names it reads through this host. VITE_FORMER_ENGINE_ORIGINS is a comma-separated list.
+ */
+function currentEngineUrl(saved: string): string {
+  const former = (import.meta.env.VITE_FORMER_ENGINE_ORIGINS ?? "")
+    .split(",")
+    .map((origin: string) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean);
+  return former.includes(saved.replace(/\/+$/, "")) ? window.location.origin : saved;
+}
+
+/**
  * The engine that registered the market. A public creator-market mirror has none. The current
  * origin cannot replace it, because the mirror can come from another deployment.
  */
 export function browserOracleSavedEngineUrl(owner: BrowserOracleOwner): string | null {
+  let saved: string | null;
   switch (owner.kind) {
     case "imported":
-      return owner.oracle.destinations.engineUrl;
+      saved = owner.oracle.destinations.engineUrl;
+      break;
     case "created":
-      return (
-        owner.market.oracle?.destinations?.engineUrl ?? owner.market.oracle?.engineBaseUrl ?? null
-      );
+      saved =
+        owner.market.oracle?.destinations?.engineUrl ?? owner.market.oracle?.engineBaseUrl ?? null;
+      break;
     default:
       return assertNever(owner);
   }
+  return saved === null ? null : currentEngineUrl(saved);
 }
 
 /**
